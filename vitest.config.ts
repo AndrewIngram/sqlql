@@ -10,6 +10,7 @@ export default defineConfig({
       "@sqlql/core": resolve(rootDir, "packages/core/src/index.ts"),
       "@sqlql/sql": resolve(rootDir, "packages/sql/src/index.ts"),
       "@sqlql/executor-memory": resolve(rootDir, "packages/executor-memory/src/index.ts"),
+      sqlql: resolve(rootDir, "packages/sqlql/src/index.ts"),
     },
   },
   test: {

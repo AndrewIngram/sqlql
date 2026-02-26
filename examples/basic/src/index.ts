@@ -4,8 +4,8 @@ import {
   toSqlDDL,
   type QueryRow,
   type TableScanRequest,
-} from "@sqlql/core";
-import { query } from "@sqlql/sql";
+  query,
+} from "sqlql";
 
 function runScan(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = [...rows];

@@ -29,15 +29,9 @@ importers:
 
   examples/basic:
     dependencies:
-      '@sqlql/core':
+      sqlql:
         specifier: workspace:*
-        version: link:../../packages/core
-      '@sqlql/executor-memory':
-        specifier: workspace:*
-        version: link:../../packages/executor-memory
-      '@sqlql/sql':
-        specifier: workspace:*
-        version: link:../../packages/sql
+        version: link:../../packages/sqlql
 
   packages/core: {}
 
@@ -58,6 +52,15 @@ importers:
       node-sql-parser:
         specifier: ^5.3.12
         version: 5.4.0
+
+  packages/sqlql:
+    dependencies:
+      '@sqlql/core':
+        specifier: workspace:*
+        version: link:../core
+      '@sqlql/sql':
+        specifier: workspace:*
+        version: link:../sql
 
 packages:
 

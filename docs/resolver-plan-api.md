@@ -21,8 +21,7 @@ SQL parsing and plan-step wiring stay internal.
 ## Shape
 
 ```ts
-import { defineSchema, defineTableMethods } from "@sqlql/core";
-import { query } from "@sqlql/sql";
+import { defineSchema, defineTableMethods, query } from "sqlql";
 
 const schema = defineSchema({
   tables: {

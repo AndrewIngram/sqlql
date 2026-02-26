@@ -11,8 +11,6 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@sqlql/core": "workspace:*",
-    "@sqlql/executor-memory": "workspace:*",
-    "@sqlql/sql": "workspace:*"
+    "sqlql": "workspace:*"
   }
 }
