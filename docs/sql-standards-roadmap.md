@@ -12,6 +12,40 @@ driven by missing capabilities. Each feature is classified as either a **query a
 
 ---
 
+## SQL Standards Conformance
+
+### How servers declare compliance
+
+The SQL standard is published by ISO/IEC as ISO/IEC 9075. Full conformance is rarely claimed
+by any vendor. Instead, two practical models are used:
+
+**SQL-92 conformance levels** — SQL-92 defined four tiers:
+- **Entry** — the minimum subset most databases implement (basic SELECT/INSERT/UPDATE/DELETE,
+  JOINs, WHERE operators, aggregate functions, basic type system)
+- **Transitional / Intermediate / Full** — progressively stricter; almost no vendor reaches Full
+
+Most databases (PostgreSQL, MySQL, SQLite, SQL Server) describe themselves as "Entry SQL-92
+compatible" and then document extensions and deviations in their own compatibility matrix.
+
+**SQL:1999+ Feature IDs** — from SQL:1999 onward the tiered model was replaced with individual
+Feature IDs (e.g., `F031` = CAST function, `T611` = Elementary OLAP operations, `T612–T615` =
+window function subsets). Vendors can reference these IDs when documenting what they support.
+PostgreSQL publishes a page listing each Feature ID and its support status.
+
+### What developers typically expect
+
+In practice, developers writing portable SQL expect coverage roughly equivalent to:
+
+- **Entry SQL-92** — the near-universal baseline
+- **Common table expressions (WITH)** — introduced in SQL:1999, adopted everywhere
+- **Window functions (OVER / PARTITION BY)** — introduced in SQL:2003, now ubiquitous in analytics
+- **`FETCH FIRST n ROWS ONLY`** — SQL:2008, widely adopted as an alternative to `LIMIT`
+
+sqlql targets this "practical superset" as its long-term goal. The tiers below are ordered by
+implementation priority and practical value.
+
+---
+
 ## Currently Supported (Baseline)
 
 - `SELECT col, ...` with table aliases
@@ -390,18 +424,72 @@ SELECT * FROM paid_orders WHERE total_cents > 1000
 
 ---
 
-## Tier 4 — SQL:1999 and Beyond (Future)
+## Tier 4 — SQL:1999–2003 (High Value)
 
-| Feature | Classification | Notes |
-|---------|---------------|-------|
-| Window functions (`OVER`) | New API capability | Requires per-row context; complex to delegate |
-| Scalar subqueries in SELECT | New API capability | Returns single value per row |
-| `RECURSIVE` CTEs | New API capability | Requires iterative execution |
-| `ROLLUP` / `CUBE` / `GROUPING SETS` | New API capability | Multi-level GROUP BY |
-| `FETCH FIRST n ROWS ONLY` | Query affordance | SQL:2008 alias for LIMIT |
-| `LATERAL` joins | New API capability | Per-row subquery execution |
-| JSON operators | New API capability | Extend schema type system |
-| `MULTISET` / array types | New API capability | Collection column types |
+These features are from SQL:1999 or SQL:2003 and are practically important enough to be
+worth implementing despite their complexity.
+
+### Window Functions (`OVER` / `PARTITION BY`) — SQL:2003, Feature T611–T615
+**Classification:** New API capability — requires per-row window context
+
+Window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`,
+`LAST_VALUE`, `SUM OVER`, `AVG OVER`, etc.) are essential for data analytics and are
+universally supported by modern SQL engines. They were standardised in SQL:2003 (Feature
+IDs T611–T615) but have been in widespread use for decades.
+
+For sqlql, window functions require a new API path — the resolver must either:
+1. Delegate to `method.windowAggregate()` if the data source can compute them natively, or
+2. Fall back to in-memory computation after scanning and sorting all rows.
+
+The in-memory fallback is feasible for analytics workloads where data volumes are moderate;
+for large datasets native delegation is preferable.
+
+```sql
+SELECT
+  o.user_id,
+  o.total_cents,
+  SUM(o.total_cents) OVER (PARTITION BY o.user_id) AS user_total,
+  ROW_NUMBER() OVER (PARTITION BY o.user_id ORDER BY o.created_at DESC) AS rn
+FROM orders o
+```
+
+### CTEs (WITH clause) — SQL:1999
+**Classification:** Query affordance — the planner executes the CTE once and
+materializes the result as an in-memory table
+
+The planning IR already has `CteBinding` and `CteStep` types. The executor
+needs to evaluate CTEs before the main query.
+
+```sql
+WITH paid_orders AS (SELECT * FROM orders WHERE status = 'paid')
+SELECT * FROM paid_orders WHERE total_cents > 1000
+```
+
+### ROLLUP / CUBE / GROUPING SETS — SQL:1999
+**Classification:** New API capability — multi-level GROUP BY
+
+`ROLLUP` and `CUBE` generate multiple levels of subtotals in a single query.
+`GROUPING SETS` gives explicit control over which grouping combinations are produced.
+Widely used in reporting and dashboards.
+
+```sql
+SELECT region, product, SUM(revenue) FROM sales GROUP BY ROLLUP(region, product)
+```
+
+---
+
+## Tier 5 — SQL:1999+ (Low Value or High Complexity)
+
+The following features are either rarely needed in practice, add complexity disproportionate
+to their value, or are better served by application-level logic.
+
+| Feature | Spec | Classification | Notes |
+|---------|------|---------------|-------|
+| `RECURSIVE` CTEs | SQL:1999 | New API capability | Useful for hierarchical data but complex to implement; requires iterative execution |
+| `FETCH FIRST n ROWS ONLY` | SQL:2008 | Query affordance | Trivial alias for `LIMIT`; easy to add |
+| Scalar subqueries in `SELECT` | SQL:1999 | New API capability | Returns a single value per row; complex to plan and delegate |
+| `LATERAL` joins | SQL:1999 | New API capability | Per-row subquery execution; niche use cases |
+| `MULTISET` / array types | SQL:2003 | New API capability | Collection column types; requires schema type system extension |
 
 ---
 
