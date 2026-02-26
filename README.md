@@ -1,5 +1,7 @@
 # sqlql
 
+*Warning:* Currently very rough and LLM-generated, not ready for production use.
+
 `sqlql` is a TypeScript library for exposing a SQL interface over arbitrary data sources.
 
 You define:
