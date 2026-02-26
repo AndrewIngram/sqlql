@@ -1,10 +1,16 @@
 import {
   getTable,
   resolveTableQueryBehavior,
+  type AggregateFunction,
+  type NullFilterClause,
   type QueryRow,
   type ScanFilterClause,
   type ScanOrderBy,
+  type ScalarFilterClause,
   type SchemaDefinition,
+  type SetFilterClause,
+  type TableAggregateMetric,
+  type TableAggregateRequest,
   type TableMethods,
   type TableMethodsMap,
   type TableScanRequest,
@@ -42,7 +48,7 @@ interface JoinCondition {
 
 interface ParsedJoin {
   alias: string;
-  join: "inner";
+  join: "inner" | "left";
   condition: JoinCondition;
 }
 
@@ -63,15 +69,42 @@ interface LiteralFilter {
   clause: ScanFilterClause;
 }
 
+interface ParsedAggregate {
+  fn: AggregateFunction;
+  alias: string;
+  tableAlias: string;
+  column?: string;
+  distinct?: boolean;
+}
+
+interface ParsedGroupBy {
+  alias: string;
+  column: string;
+}
+
+// WhereNode represents the full WHERE predicate tree, including OR/NOT branches
+// that cannot be pushed down to individual scan calls.
+type WhereNode =
+  | { kind: "and"; parts: WhereNode[] }
+  | { kind: "or"; parts: WhereNode[] }
+  | { kind: "not"; inner: WhereNode }
+  | { kind: "filter"; alias: string; clause: ScanFilterClause };
+
 interface ParsedSelectQuery {
   bindings: TableBinding[];
   joins: ParsedJoin[];
   joinEdges: JoinCondition[];
   filters: LiteralFilter[];
+  postWhere?: WhereNode;
   selectAll: boolean;
   selectColumns: SelectColumn[];
+  aggregates?: ParsedAggregate[];
+  groupBy?: ParsedGroupBy[];
+  isAggregate: boolean;
   orderBy: OrderColumn[];
   limit?: number;
+  offset?: number;
+  distinct: boolean;
 }
 
 const { Parser } = nodeSqlParser as { Parser: new () => { astify: (sql: string) => unknown } };
@@ -104,6 +137,22 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
     }
   }
 
+  if (parsed.isAggregate) {
+    return executeAggregateQuery(parsed, input);
+  }
+
+  return executeScanQuery(parsed, input);
+}
+
+async function executeScanQuery<TContext>(
+  parsed: ParsedSelectQuery,
+  input: QueryInput<TContext>,
+): Promise<QueryRow[]> {
+  const rootBinding = parsed.bindings[0];
+  if (!rootBinding) {
+    throw new Error("SELECT queries must include a FROM clause.");
+  }
+
   const projectionByAlias = buildProjection(parsed, input.schema);
   const filtersByAlias = groupFiltersByAlias(parsed.filters);
   const executionOrder = buildExecutionOrder(parsed.bindings, parsed.joinEdges, filtersByAlias);
@@ -118,7 +167,7 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
     const dependencyFilters = buildDependencyFilters(alias, parsed.joinEdges, rowsByAlias);
     const localFilters = filtersByAlias.get(alias) ?? [];
 
-    if (dependencyFilters.some((filter) => filter.op === "in" && filter.values.length === 0)) {
+    if (dependencyFilters.some((filter) => filter.op === "in" && (filter as SetFilterClause).values.length === 0)) {
       rowsByAlias.set(alias, []);
       continue;
     }
@@ -127,8 +176,9 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
     const defaultMaxRows = tableBehavior.maxRows;
     const requestWhere: ScanFilterClause[] = [...localFilters, ...dependencyFilters];
 
+    const isSingleTable = parsed.bindings.length === 1;
     const canPushFinalSort =
-      parsed.bindings.length === 1 && parsed.orderBy.every((term) => term.alias === alias);
+      isSingleTable && parsed.orderBy.every((term) => term.alias === alias);
     const requestOrderBy: ScanOrderBy[] | undefined = canPushFinalSort
       ? parsed.orderBy.map((term) => ({
           column: term.column,
@@ -136,7 +186,7 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
         }))
       : undefined;
 
-    const canPushFinalLimit = parsed.bindings.length === 1;
+    const canPushFinalLimit = isSingleTable && !parsed.distinct && !parsed.postWhere;
     let requestLimit = canPushFinalLimit ? parsed.limit : undefined;
     if (requestLimit == null && defaultMaxRows != null) {
       requestLimit = defaultMaxRows;
@@ -146,6 +196,9 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
         `Requested limit ${requestLimit} exceeds maxRows ${defaultMaxRows} for table ${binding.table}`,
       );
     }
+
+    const canPushOffset = isSingleTable && !parsed.distinct && !parsed.postWhere;
+    const requestOffset = canPushOffset ? parsed.offset : undefined;
 
     const method = input.methods[binding.table];
     if (!method) {
@@ -171,6 +224,9 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
     if (requestLimit != null) {
       request.limit = requestLimit;
     }
+    if (requestOffset != null) {
+      request.offset = requestOffset;
+    }
 
     const rows = await runScan(method, request, input.context);
     rowsByAlias.set(alias, rows);
@@ -178,18 +234,265 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
 
   let joinedRows = initializeJoinedRows(rowsByAlias, rootBinding.alias);
   for (const join of parsed.joins) {
-    joinedRows = applyInnerJoin(joinedRows, join, rowsByAlias);
+    joinedRows =
+      join.join === "left"
+        ? applyLeftJoin(joinedRows, join, rowsByAlias)
+        : applyInnerJoin(joinedRows, join, rowsByAlias);
+  }
+
+  if (parsed.postWhere) {
+    const node = parsed.postWhere;
+    joinedRows = joinedRows.filter((bundle) => evalWhereNode(node, bundle));
   }
 
   if (parsed.orderBy.length > 0) {
     joinedRows = applyFinalSort(joinedRows, parsed.orderBy);
   }
 
-  if (parsed.limit != null && parsed.bindings.length > 1) {
-    joinedRows = joinedRows.slice(0, parsed.limit);
+  // For multi-table joins, DISTINCT, or complex WHERE, LIMIT/OFFSET must be applied
+  // in memory after all results are assembled. Single-table queries push them to the scan.
+  const needsPostSlice = parsed.bindings.length > 1 || parsed.distinct || Boolean(parsed.postWhere);
+  if (needsPostSlice) {
+    const start = parsed.offset ?? 0;
+    joinedRows =
+      parsed.limit != null
+        ? joinedRows.slice(start, start + parsed.limit)
+        : start > 0
+          ? joinedRows.slice(start)
+          : joinedRows;
   }
 
-  return projectResultRows(joinedRows, parsed);
+  let result = projectResultRows(joinedRows, parsed);
+
+  if (parsed.distinct) {
+    result = applyDistinct(result);
+  }
+
+  return result;
+}
+
+async function executeAggregateQuery<TContext>(
+  parsed: ParsedSelectQuery,
+  input: QueryInput<TContext>,
+): Promise<QueryRow[]> {
+  const aggregates = parsed.aggregates ?? [];
+  const groupBy = parsed.groupBy ?? [];
+  const rootBinding = parsed.bindings[0];
+  if (!rootBinding) {
+    throw new Error("SELECT queries must include a FROM clause.");
+  }
+
+  // For single-table queries, try to delegate to the aggregate method.
+  if (parsed.bindings.length === 1) {
+    const method = input.methods[rootBinding.table];
+    if (!method) {
+      throw new Error(`No table methods registered for table: ${rootBinding.table}`);
+    }
+
+    if (method.aggregate) {
+      const metrics: TableAggregateMetric[] = aggregates.map((agg) => {
+        const metric: TableAggregateMetric = { fn: agg.fn, as: agg.alias };
+        if (agg.column != null) {
+          metric.column = agg.column;
+        }
+        if (agg.distinct) {
+          metric.distinct = agg.distinct;
+        }
+        return metric;
+      });
+
+      const localFilters = parsed.filters
+        .filter((f) => f.alias === rootBinding.alias)
+        .map((f) => f.clause);
+
+      const aggRequest: TableAggregateRequest = {
+        table: rootBinding.table,
+        alias: rootBinding.alias,
+        metrics,
+      };
+      if (localFilters.length > 0) {
+        aggRequest.where = localFilters;
+      }
+      if (groupBy.length > 0) {
+        aggRequest.groupBy = groupBy.map((g) => g.column);
+      }
+      if (parsed.limit != null) {
+        aggRequest.limit = parsed.limit;
+      }
+
+      return method.aggregate(aggRequest, input.context);
+    }
+  }
+
+  // Fallback: scan (+ join if multi-table) and aggregate in memory.
+  const projectionByAlias = buildAggregateProjection(parsed, input.schema);
+  const filtersByAlias = groupFiltersByAlias(parsed.filters);
+  const executionOrder = buildExecutionOrder(parsed.bindings, parsed.joinEdges, filtersByAlias);
+  const rowsByAlias = new Map<string, QueryRow[]>();
+
+  for (const alias of executionOrder) {
+    const binding = parsed.bindings.find((b) => b.alias === alias);
+    if (!binding) {
+      throw new Error(`Unknown alias in execution order: ${alias}`);
+    }
+
+    const dependencyFilters = buildDependencyFilters(alias, parsed.joinEdges, rowsByAlias);
+    const localFilters = filtersByAlias.get(alias) ?? [];
+
+    if (dependencyFilters.some((f) => f.op === "in" && (f as SetFilterClause).values.length === 0)) {
+      rowsByAlias.set(alias, []);
+      continue;
+    }
+
+    const requestWhere: ScanFilterClause[] = [...localFilters, ...dependencyFilters];
+    const method = input.methods[binding.table];
+    if (!method) {
+      throw new Error(`No table methods registered for table: ${binding.table}`);
+    }
+
+    const projection = projectionByAlias.get(alias);
+    if (!projection) {
+      throw new Error(`Unable to resolve projection columns for alias: ${alias}`);
+    }
+
+    const request: TableScanRequest = {
+      table: binding.table,
+      alias,
+      select: [...projection],
+    };
+    if (requestWhere.length > 0) {
+      request.where = requestWhere;
+    }
+
+    const rows = await runScan(method, request, input.context);
+    rowsByAlias.set(alias, rows);
+  }
+
+  let joinedRows = initializeJoinedRows(rowsByAlias, rootBinding.alias);
+  for (const join of parsed.joins) {
+    joinedRows =
+      join.join === "left"
+        ? applyLeftJoin(joinedRows, join, rowsByAlias)
+        : applyInnerJoin(joinedRows, join, rowsByAlias);
+  }
+
+  if (parsed.postWhere) {
+    const node = parsed.postWhere;
+    joinedRows = joinedRows.filter((bundle) => evalWhereNode(node, bundle));
+  }
+
+  return applyInMemoryAggregation(joinedRows, parsed);
+}
+
+function applyInMemoryAggregation(
+  rows: Array<Record<string, QueryRow>>,
+  parsed: ParsedSelectQuery,
+): QueryRow[] {
+  const groupBy = parsed.groupBy ?? [];
+  const aggregates = parsed.aggregates ?? [];
+
+  // If no GROUP BY and no rows, return a single empty aggregate row (SQL semantics)
+  if (groupBy.length === 0 && rows.length === 0) {
+    const emptyRow: QueryRow = {};
+    for (const agg of aggregates) {
+      emptyRow[agg.alias] = agg.fn === "count" ? 0 : null;
+    }
+    return [emptyRow];
+  }
+
+  // Build groups
+  const groups = new Map<string, Array<Record<string, QueryRow>>>();
+  const groupKeyOrder: string[] = [];
+
+  if (groupBy.length === 0) {
+    // No GROUP BY: treat all rows as one group
+    groups.set("__all__", rows);
+    groupKeyOrder.push("__all__");
+  } else {
+    for (const bundle of rows) {
+      const keyParts = groupBy.map((g) => {
+        const val = bundle[g.alias]?.[g.column];
+        return val === null || val === undefined ? "\x1Enull" : String(val);
+      });
+      const key = keyParts.join("\x1E");
+
+      if (!groups.has(key)) {
+        groups.set(key, []);
+        groupKeyOrder.push(key);
+      }
+      groups.get(key)!.push(bundle);
+    }
+  }
+
+  const result: QueryRow[] = [];
+
+  for (const key of groupKeyOrder) {
+    const groupRows = groups.get(key) ?? [];
+    const outRow: QueryRow = {};
+
+    // Add GROUP BY columns
+    for (const g of groupBy) {
+      const val = groupRows[0]?.[g.alias]?.[g.column] ?? null;
+      const selectCol = parsed.selectColumns.find(
+        (c) => c.alias === g.alias && c.column === g.column,
+      );
+      outRow[selectCol?.output ?? g.column] = val;
+    }
+
+    // Compute aggregates
+    for (const agg of aggregates) {
+      outRow[agg.alias] = computeAggregate(agg, groupRows);
+    }
+
+    result.push(outRow);
+  }
+
+  if (parsed.limit != null) {
+    return result.slice(0, parsed.limit);
+  }
+
+  return result;
+}
+
+function computeAggregate(
+  agg: ParsedAggregate,
+  rows: Array<Record<string, QueryRow>>,
+): number | null {
+  if (agg.fn === "count") {
+    if (agg.column == null) {
+      return rows.length;
+    }
+    const values = rows
+      .map((b) => b[agg.tableAlias]?.[agg.column!])
+      .filter((v) => v !== null && v !== undefined);
+    if (agg.distinct) {
+      return new Set(values).size;
+    }
+    return values.length;
+  }
+
+  const values = rows
+    .map((b) => b[agg.tableAlias]?.[agg.column!])
+    .filter((v) => v !== null && v !== undefined) as number[];
+
+  const nums = agg.distinct ? [...new Set(values)] : values;
+
+  if (nums.length === 0) {
+    return null;
+  }
+
+  switch (agg.fn) {
+    case "sum":
+      return nums.reduce((a, b) => Number(a) + Number(b), 0);
+    case "avg":
+      return nums.reduce((a, b) => Number(a) + Number(b), 0) / nums.length;
+    case "min":
+      return Math.min(...nums.map(Number));
+    case "max":
+      return Math.max(...nums.map(Number));
+  }
+
+  return null;
 }
 
 async function runScan<TContext>(
@@ -197,7 +500,9 @@ async function runScan<TContext>(
   request: TableScanRequest,
   context: TContext,
 ): Promise<QueryRow[]> {
-  const dependencyFilters = request.where?.filter((clause) => clause.op === "in") ?? [];
+  const dependencyFilters = (request.where ?? []).filter(
+    (clause) => clause.op === "in",
+  ) as SetFilterClause[];
 
   if (
     dependencyFilters.length === 1 &&
@@ -208,19 +513,12 @@ async function runScan<TContext>(
     request.limit == null
   ) {
     const lookup = dependencyFilters[0];
-    if (!lookup) {
-      return method.scan(request, context);
-    }
-
     const nonDependencyFilters = request.where?.filter((clause) => clause !== lookup);
-    const lookupRequest = {
+    const fullLookupRequest: Parameters<NonNullable<typeof method.lookup>>[0] = {
       table: request.table,
       key: lookup.column,
       values: lookup.values,
       select: request.select,
-    } as const;
-    const fullLookupRequest: Parameters<NonNullable<typeof method.lookup>>[0] = {
-      ...lookupRequest,
     };
     if (request.alias) {
       fullLookupRequest.alias = request.alias;
@@ -247,6 +545,8 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
     columns?: unknown;
     orderby?: unknown;
     limit?: unknown;
+    distinct?: unknown;
+    groupby?: unknown;
   };
 
   if (ast.type !== "select") {
@@ -286,10 +586,16 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
   for (let i = 1; i < rawFrom.length; i += 1) {
     const entry = rawFrom[i] as { join?: unknown; on?: unknown; as?: unknown; table?: unknown };
     const joinType = typeof entry.join === "string" ? entry.join.toUpperCase() : "";
-    if (joinType !== "INNER JOIN" && joinType !== "JOIN") {
+    if (
+      joinType !== "INNER JOIN" &&
+      joinType !== "JOIN" &&
+      joinType !== "LEFT JOIN" &&
+      joinType !== "LEFT OUTER JOIN"
+    ) {
       throw new Error(`Unsupported join type: ${String(entry.join ?? "unknown")}`);
     }
 
+    const isLeft = joinType === "LEFT JOIN" || joinType === "LEFT OUTER JOIN";
     const parsedJoin = parseJoinCondition(entry.on);
     if (!aliasToTable.has(parsedJoin.leftAlias) || !aliasToTable.has(parsedJoin.rightAlias)) {
       throw new Error("JOIN condition references an unknown table alias.");
@@ -299,89 +605,29 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
       typeof entry.as === "string" && entry.as.length > 0 ? entry.as : String(entry.table);
     joins.push({
       alias: joinedAlias,
-      join: "inner",
+      join: isLeft ? "left" : "inner",
       condition: parsedJoin,
     });
-    joinEdges.push(parsedJoin);
+    // Only inner join conditions become dependency edges for scan ordering
+    if (!isLeft) {
+      joinEdges.push(parsedJoin);
+    }
   }
 
-  const whereParts = flattenAndConditions(ast.where);
+  // Parse WHERE into a rich predicate tree that supports OR/NOT/LIKE/etc.
+  const whereNode = ast.where ? parseWhereNode(ast.where) : null;
+
   const filters: LiteralFilter[] = [];
-
-  for (const part of whereParts) {
-    if (!part || typeof part !== "object") {
-      throw new Error("Unsupported WHERE clause.");
-    }
-
-    const binary = part as { type?: unknown; operator?: unknown; left?: unknown; right?: unknown };
-    if (binary.type !== "binary_expr") {
-      throw new Error("Only binary predicates are supported in WHERE clauses.");
-    }
-
-    const operator = normalizeBinaryOperator(binary.operator);
-    if (operator === "in") {
-      const colRef = toColumnRef(binary.left);
-      if (!colRef) {
-        throw new Error("IN predicates must use a column on the left-hand side.");
-      }
-
-      const values = parseExpressionList(binary.right);
-      filters.push({
-        alias: colRef.alias,
-        clause: {
-          op: "in",
-          column: colRef.column,
-          values,
-        },
-      });
-      continue;
-    }
-
-    const leftCol = toColumnRef(binary.left);
-    const rightCol = toColumnRef(binary.right);
-
-    if (operator === "eq" && leftCol && rightCol) {
-      joinEdges.push({
-        leftAlias: leftCol.alias,
-        leftColumn: leftCol.column,
-        rightAlias: rightCol.alias,
-        rightColumn: rightCol.column,
-      });
-      continue;
-    }
-
-    const leftLiteral = parseLiteral(binary.left);
-    const rightLiteral = parseLiteral(binary.right);
-
-    if (leftCol && rightLiteral !== undefined) {
-      filters.push({
-        alias: leftCol.alias,
-        clause: {
-          op: operator,
-          column: leftCol.column,
-          value: rightLiteral,
-        },
-      });
-      continue;
-    }
-
-    if (rightCol && leftLiteral !== undefined) {
-      filters.push({
-        alias: rightCol.alias,
-        clause: {
-          op: invertOperator(operator),
-          column: rightCol.column,
-          value: leftLiteral,
-        },
-      });
-      continue;
-    }
-
-    throw new Error(
-      "WHERE predicates must compare columns to literals (or column equality joins).",
-    );
+  if (whereNode) {
+    extractPushdownFilters(whereNode, filters);
   }
 
+  let postWhere: WhereNode | undefined;
+  if (whereNode && hasComplexPredicates(whereNode)) {
+    postWhere = whereNode;
+  }
+
+  // Parse SELECT items: column refs and aggregate functions
   const selectColumnsRaw: unknown = ast.columns;
   const selectAll =
     selectColumnsRaw === "*" ||
@@ -390,6 +636,9 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
       isStarColumn(selectColumnsRaw[0] as { expr?: unknown }));
 
   const selectColumns: SelectColumn[] = [];
+  const parsedAggregates: ParsedAggregate[] = [];
+  let isAggregate = false;
+
   if (!selectAll) {
     if (!Array.isArray(selectColumnsRaw)) {
       throw new Error("Unsupported SELECT clause.");
@@ -401,9 +650,40 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
       }
 
       const expr = (item as { expr?: unknown }).expr;
+      const asAlias = (item as { as?: unknown }).as;
+
+      // Check for aggregate function (aggr_func)
+      const aggExpr = expr as { type?: unknown; name?: unknown; args?: unknown; over?: unknown };
+      if (aggExpr?.type === "aggr_func") {
+        if (aggExpr.over != null) {
+          throw new Error("Window functions (OVER) are not yet supported.");
+        }
+        const fn = parseAggregateFunction(aggExpr.name);
+        const outputAlias =
+          typeof asAlias === "string" && asAlias.length > 0 ? asAlias : fn;
+        const argExpr = (aggExpr.args as { expr?: unknown })?.expr;
+        const argRef = toColumnRef(argExpr);
+        const isDistinct = Boolean((aggExpr as { distinct?: unknown }).distinct);
+
+        const aggEntry: ParsedAggregate = {
+          fn,
+          alias: outputAlias,
+          tableAlias: argRef?.alias ?? bindings[0]?.alias ?? "",
+          distinct: isDistinct,
+        };
+        if (argRef?.column != null) {
+          aggEntry.column = argRef.column;
+        }
+        parsedAggregates.push(aggEntry);
+        isAggregate = true;
+        continue;
+      }
+
       const colRef = toColumnRef(expr);
       if (!colRef) {
-        throw new Error("Only direct column references are currently supported in SELECT.");
+        throw new Error(
+          "Only direct column references and aggregate functions are supported in SELECT.",
+        );
       }
 
       const as = (item as { as?: unknown }).as;
@@ -419,6 +699,28 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
       });
     }
   }
+
+  // Parse GROUP BY clause
+  const groupByRaw = ast.groupby as { columns?: unknown[] } | null;
+  const parsedGroupBy: ParsedGroupBy[] = [];
+  if (groupByRaw?.columns && Array.isArray(groupByRaw.columns)) {
+    for (const col of groupByRaw.columns) {
+      const ref = toColumnRef(col);
+      if (!ref) {
+        throw new Error("Only column references are supported in GROUP BY.");
+      }
+      parsedGroupBy.push({ alias: ref.alias, column: ref.column });
+    }
+    if (parsedGroupBy.length > 0) {
+      isAggregate = true;
+    }
+  }
+
+  if (isAggregate && selectAll) {
+    throw new Error("SELECT * is not supported with GROUP BY or aggregate functions.");
+  }
+
+  const distinct = ast.distinct === "DISTINCT";
 
   const orderBy: OrderColumn[] = [];
   if (Array.isArray(ast.orderby)) {
@@ -438,6 +740,7 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
   }
 
   let limit: number | undefined;
+  let offset: number | undefined;
   const rawLimit = ast.limit as { value?: Array<{ value?: unknown }> } | null;
   if (rawLimit && Array.isArray(rawLimit.value) && rawLimit.value.length > 0) {
     const first = rawLimit.value[0]?.value;
@@ -452,10 +755,22 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
     if (limit == null) {
       throw new Error("Unable to parse LIMIT value.");
     }
+
+    // OFFSET is the second entry in the limit value array (node-sql-parser format)
+    if (rawLimit.value.length > 1) {
+      const second = rawLimit.value[1]?.value;
+      if (typeof second === "number") {
+        offset = second;
+      } else if (typeof second === "string") {
+        const parsed = Number(second);
+        if (Number.isFinite(parsed)) {
+          offset = parsed;
+        }
+      }
+    }
   }
 
   if (selectAll && bindings.length > 1) {
-    // Ambiguous wildcard expansion is easy to misuse across joins.
     throw new Error("SELECT * is only supported for single-table queries.");
   }
 
@@ -466,14 +781,346 @@ function parseSelectAst(sql: string, _schema: SchemaDefinition): ParsedSelectQue
     filters,
     selectAll,
     selectColumns,
+    isAggregate,
     orderBy,
+    distinct,
   };
+  if (postWhere) {
+    parsedQuery.postWhere = postWhere;
+  }
+  if (parsedAggregates.length > 0) {
+    parsedQuery.aggregates = parsedAggregates;
+  }
+  if (parsedGroupBy.length > 0) {
+    parsedQuery.groupBy = parsedGroupBy;
+  }
   if (limit != null) {
     parsedQuery.limit = limit;
+  }
+  if (offset != null) {
+    parsedQuery.offset = offset;
   }
 
   return parsedQuery;
 }
+
+// ---------------------------------------------------------------------------
+// WHERE tree parsing
+// ---------------------------------------------------------------------------
+
+function parseWhereNode(raw: unknown): WhereNode {
+  const expr = raw as {
+    type?: unknown;
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+  };
+
+  if (!expr || typeof expr !== "object") {
+    throw new Error("Unsupported WHERE clause.");
+  }
+
+  if (expr.type === "binary_expr") {
+    const op = String(expr.operator ?? "").toUpperCase();
+
+    if (op === "AND") {
+      const leftNode = parseWhereNode(expr.left);
+      const rightNode = parseWhereNode(expr.right);
+      return flattenAnd([leftNode, rightNode]);
+    }
+
+    if (op === "OR") {
+      const leftNode = parseWhereNode(expr.left);
+      const rightNode = parseWhereNode(expr.right);
+      return flattenOr([leftNode, rightNode]);
+    }
+
+    if (op === "IS") {
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("IS NULL must have a column reference on the left-hand side.");
+      }
+      const nullClause: NullFilterClause = { op: "is_null", column: colRef.column };
+      return { kind: "filter", alias: colRef.alias, clause: nullClause };
+    }
+
+    if (op === "IS NOT") {
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("IS NOT NULL must have a column reference on the left-hand side.");
+      }
+      const nullClause: NullFilterClause = { op: "is_not_null", column: colRef.column };
+      return { kind: "filter", alias: colRef.alias, clause: nullClause };
+    }
+
+    if (op === "IN") {
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("IN predicates must use a column on the left-hand side.");
+      }
+      const values = parseExpressionList(expr.right);
+      const clause: SetFilterClause = { op: "in", column: colRef.column, values };
+      return { kind: "filter", alias: colRef.alias, clause };
+    }
+
+    if (op === "NOT IN") {
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("NOT IN predicates must use a column on the left-hand side.");
+      }
+      const values = parseExpressionList(expr.right);
+      const clause: SetFilterClause = { op: "not_in", column: colRef.column, values };
+      return { kind: "filter", alias: colRef.alias, clause };
+    }
+
+    if (op === "LIKE") {
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("LIKE predicates must use a column on the left-hand side.");
+      }
+      const pattern = parseLiteral(expr.right);
+      if (typeof pattern !== "string") {
+        throw new Error("LIKE pattern must be a string literal.");
+      }
+      const clause: ScalarFilterClause = { op: "like", column: colRef.column, value: pattern };
+      return { kind: "filter", alias: colRef.alias, clause };
+    }
+
+    if (op === "NOT LIKE") {
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("NOT LIKE predicates must use a column on the left-hand side.");
+      }
+      const pattern = parseLiteral(expr.right);
+      if (typeof pattern !== "string") {
+        throw new Error("NOT LIKE pattern must be a string literal.");
+      }
+      const clause: ScalarFilterClause = { op: "not_like", column: colRef.column, value: pattern };
+      return { kind: "filter", alias: colRef.alias, clause };
+    }
+
+    if (op === "BETWEEN") {
+      // Desugar to col >= low AND col <= high
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("BETWEEN must have a column reference on the left-hand side.");
+      }
+      const [low, high] = parseBetweenBounds(expr.right);
+      const gteClause: ScalarFilterClause = { op: "gte", column: colRef.column, value: low };
+      const lteClause: ScalarFilterClause = { op: "lte", column: colRef.column, value: high };
+      return {
+        kind: "and",
+        parts: [
+          { kind: "filter", alias: colRef.alias, clause: gteClause },
+          { kind: "filter", alias: colRef.alias, clause: lteClause },
+        ],
+      };
+    }
+
+    if (op === "NOT BETWEEN") {
+      // Desugar to col < low OR col > high
+      const colRef = toColumnRef(expr.left);
+      if (!colRef) {
+        throw new Error("NOT BETWEEN must have a column reference on the left-hand side.");
+      }
+      const [low, high] = parseBetweenBounds(expr.right);
+      const ltClause: ScalarFilterClause = { op: "lt", column: colRef.column, value: low };
+      const gtClause: ScalarFilterClause = { op: "gt", column: colRef.column, value: high };
+      return {
+        kind: "or",
+        parts: [
+          { kind: "filter", alias: colRef.alias, clause: ltClause },
+          { kind: "filter", alias: colRef.alias, clause: gtClause },
+        ],
+      };
+    }
+
+    // Standard comparison operators
+    const normalizedOp = normalizeBinaryOperator(expr.operator);
+
+    const leftCol = toColumnRef(expr.left);
+    const rightCol = toColumnRef(expr.right);
+
+    // Column = Column from different tables: join edge (handled separately; return pass-through)
+    if (normalizedOp === "eq" && leftCol && rightCol) {
+      return { kind: "and", parts: [] };
+    }
+
+    const leftLiteral = parseLiteral(expr.left);
+    const rightLiteral = parseLiteral(expr.right);
+
+    if (leftCol && rightLiteral !== undefined) {
+      const clause: ScalarFilterClause = {
+        op: normalizedOp as ScalarFilterClause["op"],
+        column: leftCol.column,
+        value: rightLiteral,
+      };
+      return { kind: "filter", alias: leftCol.alias, clause };
+    }
+
+    if (rightCol && leftLiteral !== undefined) {
+      const inverted = invertOperator(
+        normalizedOp as Exclude<ScalarFilterClause["op"], "like" | "not_like">,
+      );
+      const clause: ScalarFilterClause = {
+        op: inverted,
+        column: rightCol.column,
+        value: leftLiteral,
+      };
+      return { kind: "filter", alias: rightCol.alias, clause };
+    }
+
+    throw new Error(
+      "WHERE predicates must compare columns to literals (or column equality joins).",
+    );
+  }
+
+  throw new Error("Unsupported WHERE clause type.");
+}
+
+function flattenAnd(parts: WhereNode[]): WhereNode {
+  const flattened: WhereNode[] = [];
+  for (const part of parts) {
+    if (part.kind === "and") {
+      flattened.push(...part.parts);
+    } else {
+      flattened.push(part);
+    }
+  }
+  if (flattened.length === 0) {
+    return { kind: "and", parts: [] };
+  }
+  if (flattened.length === 1) {
+    return flattened[0]!;
+  }
+  return { kind: "and", parts: flattened };
+}
+
+function flattenOr(parts: WhereNode[]): WhereNode {
+  const flattened: WhereNode[] = [];
+  for (const part of parts) {
+    if (part.kind === "or") {
+      flattened.push(...part.parts);
+    } else {
+      flattened.push(part);
+    }
+  }
+  if (flattened.length === 1) {
+    return flattened[0]!;
+  }
+  return { kind: "or", parts: flattened };
+}
+
+/**
+ * Extracts pushdownable (simple, non-OR, non-NOT) filters from a WhereNode.
+ * Only AND-connected leaf filters are pushed to the scan method.
+ */
+function extractPushdownFilters(node: WhereNode, out: LiteralFilter[]): void {
+  switch (node.kind) {
+    case "filter":
+      out.push({ alias: node.alias, clause: node.clause });
+      break;
+    case "and":
+      for (const part of node.parts) {
+        if (!hasComplexPredicates(part)) {
+          extractPushdownFilters(part, out);
+        }
+      }
+      break;
+    // "or" and "not" are not pushed down to individual scan calls
+  }
+}
+
+/**
+ * Returns true if the WhereNode contains OR or NOT predicates, requiring
+ * post-join evaluation that cannot be pushed down to individual scans.
+ */
+function hasComplexPredicates(node: WhereNode): boolean {
+  switch (node.kind) {
+    case "filter":
+      return false;
+    case "and":
+      return node.parts.some(hasComplexPredicates);
+    case "or":
+      return true;
+    case "not":
+      return true;
+  }
+}
+
+/**
+ * Evaluates a WhereNode against a joined row bundle.
+ * Each bundle maps table alias to the row returned by that table's scan.
+ */
+function evalWhereNode(node: WhereNode, bundle: Record<string, QueryRow>): boolean {
+  switch (node.kind) {
+    case "and":
+      return node.parts.every((p) => evalWhereNode(p, bundle));
+    case "or":
+      return node.parts.some((p) => evalWhereNode(p, bundle));
+    case "not":
+      return !evalWhereNode(node.inner, bundle);
+    case "filter": {
+      const row = bundle[node.alias] ?? {};
+      return evalFilterOnRow(node.clause, row);
+    }
+  }
+}
+
+function evalFilterOnRow(clause: ScanFilterClause, row: QueryRow): boolean {
+  const val = row[clause.column];
+
+  switch (clause.op) {
+    case "eq":
+      return val === (clause as ScalarFilterClause).value;
+    case "neq":
+      return val !== (clause as ScalarFilterClause).value;
+    case "gt":
+      return Number(val) > Number((clause as ScalarFilterClause).value);
+    case "gte":
+      return Number(val) >= Number((clause as ScalarFilterClause).value);
+    case "lt":
+      return Number(val) < Number((clause as ScalarFilterClause).value);
+    case "lte":
+      return Number(val) <= Number((clause as ScalarFilterClause).value);
+    case "in": {
+      const set = new Set((clause as SetFilterClause).values);
+      return set.has(val);
+    }
+    case "not_in": {
+      const set = new Set((clause as SetFilterClause).values);
+      return !set.has(val);
+    }
+    case "is_null":
+      return val === null || val === undefined;
+    case "is_not_null":
+      return val !== null && val !== undefined;
+    case "like":
+      return evalLikePattern(
+        String(val ?? ""),
+        String((clause as ScalarFilterClause).value ?? ""),
+      );
+    case "not_like":
+      return !evalLikePattern(
+        String(val ?? ""),
+        String((clause as ScalarFilterClause).value ?? ""),
+      );
+  }
+}
+
+/**
+ * Evaluates a SQL LIKE pattern against a value.
+ * % matches any sequence of characters; _ matches any single character.
+ */
+function evalLikePattern(value: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regexStr = escaped.replace(/%/g, ".*").replace(/_/g, ".");
+  return new RegExp(`^${regexStr}$`).test(value);
+}
+
+// ---------------------------------------------------------------------------
+// Projection helpers
+// ---------------------------------------------------------------------------
 
 function buildProjection(
   parsed: ParsedSelectQuery,
@@ -505,8 +1152,19 @@ function buildProjection(
     projections.get(join.rightAlias)?.add(join.rightColumn);
   }
 
+  for (const join of parsed.joins) {
+    if (join.join === "left") {
+      projections.get(join.condition.leftAlias)?.add(join.condition.leftColumn);
+      projections.get(join.condition.rightAlias)?.add(join.condition.rightColumn);
+    }
+  }
+
   for (const filter of parsed.filters) {
     projections.get(filter.alias)?.add(filter.clause.column);
+  }
+
+  if (parsed.postWhere) {
+    collectWhereNodeColumns(parsed.postWhere, projections);
   }
 
   for (const term of parsed.orderBy) {
@@ -527,6 +1185,70 @@ function buildProjection(
   }
 
   return projections;
+}
+
+function buildAggregateProjection(
+  parsed: ParsedSelectQuery,
+  schema: SchemaDefinition,
+): Map<string, Set<string>> {
+  const projections = new Map<string, Set<string>>();
+  for (const binding of parsed.bindings) {
+    projections.set(binding.alias, new Set());
+  }
+
+  for (const g of parsed.groupBy ?? []) {
+    projections.get(g.alias)?.add(g.column);
+  }
+
+  for (const agg of parsed.aggregates ?? []) {
+    if (agg.column != null) {
+      projections.get(agg.tableAlias)?.add(agg.column);
+    }
+  }
+
+  for (const filter of parsed.filters) {
+    projections.get(filter.alias)?.add(filter.clause.column);
+  }
+
+  for (const join of parsed.joinEdges) {
+    projections.get(join.leftAlias)?.add(join.leftColumn);
+    projections.get(join.rightAlias)?.add(join.rightColumn);
+  }
+
+  for (const [alias, cols] of projections) {
+    if (cols.size === 0) {
+      const binding = parsed.bindings.find((candidate) => candidate.alias === alias);
+      if (binding) {
+        const firstColumn = Object.keys(getTable(schema, binding.table).columns)[0];
+        if (!firstColumn) {
+          throw new Error(`Table ${binding.table} has no columns.`);
+        }
+        cols.add(firstColumn);
+      }
+    }
+  }
+
+  return projections;
+}
+
+function collectWhereNodeColumns(
+  node: WhereNode,
+  projections: Map<string, Set<string>>,
+): void {
+  switch (node.kind) {
+    case "filter":
+      projections.get(node.alias)?.add(node.clause.column);
+      break;
+    case "and":
+    case "or":
+      for (const part of node.parts) {
+        collectWhereNodeColumns(part, projections);
+      }
+      break;
+    case "not":
+      collectWhereNodeColumns(node.inner, projections);
+      break;
+  }
 }
 
 function groupFiltersByAlias(filters: LiteralFilter[]): Map<string, ScanFilterClause[]> {
@@ -668,6 +1390,49 @@ function applyInnerJoin(
   return joined;
 }
 
+function applyLeftJoin(
+  existing: Array<Record<string, QueryRow>>,
+  join: ParsedJoin,
+  rowsByAlias: Map<string, QueryRow[]>,
+): Array<Record<string, QueryRow>> {
+  const rightRows = rowsByAlias.get(join.alias) ?? [];
+  const isJoinAliasLeft = join.condition.leftAlias === join.alias;
+  const joinAliasColumn = isJoinAliasLeft ? join.condition.leftColumn : join.condition.rightColumn;
+  const existingAlias = isJoinAliasLeft ? join.condition.rightAlias : join.condition.leftAlias;
+  const existingColumn = isJoinAliasLeft ? join.condition.rightColumn : join.condition.leftColumn;
+
+  const index = new Map<unknown, QueryRow[]>();
+  for (const row of rightRows) {
+    const key = row[joinAliasColumn];
+    const bucket = index.get(key) ?? [];
+    bucket.push(row);
+    index.set(key, bucket);
+  }
+
+  const joined: Array<Record<string, QueryRow>> = [];
+  for (const bundle of existing) {
+    const leftRow = bundle[existingAlias];
+    if (!leftRow) {
+      joined.push({ ...bundle, [join.alias]: {} });
+      continue;
+    }
+
+    const key = leftRow[existingColumn];
+    const matches = index.get(key) ?? [];
+
+    if (matches.length === 0) {
+      // Left join: preserve the left row even when there is no right-side match
+      joined.push({ ...bundle, [join.alias]: {} });
+    } else {
+      for (const match of matches) {
+        joined.push({ ...bundle, [join.alias]: match });
+      }
+    }
+  }
+
+  return joined;
+}
+
 function applyFinalSort(
   rows: Array<Record<string, QueryRow>>,
   orderBy: OrderColumn[],
@@ -723,11 +1488,31 @@ function projectResultRows(
   return rows.map((bundle) => {
     const out: QueryRow = {};
     for (const item of parsed.selectColumns) {
-      out[item.output] = bundle[item.alias]?.[item.column] ?? null;
+      const rowVal = bundle[item.alias]?.[item.column];
+      out[item.output] = rowVal !== undefined ? rowVal : null;
     }
     return out;
   });
 }
+
+function applyDistinct(rows: QueryRow[]): QueryRow[] {
+  const seen = new Set<string>();
+  const out: QueryRow[] = [];
+
+  for (const row of rows) {
+    const key = JSON.stringify(row, (_, v) => (v === undefined ? null : v));
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(row);
+    }
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// SQL AST parsing helpers
+// ---------------------------------------------------------------------------
 
 function parseJoinCondition(raw: unknown): JoinCondition {
   const expr = raw as {
@@ -755,30 +1540,7 @@ function parseJoinCondition(raw: unknown): JoinCondition {
   };
 }
 
-function flattenAndConditions(where: unknown): unknown[] {
-  if (!where) {
-    return [];
-  }
-
-  const expr = where as {
-    type?: unknown;
-    operator?: unknown;
-    left?: unknown;
-    right?: unknown;
-  };
-
-  if (expr.type === "binary_expr" && expr.operator === "AND") {
-    return [...flattenAndConditions(expr.left), ...flattenAndConditions(expr.right)];
-  }
-
-  if (expr.type === "binary_expr" && expr.operator === "OR") {
-    throw new Error("OR predicates are not yet supported.");
-  }
-
-  return [where];
-}
-
-function normalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"], never> {
+function normalizeBinaryOperator(raw: unknown): string {
   switch (raw) {
     case "=":
       return "eq";
@@ -793,16 +1555,14 @@ function normalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"], 
       return "lt";
     case "<=":
       return "lte";
-    case "IN":
-      return "in";
     default:
       throw new Error(`Unsupported operator: ${String(raw)}`);
   }
 }
 
 function invertOperator(
-  op: Exclude<ScanFilterClause["op"], "in">,
-): Exclude<ScanFilterClause["op"], "in"> {
+  op: Exclude<ScalarFilterClause["op"], "like" | "not_like">,
+): Exclude<ScalarFilterClause["op"], "like" | "not_like"> {
   switch (op) {
     case "eq":
       return "eq";
@@ -886,6 +1646,37 @@ function parseExpressionList(raw: unknown): unknown[] {
   return values;
 }
 
+function parseBetweenBounds(raw: unknown): [unknown, unknown] {
+  const expr = raw as { type?: unknown; value?: unknown };
+  if (expr?.type !== "expr_list" || !Array.isArray(expr.value) || expr.value.length < 2) {
+    throw new Error("BETWEEN requires two bound values.");
+  }
+  const low = parseLiteral(expr.value[0]);
+  const high = parseLiteral(expr.value[1]);
+  if (low === undefined || high === undefined) {
+    throw new Error("BETWEEN bounds must be literal values.");
+  }
+  return [low, high];
+}
+
+function parseAggregateFunction(raw: unknown): AggregateFunction {
+  const name = String(raw ?? "").toUpperCase();
+  switch (name) {
+    case "COUNT":
+      return "count";
+    case "SUM":
+      return "sum";
+    case "AVG":
+      return "avg";
+    case "MIN":
+      return "min";
+    case "MAX":
+      return "max";
+    default:
+      throw new Error(`Unsupported aggregate function: ${name}`);
+  }
+}
+
 function uniqueJoinEdges(edges: JoinCondition[]): JoinCondition[] {
   const seen = new Set<string>();
   const out: JoinCondition[] = [];
@@ -952,7 +1743,8 @@ function dedupeInClauses(clauses: ScanFilterClause[]): ScanFilterClause[] {
       continue;
     }
 
-    const key = `${clause.column}:${JSON.stringify(clause.values)}`;
+    const setClause = clause as SetFilterClause;
+    const key = `${setClause.column}:${JSON.stringify(setClause.values)}`;
     if (seen.has(key)) {
       continue;
     }

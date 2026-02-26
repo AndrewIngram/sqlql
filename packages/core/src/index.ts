@@ -60,7 +60,19 @@ export function resolveTableQueryBehavior(
   };
 }
 
-export type ScanFilterOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+export type ScanFilterOperator =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "in"
+  | "not_in"
+  | "is_null"
+  | "is_not_null"
+  | "like"
+  | "not_like";
 
 export interface FilterClauseBase {
   column: string;
@@ -68,16 +80,20 @@ export interface FilterClauseBase {
 }
 
 export interface ScalarFilterClause extends FilterClauseBase {
-  op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte";
+  op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "like" | "not_like";
   value: unknown;
 }
 
 export interface SetFilterClause extends FilterClauseBase {
-  op: "in";
+  op: "in" | "not_in";
   values: unknown[];
 }
 
-export type ScanFilterClause = ScalarFilterClause | SetFilterClause;
+export interface NullFilterClause extends FilterClauseBase {
+  op: "is_null" | "is_not_null";
+}
+
+export type ScanFilterClause = ScalarFilterClause | SetFilterClause | NullFilterClause;
 
 export interface ScanOrderBy {
   column: string;
