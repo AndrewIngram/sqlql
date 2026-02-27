@@ -49,7 +49,7 @@ const schema = defineSchema({
   },
 });
 
-const methods = defineTableMethods({
+const methods = defineTableMethods(schema, {
   orders: {
     async scan(request, ctx) {
       return [];
@@ -88,3 +88,9 @@ const rows = await query({
 - Final join/order/limit/projection are applied after scan steps.
 
 This gives Grafast-like dependency flow while keeping plans invisible to consumers.
+
+## Roadmap
+
+For incremental SQL standards support, see:
+
+- `docs/sql-standards-roadmap.md`

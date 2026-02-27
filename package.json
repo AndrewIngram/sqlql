@@ -1,22 +1,54 @@
 {
   "name": "sqlql",
-  "version": "0.0.0",
-  "private": true,
-  "description": "SQL facade planning library monorepo",
+  "version": "0.2.0",
+  "description": "SQL facade runtime with schema + table methods + SQL query execution",
+  "homepage": "https://github.com/AndrewIngram/sqlql#readme",
+  "bugs": {
+    "url": "https://github.com/AndrewIngram/sqlql/issues"
+  },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewIngram/sqlql.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "pnpm -r --if-present run build",
-    "clean": "pnpm -r --if-present run clean",
-    "typecheck": "pnpm -r --if-present run typecheck",
+    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle",
+    "clean": "rm -rf dist examples/basic/dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
     "fmt": "oxfmt",
-    "fmt:check": "oxfmt --check"
+    "fmt:check": "oxfmt --check",
+    "example:build": "pnpm --dir examples/basic build",
+    "example:start": "pnpm --dir examples/basic start",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "node-sql-parser": "^5.3.12"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "better-sqlite3": "^12.6.2",
     "oxfmt": "latest",
     "oxlint": "latest",
     "tsdown": "latest",

@@ -11,26 +11,81 @@ You define:
 
 Then users write SQL queries, and `sqlql` parses and executes them by calling your methods.
 
-## Why this exists
+## SQL capabilities (v0.1.x)
 
-- Keep SQL as the user-facing query language.
-- Keep backend details inside typed table methods.
-- Support dependency-aware execution across joins (downstream scans get `IN (...)` filters from upstream results).
+Parser policy:
+
+- single parser mode via `node-sql-parser` default dialect
+- no parser fallback/workaround paths
+
+Supported:
+
+- `SELECT` queries
+- `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, and `FULL JOIN`
+- boolean `WHERE` predicates (`AND`, `OR`, `NOT`)
+- `IN`, `IS NULL`, `IS NOT NULL`
+- aggregates (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) and `HAVING`
+- `SELECT DISTINCT`
+- `UNION ALL`, `UNION`, `INTERSECT`, and `EXCEPT`
+- uncorrelated subqueries (`IN (SELECT ...)`, `EXISTS`, scalar subqueries)
+- non-recursive CTEs (`WITH ...`)
+
+Not yet supported:
+
+- write statements (`INSERT`, `UPDATE`, `DELETE`)
+- recursive CTEs
+- correlated subqueries
+- subqueries in `FROM`
+
+## Why
+
+One core motivation is AI tooling.
+
+If you are building tools (for example with the AI SDK) that accept SQL as input, directly exposing your production database is usually a bad fit: security, tenancy boundaries, query cost, and brittle coupling all become immediate risks.
+
+`sqlql` gives you a middle layer:
+
+- expose only an allowlisted logical schema
+- map table access to domain-aware methods (`scan`, `lookup`, `aggregate`)
+- keep full control over what data can be queried and how it is fetched
+
+That means you keep the ergonomic upside of SQL for agents and developers, without requiring direct DB connectivity from the tool runtime.
+
+Security model:
+
+- `sqlql` does not provide authorization or tenancy guarantees by itself.
+- The underlying domain methods (`scan`, `lookup`, `aggregate`) are responsible for enforcing access control and data-security constraints.
+- `sqlql` can help with query-shape guardrails, but security guarantees must come from your domain/storage layer.
+
+Current explicit non-goals:
+
+- write statements (`INSERT`, `UPDATE`, `DELETE`)
+- recursive CTEs
+- correlated / `FROM` subqueries
+
+Performance philosophy:
+
+- `sqlql` should be reasonably efficient and avoid obvious over-fetching.
+- It should use pragmatic optimizations (projection pushdown, filter pushdown, lookup batching, aggregate routing) when available.
+- It is not trying to be a full database or a cost-based optimizer.
+- Correctness, safety, and predictable behavior are prioritized over aggressive optimization.
 
 ## Install
-
-For consumers, install a single package:
 
 ```bash
 pnpm add sqlql
 ```
 
-This monorepo contains internal implementation packages, but consumers should install only `sqlql`.
-
 ## Quick start
 
 ```ts
-import { defineSchema, defineTableMethods, query } from "sqlql";
+import {
+  createArrayTableMethods,
+  defineSchema,
+  defineTableMethods,
+  query,
+  type QueryRow,
+} from "sqlql";
 
 const schema = defineSchema({
   tables: {
@@ -51,17 +106,14 @@ const schema = defineSchema({
   },
 });
 
-const methods = defineTableMethods({
-  orders: {
-    async scan(req, ctx) {
-      return []; // implement with ORM/service/files/etc.
-    },
-  },
-  users: {
-    async scan(req, ctx) {
-      return [];
-    },
-  },
+const tableData = {
+  orders: [] as QueryRow<typeof schema, "orders">[],
+  users: [] as QueryRow<typeof schema, "users">[],
+};
+
+const methods = defineTableMethods(schema, {
+  orders: createArrayTableMethods(tableData.orders),
+  users: createArrayTableMethods(tableData.users),
 });
 
 const rows = await query({
@@ -78,15 +130,24 @@ const rows = await query({
 });
 ```
 
-## DDL generation
+`createArrayTableMethods(...)` is useful for demos/tests where each table is a JSON-like object array.
 
-You can print SQL DDL from the schema:
+## DDL output
 
 ```ts
 import { toSqlDDL } from "sqlql";
 
 console.log(toSqlDDL(schema, { ifNotExists: true }));
 ```
+
+## Project structure
+
+- `src/schema.ts`: schema and table method contracts
+- `src/parser.ts`: SQL parser adapter (`node-sql-parser`, single mode, no fallback)
+- `src/query.ts`: SQL parsing + query execution
+- `src/planning.ts`: planning model types
+- `src/index.ts`: package entrypoint
+- `docs/sql-standards-roadmap.md`: incremental SQL support plan
 
 ## Local development
 
@@ -100,6 +161,12 @@ pnpm typecheck
 Run the example:
 
 ```bash
-pnpm --filter @sqlql/example-basic build
-pnpm --filter @sqlql/example-basic start
+pnpm example:build
+pnpm example:start
+```
+
+## Publish
+
+```bash
+pnpm publish --access public
 ```

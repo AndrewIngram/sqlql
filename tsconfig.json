@@ -13,10 +13,8 @@
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
-      "@sqlql/core": ["packages/core/src/index.ts"],
-      "@sqlql/sql": ["packages/sql/src/index.ts"],
-      "@sqlql/executor-memory": ["packages/executor-memory/src/index.ts"],
-      "sqlql": ["packages/sqlql/src/index.ts"]
+      "sqlql": ["src/index.ts"]
     }
-  }
+  },
+  "include": ["src", "test", "examples"]
 }

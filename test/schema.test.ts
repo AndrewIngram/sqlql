@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { defineSchema, resolveTableQueryBehavior, toSqlDDL } from "../src";
+import { defineSchema, defineTableMethods, resolveTableQueryBehavior, toSqlDDL } from "../src";
 
 describe("defineSchema", () => {
   it("keeps tables concise and applies permissive query defaults", () => {
@@ -84,5 +84,66 @@ describe("defineSchema", () => {
         ");",
       ].join("\n"),
     );
+  });
+
+  it("generates NOT NULL for non-nullable column definitions", () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
+          columns: {
+            id: { type: "text", nullable: false },
+            email: { type: "text", nullable: true },
+            active: "boolean",
+          },
+        },
+      },
+    });
+
+    expect(toSqlDDL(schema)).toBe(
+      [
+        'CREATE TABLE "users" (',
+        '  "id" TEXT NOT NULL,',
+        '  "email" TEXT,',
+        '  "active" BOOLEAN',
+        ");",
+      ].join("\n"),
+    );
+  });
+
+  it("infers scan/aggregate request columns from schema", () => {
+    const schema = defineSchema({
+      tables: {
+        orders: {
+          columns: {
+            id: "text",
+            org_id: "text",
+            total_cents: "integer",
+          },
+        },
+      },
+    });
+
+    const methods = defineTableMethods(schema, {
+      orders: {
+        async scan(request) {
+          request.select.push("id");
+          request.where?.push({ op: "eq", column: "org_id", value: "org_1" });
+          // @ts-expect-error not a valid orders column
+          request.select.push("email");
+          return [];
+        },
+        async aggregate(request) {
+          request.groupBy?.push("org_id");
+          request.metrics.push({ fn: "sum", column: "total_cents", as: "total" });
+          // @ts-expect-error not a valid orders column
+          request.groupBy?.push("email");
+          // @ts-expect-error not a valid orders column
+          request.metrics.push({ fn: "sum", column: "email", as: "sum_email" });
+          return [];
+        },
+      },
+    });
+
+    expect(methods.orders).toBeDefined();
   });
 });

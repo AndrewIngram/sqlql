@@ -1,47 +1,11 @@
 import {
+  createArrayTableMethods,
   defineSchema,
   defineTableMethods,
   toSqlDDL,
   type QueryRow,
-  type TableScanRequest,
   query,
 } from "sqlql";
-
-function runScan(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
-  let out = [...rows];
-
-  for (const clause of request.where ?? []) {
-    if (clause.op === "eq") {
-      out = out.filter((row) => row[clause.column] === clause.value);
-    } else if (clause.op === "in") {
-      const set = new Set(clause.values);
-      out = out.filter((row) => set.has(row[clause.column]));
-    }
-  }
-
-  if (request.orderBy) {
-    out.sort((left, right) => {
-      for (const term of request.orderBy ?? []) {
-        const leftValue = left[term.column] as string | number;
-        const rightValue = right[term.column] as string | number;
-        if (leftValue === rightValue) {
-          continue;
-        }
-        const comparison = leftValue < rightValue ? -1 : 1;
-        return term.direction === "asc" ? comparison : -comparison;
-      }
-      return 0;
-    });
-  }
-
-  if (request.limit != null) {
-    out = out.slice(0, request.limit);
-  }
-
-  return out.map((row) =>
-    Object.fromEntries(request.select.map((column) => [column, row[column] ?? null])),
-  );
-}
 
 async function main(): Promise<void> {
   const schema = defineSchema({
@@ -114,25 +78,26 @@ async function main(): Promise<void> {
     ],
   } satisfies { orders: QueryRow[]; users: QueryRow[]; teams: QueryRow[] };
 
-  const methods = defineTableMethods({
-    orders: {
-      async scan(request) {
-        return runScan(tableData.orders, request);
-      },
-    },
-    users: {
-      async scan(request) {
-        return runScan(tableData.users, request);
-      },
-    },
-    teams: {
-      async scan(request) {
-        return runScan(tableData.teams, request);
-      },
-    },
+  const methods = defineTableMethods(schema, {
+    orders: createArrayTableMethods(tableData.orders),
+    users: createArrayTableMethods(tableData.users),
+    teams: createArrayTableMethods(tableData.teams),
   });
 
   const ddl = toSqlDDL(schema, { ifNotExists: true });
+
+  const basicRows = await query({
+    schema,
+    methods,
+    context: {},
+    sql: `
+      SELECT o.id, o.total_cents
+      FROM orders o
+      WHERE o.org_id = 'org_1'
+      ORDER BY o.created_at DESC
+      LIMIT 2 OFFSET 1
+    `,
+  });
 
   const joinRows = await query({
     schema,
@@ -163,13 +128,49 @@ async function main(): Promise<void> {
     `,
   });
 
+  const aggregateRows = await query({
+    schema,
+    methods,
+    context: {},
+    sql: `
+      SELECT o.user_id, COUNT(*) AS order_count, SUM(o.total_cents) AS total_cents
+      FROM orders o
+      WHERE o.org_id = 'org_1'
+      GROUP BY o.user_id
+      ORDER BY total_cents DESC
+    `,
+  });
+
+  const cteRows = await query({
+    schema,
+    methods,
+    context: {},
+    sql: `
+      WITH recent_orders AS (
+        SELECT id, user_id, total_cents
+        FROM orders
+        WHERE org_id = 'org_1' AND total_cents >= 1800
+      )
+      SELECT r.user_id, COUNT(*) AS recent_order_count, SUM(r.total_cents) AS total_cents
+      FROM recent_orders r
+      GROUP BY r.user_id
+      ORDER BY total_cents DESC
+    `,
+  });
+
   console.log("Generated DDL:");
   console.log(ddl);
   console.log("");
+  console.log("Basic query result:");
+  console.log(basicRows);
   console.log("Join result:");
   console.log(joinRows);
   console.log("Three-way join result:");
   console.log(threeWayJoinRows);
+  console.log("Aggregate result:");
+  console.log(aggregateRows);
+  console.log("CTE + aggregate result:");
+  console.log(cteRows);
 }
 
 main().catch((error: unknown) => {
