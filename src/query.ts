@@ -13,6 +13,7 @@ import {
   type TableMethodsMap,
   type TableScanRequest,
 } from "./schema";
+import { validateTableConstraintRows, type ConstraintValidationOptions } from "./constraints";
 import { defaultSqlAstParser } from "./parser";
 
 export interface SqlQuery {
@@ -29,6 +30,85 @@ export interface QueryInput<TContext> {
   methods: TableMethodsMap<TContext>;
   context: TContext;
   sql: string;
+  constraintValidation?: ConstraintValidationOptions;
+}
+
+export type QueryStepKind =
+  | "cte"
+  | "set_op_branch"
+  | "scan"
+  | "filter"
+  | "join"
+  | "aggregate"
+  | "window"
+  | "distinct"
+  | "order"
+  | "limit_offset"
+  | "projection";
+
+export interface QueryExecutionPlanStep {
+  id: string;
+  kind: QueryStepKind;
+  dependsOn: string[];
+  summary: string;
+}
+
+export interface QueryExecutionPlan {
+  steps: QueryExecutionPlanStep[];
+}
+
+export type QueryStepStatus = "ready" | "running" | "done" | "failed";
+
+export interface QueryStepState {
+  id: string;
+  kind: QueryStepKind;
+  status: QueryStepStatus;
+  summary: string;
+  dependsOn: string[];
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  rowCount?: number;
+  rows?: QueryRow[];
+  error?: string;
+}
+
+export interface QueryStepEvent {
+  id: string;
+  kind: QueryStepKind;
+  status: "done" | "failed";
+  summary: string;
+  dependsOn: string[];
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  rowCount?: number;
+  rows?: QueryRow[];
+  error?: string;
+}
+
+export interface QuerySessionOptions {
+  maxConcurrency?: number;
+  eventOrder?: "plan";
+  captureRows?: "full";
+  onEvent?: (event: QueryStepEvent) => void;
+}
+
+export interface QuerySessionInput<TContext> extends QueryInput<TContext> {
+  options?: QuerySessionOptions;
+}
+
+export interface QuerySession {
+  getPlan(): QueryExecutionPlan;
+  next(): Promise<QueryStepEvent | { done: true; result: QueryRow[] }>;
+  runToCompletion(): Promise<QueryRow[]>;
+  getResult(): QueryRow[] | null;
+  getStepState(stepId: string): QueryStepState | undefined;
+}
+
+interface ExecutionOptions {
+  maxConcurrency: number;
+  stepController?: StepController;
 }
 
 interface SelectAst {
@@ -44,6 +124,7 @@ interface SelectAst {
   orderby?: unknown;
   limit?: unknown;
   groupby?: unknown;
+  window?: unknown;
 }
 
 interface TableBinding {
@@ -82,6 +163,23 @@ interface AggregateMetric {
     column: string;
   };
   distinct: boolean;
+}
+
+type WindowFunctionName = "row_number" | "rank" | "dense_rank" | AggregateFunction;
+
+interface WindowFunctionSpec {
+  fn: WindowFunctionName;
+  output: string;
+  partitionBy: Array<{
+    alias: string;
+    column: string;
+  }>;
+  orderBy: SourceOrderColumn[];
+  column?: {
+    alias: string;
+    column: string;
+  };
+  countStar?: boolean;
 }
 
 interface SourceOrderColumn {
@@ -131,6 +229,7 @@ interface ParsedSelectQuery {
     expr: unknown;
     output: string;
   }>;
+  windowFunctions: WindowFunctionSpec[];
   groupBy: Array<{
     alias: string;
     column: string;
@@ -156,6 +255,295 @@ interface MetricAccumulator {
   distinctValues?: Set<string>;
 }
 
+const DEFAULT_MAX_CONCURRENCY = 4;
+
+class StepController {
+  readonly #options: QuerySessionOptions;
+  readonly #steps: QueryExecutionPlanStep[] = [];
+  readonly #states = new Map<string, QueryStepState>();
+  readonly #events: QueryStepEvent[] = [];
+  readonly #manual: boolean;
+  #permits = 0;
+  #pendingTurnResolvers: Array<() => void> = [];
+  #eventWaiters: Array<() => void> = [];
+  #stepCounter = 0;
+  #eventCursor = 0;
+  #activeStepDepth = 0;
+  #started = false;
+  #completed = false;
+  #result: QueryRow[] | null = null;
+  #error: unknown;
+  #executionPromise: Promise<QueryRow[]> | null = null;
+  readonly #execute: () => Promise<QueryRow[]>;
+
+  constructor(options: QuerySessionOptions, execute: () => Promise<QueryRow[]>) {
+    this.#options = options;
+    this.#execute = execute;
+    this.#manual = true;
+  }
+
+  start(): void {
+    if (this.#started) {
+      return;
+    }
+
+    this.#started = true;
+    this.#executionPromise = this.#execute()
+      .then((rows) => {
+        this.#result = rows;
+        this.#completed = true;
+        this.#notifyEventWaiters();
+        return rows;
+      })
+      .catch((error) => {
+        this.#error = error;
+        this.#completed = true;
+        this.#notifyEventWaiters();
+        throw error;
+      });
+    this.#executionPromise.catch(() => undefined);
+  }
+
+  get maxConcurrency(): number {
+    return Math.max(1, this.#options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+  }
+
+  getPlan(): QueryExecutionPlan {
+    return {
+      steps: [...this.#steps],
+    };
+  }
+
+  getResult(): QueryRow[] | null {
+    return this.#result;
+  }
+
+  getStepState(stepId: string): QueryStepState | undefined {
+    const state = this.#states.get(stepId);
+    return state ? { ...state } : undefined;
+  }
+
+  get hasCompleted(): boolean {
+    return this.#completed;
+  }
+
+  get error(): unknown {
+    return this.#error;
+  }
+
+  async waitForCompletion(): Promise<QueryRow[]> {
+    this.start();
+    this.#permits = Number.MAX_SAFE_INTEGER;
+    this.#drainPermits();
+
+    const execution = this.#executionPromise;
+    if (!execution) {
+      throw new Error("Execution did not start.");
+    }
+
+    return execution;
+  }
+
+  async next(): Promise<QueryStepEvent | { done: true; result: QueryRow[] }> {
+    this.start();
+
+    while (true) {
+      if (this.#eventCursor < this.#events.length) {
+        const next = this.#events[this.#eventCursor];
+        this.#eventCursor += 1;
+        if (!next) {
+          continue;
+        }
+
+        return next;
+      }
+
+      if (this.#completed) {
+        if (this.#error) {
+          throw this.#error;
+        }
+
+        return {
+          done: true,
+          result: this.#result ?? [],
+        };
+      }
+
+      this.#permits += 1;
+      this.#drainPermits();
+      await this.#waitForNextEvent();
+    }
+  }
+
+  async runStep<T>(
+    kind: QueryStepKind,
+    summary: string,
+    dependsOn: string[],
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const stepId = this.#createStep(kind, summary, dependsOn);
+    const state = this.#states.get(stepId);
+    if (!state) {
+      throw new Error(`Unknown step state for step ${stepId}`);
+    }
+
+    if (this.#manual && this.#activeStepDepth === 0) {
+      await this.#awaitTurn();
+    }
+
+    const startedAt = Date.now();
+    state.status = "running";
+    state.startedAt = startedAt;
+    this.#activeStepDepth += 1;
+
+    try {
+      const output = await run();
+      const endedAt = Date.now();
+      const rowSummary = this.#summarizeRows(output);
+
+      state.status = "done";
+      state.endedAt = endedAt;
+      state.durationMs = endedAt - startedAt;
+      if (rowSummary) {
+        state.rowCount = rowSummary.rowCount;
+        if (rowSummary.rows) {
+          state.rows = rowSummary.rows;
+        }
+      }
+
+      this.#emitEvent({
+        id: stepId,
+        kind,
+        status: "done",
+        summary,
+        dependsOn: [...dependsOn],
+        startedAt,
+        endedAt,
+        durationMs: endedAt - startedAt,
+        ...(rowSummary ? { rowCount: rowSummary.rowCount } : {}),
+        ...(rowSummary?.rows ? { rows: rowSummary.rows } : {}),
+      });
+
+      return output;
+    } catch (error) {
+      const endedAt = Date.now();
+      const message = error instanceof Error ? error.message : String(error);
+      state.status = "failed";
+      state.endedAt = endedAt;
+      state.durationMs = endedAt - startedAt;
+      state.error = message;
+
+      this.#emitEvent({
+        id: stepId,
+        kind,
+        status: "failed",
+        summary,
+        dependsOn: [...dependsOn],
+        startedAt,
+        endedAt,
+        durationMs: endedAt - startedAt,
+        error: message,
+      });
+      throw error;
+    } finally {
+      this.#activeStepDepth -= 1;
+    }
+  }
+
+  #createStep(kind: QueryStepKind, summary: string, dependsOn: string[]): string {
+    const stepId = `step_${this.#stepCounter + 1}`;
+    this.#stepCounter += 1;
+    const step: QueryExecutionPlanStep = {
+      id: stepId,
+      kind,
+      summary,
+      dependsOn: [...dependsOn],
+    };
+    this.#steps.push(step);
+    this.#states.set(stepId, {
+      id: stepId,
+      kind,
+      summary,
+      dependsOn: [...dependsOn],
+      status: "ready",
+    });
+    return stepId;
+  }
+
+  async #awaitTurn(): Promise<void> {
+    if (this.#permits > 0) {
+      this.#permits -= 1;
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      this.#pendingTurnResolvers.push(resolve);
+    });
+  }
+
+  #drainPermits(): void {
+    while (this.#permits > 0 && this.#pendingTurnResolvers.length > 0) {
+      const resolve = this.#pendingTurnResolvers.shift();
+      if (!resolve) {
+        continue;
+      }
+      this.#permits -= 1;
+      resolve();
+    }
+  }
+
+  #emitEvent(event: QueryStepEvent): void {
+    this.#events.push(event);
+    if (this.#options.onEvent) {
+      this.#options.onEvent(event);
+    }
+    this.#notifyEventWaiters();
+  }
+
+  #waitForNextEvent(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.#eventWaiters.push(resolve);
+    });
+  }
+
+  #notifyEventWaiters(): void {
+    while (this.#eventWaiters.length > 0) {
+      const waiter = this.#eventWaiters.shift();
+      waiter?.();
+    }
+  }
+
+  #summarizeRows(output: unknown): { rowCount: number; rows?: QueryRow[] } | undefined {
+    if (!Array.isArray(output)) {
+      return undefined;
+    }
+
+    const rowCount = output.length;
+    if (this.#options.captureRows === "full") {
+      return {
+        rowCount,
+        rows: output as QueryRow[],
+      };
+    }
+
+    return { rowCount };
+  }
+}
+
+async function runStepWithController<T>(
+  options: ExecutionOptions,
+  kind: QueryStepKind,
+  summary: string,
+  dependsOn: string[],
+  run: () => Promise<T>,
+): Promise<T> {
+  if (!options.stepController) {
+    return run();
+  }
+
+  return options.stepController.runStep(kind, summary, dependsOn, run);
+}
+
 export function parseSql(query: SqlQuery, schema: SchemaDefinition): PlannedQuery {
   const ast = astifySingleSelect(query.text);
   const parsed = parseSelectAst(ast, schema, new Map());
@@ -171,53 +559,151 @@ export function parseSql(query: SqlQuery, schema: SchemaDefinition): PlannedQuer
 }
 
 export async function query<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
+  return executeQueryInternal(input, {
+    maxConcurrency: DEFAULT_MAX_CONCURRENCY,
+  });
+}
+
+export function createQuerySession<TContext>(input: QuerySessionInput<TContext>): QuerySession {
+  const options = input.options ?? {};
+  let stepController: StepController;
+  stepController = new StepController(
+    options,
+    (): Promise<QueryRow[]> =>
+      executeQueryInternal(input, {
+        maxConcurrency: Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY),
+        stepController,
+      }),
+  );
+
+  return {
+    getPlan: () => stepController.getPlan(),
+    next: () => stepController.next(),
+    runToCompletion: () => stepController.waitForCompletion(),
+    getResult: () => stepController.getResult(),
+    getStepState: (stepId: string) => stepController.getStepState(stepId),
+  };
+}
+
+async function executeQueryInternal<TContext>(
+  input: QueryInput<TContext>,
+  options: ExecutionOptions,
+): Promise<QueryRow[]> {
   const ast = astifySingleSelect(input.sql);
-  return executeSelectAst(ast, input, new Map());
+  return executeSelectAst(ast, input, new Map(), options);
 }
 
 async function executeSelectAst<TContext>(
   ast: SelectAst,
   input: QueryInput<TContext>,
   parentCtes: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
   if (ast.type !== "select") {
     throw new Error("Only SELECT statements are currently supported.");
   }
 
   if (ast.set_op != null || ast._next != null) {
-    return executeSetOperation(ast, input, parentCtes);
+    return executeSetOperation(ast, input, parentCtes, options);
   }
 
   const cteRows = new Map(parentCtes);
   const rawCtes = Array.isArray(ast.with) ? ast.with : [];
-  for (const rawCte of rawCtes) {
-    if ((rawCte as { recursive?: unknown }).recursive === true) {
-      throw new Error("Recursive CTEs are not yet supported.");
+  if (rawCtes.length > 0) {
+    const cteEntries = rawCtes.map((rawCte, index) => {
+      if ((rawCte as { recursive?: unknown }).recursive === true) {
+        throw new Error("Recursive CTEs are not yet supported.");
+      }
+
+      const cteName = readCteName(rawCte);
+      const cteStatement = (rawCte as { stmt?: { ast?: unknown } }).stmt?.ast;
+      if (!cteStatement || typeof cteStatement !== "object") {
+        throw new Error(`Unable to parse CTE statement for: ${cteName}`);
+      }
+
+      const cteAst = cteStatement as SelectAst;
+      if (cteAst.type !== "select") {
+        throw new Error("Only SELECT CTE statements are currently supported.");
+      }
+
+      return {
+        rawCte,
+        cteName,
+        cteAst,
+        index,
+      };
+    });
+
+    const cteNameSet = new Set(cteEntries.map((entry) => entry.cteName));
+    const cteDependencies = new Map<string, string[]>();
+    for (const entry of cteEntries) {
+      cteDependencies.set(
+        entry.cteName,
+        collectCteDependencies(entry.cteAst, cteNameSet, entry.cteName),
+      );
     }
 
-    const cteName = readCteName(rawCte);
-    const cteStatement = (rawCte as { stmt?: { ast?: unknown } }).stmt?.ast;
-    if (!cteStatement || typeof cteStatement !== "object") {
-      throw new Error(`Unable to parse CTE statement for: ${cteName}`);
-    }
+    const remaining = new Map(cteEntries.map((entry) => [entry.cteName, entry]));
+    const resolved = new Map<string, QueryRow[]>();
 
-    const cteAst = cteStatement as SelectAst;
-    if (cteAst.type !== "select") {
-      throw new Error("Only SELECT CTE statements are currently supported.");
-    }
+    while (remaining.size > 0) {
+      const ready = [...remaining.values()]
+        .filter((entry) => {
+          const deps = cteDependencies.get(entry.cteName) ?? [];
+          return deps.every((dependency) => resolved.has(dependency) || cteRows.has(dependency));
+        })
+        .sort((left, right) => left.index - right.index);
 
-    const rows = await executeSelectAst(cteAst, input, cteRows);
-    cteRows.set(cteName, rows);
+      if (ready.length === 0) {
+        throw new Error("Unable to resolve CTE dependencies.");
+      }
+
+      for (let index = 0; index < ready.length; index += options.maxConcurrency) {
+        const batch = ready.slice(index, index + options.maxConcurrency);
+        const batchRows = await Promise.all(
+          batch.map(async (entry) => {
+            const deps = cteDependencies.get(entry.cteName) ?? [];
+            const availableCtes = new Map(parentCtes);
+            for (const dependency of deps) {
+              const rows = resolved.get(dependency) ?? cteRows.get(dependency);
+              if (rows) {
+                availableCtes.set(dependency, rows);
+              }
+            }
+
+            const rows = await runStepWithController(
+              options,
+              "cte",
+              `CTE ${entry.cteName}`,
+              deps,
+              () => executeSelectAst(entry.cteAst, input, availableCtes, options),
+            );
+
+            return {
+              name: entry.cteName,
+              rows,
+            };
+          }),
+        );
+
+        for (const rowSet of batchRows) {
+          resolved.set(rowSet.name, rowSet.rows);
+          cteRows.set(rowSet.name, rowSet.rows);
+          remaining.delete(rowSet.name);
+        }
+      }
+    }
   }
 
   const parsed = parseSelectAst(ast, input.schema, cteRows);
-  return executeParsedSelect(parsed, input, cteRows);
+  return executeParsedSelect(parsed, input, cteRows, options);
 }
 
 async function executeSetOperation<TContext>(
   ast: SelectAst,
   input: QueryInput<TContext>,
   parentCtes: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
   const operation = typeof ast.set_op === "string" ? ast.set_op.toLowerCase() : "";
   const nextRaw = readSetOperationNext(ast._next);
@@ -233,8 +719,14 @@ async function executeSetOperation<TContext>(
   }
 
   const leftAst = cloneSelectWithoutSetOperation(ast);
-  const leftRows = await executeSelectAst(leftAst, input, parentCtes);
-  const rightRows = await executeSelectAst(next, input, parentCtes);
+  const [leftRows, rightRows] = await Promise.all([
+    runStepWithController(options, "set_op_branch", "Set operation left branch", [], () =>
+      executeSelectAst(leftAst, input, parentCtes, options),
+    ),
+    runStepWithController(options, "set_op_branch", "Set operation right branch", [], () =>
+      executeSelectAst(next, input, parentCtes, options),
+    ),
+  ]);
 
   switch (operation) {
     case "union all":
@@ -255,6 +747,7 @@ async function executeParsedSelect<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
   const rootBinding = parsed.bindings[0];
   if (!rootBinding) {
@@ -273,18 +766,47 @@ async function executeParsedSelect<TContext>(
   }
 
   if (parsed.isAggregate) {
-    return executeAggregateSelect(parsed, input, cteRows);
+    return executeAggregateSelect(parsed, input, cteRows, options);
   }
 
-  const joinedRows = await executeJoinedRows(parsed, input, cteRows, {
-    applyFinalSortAndLimit: !parsed.distinct,
-  });
-  const whereFiltered = await applyWhereFilter(joinedRows, parsed, input, cteRows);
-  let projected = await projectResultRows(whereFiltered, parsed, input, cteRows);
+  const joinedRows = await runStepWithController(options, "join", "Join source bindings", [], () =>
+    executeJoinedRows(parsed, input, cteRows, options, {
+      applyFinalSortAndLimit: !parsed.distinct,
+    }),
+  );
+  const whereFiltered = await runStepWithController(
+    options,
+    "filter",
+    "Apply WHERE filter",
+    [],
+    () => applyWhereFilter(joinedRows, parsed, input, cteRows, options),
+  );
+  let windowed = whereFiltered;
+  if (parsed.windowFunctions.length > 0) {
+    windowed = await runStepWithController(options, "window", "Compute window functions", [], () =>
+      applyWindowFunctions(whereFiltered, parsed),
+    );
+  }
+
+  let projected = await runStepWithController(
+    options,
+    "projection",
+    "Project result rows",
+    [],
+    () => projectResultRows(windowed, parsed, input, cteRows, options),
+  );
 
   if (parsed.distinct) {
-    projected = dedupeRows(projected);
-    projected = applyProjectedSortLimit(projected, parsed);
+    projected = await runStepWithController(options, "distinct", "Apply DISTINCT", [], async () =>
+      dedupeRows(projected),
+    );
+    projected = await runStepWithController(
+      options,
+      "order",
+      "Apply ORDER/LIMIT/OFFSET on projected rows",
+      [],
+      async () => applyProjectedSortLimit(projected, parsed),
+    );
   }
 
   return projected;
@@ -294,33 +816,62 @@ async function executeAggregateSelect<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
+  if (parsed.windowFunctions.length > 0) {
+    throw new Error("Window functions are not supported in grouped aggregate queries yet.");
+  }
+
   let aggregateRows =
-    (await tryRunAggregateRoute(parsed, input)) ??
-    (await runLocalAggregate(parsed, input, cteRows));
+    (await runStepWithController(options, "aggregate", "Run aggregate route", [], () =>
+      tryRunAggregateRoute(parsed, input),
+    )) ?? (await runLocalAggregate(parsed, input, cteRows, options));
 
   if (parsed.having) {
-    aggregateRows = await applyHavingFilter(aggregateRows, parsed, input, cteRows);
+    aggregateRows = await runStepWithController(options, "filter", "Apply HAVING filter", [], () =>
+      applyHavingFilter(aggregateRows, parsed, input, cteRows, options),
+    );
   }
 
   if (parsed.distinct) {
-    aggregateRows = dedupeRows(aggregateRows);
+    aggregateRows = await runStepWithController(
+      options,
+      "distinct",
+      "Apply DISTINCT",
+      [],
+      async () => dedupeRows(aggregateRows),
+    );
   }
 
   let out = aggregateRows;
   if (parsed.orderBy.length > 0) {
-    out = applyOutputSort(out, parsed.orderBy);
+    out = await runStepWithController(options, "order", "Apply ORDER BY", [], async () =>
+      applyOutputSort(out, parsed.orderBy),
+    );
   }
 
-  if (parsed.offset != null) {
-    out = out.slice(parsed.offset);
+  if (parsed.offset != null || parsed.limit != null) {
+    out = await runStepWithController(
+      options,
+      "limit_offset",
+      "Apply LIMIT/OFFSET",
+      [],
+      async () => {
+        let limited = out;
+        if (parsed.offset != null) {
+          limited = limited.slice(parsed.offset);
+        }
+        if (parsed.limit != null) {
+          limited = limited.slice(0, parsed.limit);
+        }
+        return limited;
+      },
+    );
   }
 
-  if (parsed.limit != null) {
-    out = out.slice(0, parsed.limit);
-  }
-
-  return out.map((row) => projectAggregateOutputRow(row, parsed));
+  return runStepWithController(options, "projection", "Project aggregate output", [], async () =>
+    out.map((row) => projectAggregateOutputRow(row, parsed)),
+  );
 }
 
 async function tryRunAggregateRoute<TContext>(
@@ -388,6 +939,7 @@ async function tryRunAggregateRoute<TContext>(
   }
 
   const rows = await method.aggregate(request, input.context);
+  validateRowsForBinding(binding.table, rows, input);
   return rows.map((row) => normalizeAggregateRowFromRoute(row, parsed));
 }
 
@@ -413,11 +965,12 @@ async function runLocalAggregate<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
-  const joinedRows = await executeJoinedRows(parsed, input, cteRows, {
+  const joinedRows = await executeJoinedRows(parsed, input, cteRows, options, {
     applyFinalSortAndLimit: false,
   });
-  const whereFiltered = await applyWhereFilter(joinedRows, parsed, input, cteRows);
+  const whereFiltered = await applyWhereFilter(joinedRows, parsed, input, cteRows, options);
 
   return aggregateJoinedRows(whereFiltered, parsed);
 }
@@ -613,6 +1166,7 @@ async function executeJoinedRows<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  executionOptions: ExecutionOptions,
   options: {
     applyFinalSortAndLimit: boolean;
   },
@@ -631,86 +1185,137 @@ async function executeJoinedRows<TContext>(
   const filtersByAlias = groupFiltersByAlias(parsed.filters);
   const executionOrder = buildExecutionOrder(parsed.bindings, parsed.joinEdges, filtersByAlias);
   const rowsByAlias = new Map<string, QueryRow[]>();
+  const aliasDependencies = buildAliasPrerequisites(parsed.joins);
+  const unresolved = new Set(executionOrder);
+  const resolved = new Set<string>();
 
-  for (const alias of executionOrder) {
-    const binding = parsed.bindings.find((candidate) => candidate.alias === alias);
-    if (!binding) {
-      throw new Error(`Unknown alias in execution order: ${alias}`);
-    }
-
-    const dependencyFilters = buildDependencyFilters(
-      alias,
-      parsed.joins,
-      parsed.joinEdges,
-      rowsByAlias,
-    );
-    const localFilters = filtersByAlias.get(alias) ?? [];
-
-    if (dependencyFilters.some((filter) => filter.op === "in" && filter.values.length === 0)) {
-      rowsByAlias.set(alias, []);
-      continue;
-    }
-
-    const requestWhere: ScanFilterClause[] = [...localFilters, ...dependencyFilters];
-
-    const canPushFinalSortAndLimit = canPushFinalSortAndLimitAll && alias === rootBinding.alias;
-
-    const requestOrderBy: ScanOrderBy[] | undefined = canPushFinalSortAndLimit
-      ? parsed.orderBy
-          .filter((term): term is SourceOrderColumn => term.kind === "source")
-          .map((term) => ({
-            column: term.column,
-            direction: term.direction,
-          }))
-      : undefined;
-
-    let requestLimit = canPushFinalSortAndLimit ? parsed.limit : undefined;
-    const requestOffset = canPushFinalSortAndLimit ? parsed.offset : undefined;
-
-    if (!binding.isCte) {
-      const tableBehavior = resolveTableQueryBehavior(input.schema, binding.table);
-      const defaultMaxRows = tableBehavior.maxRows;
-
-      if (requestLimit == null && defaultMaxRows != null) {
-        requestLimit = defaultMaxRows;
+  while (unresolved.size > 0) {
+    let ready = executionOrder.filter((alias) => {
+      if (!unresolved.has(alias)) {
+        return false;
       }
+      const dependencies = aliasDependencies.get(alias) ?? [];
+      return dependencies.every((dependency) => resolved.has(dependency));
+    });
 
-      if (requestLimit != null && defaultMaxRows != null && requestLimit > defaultMaxRows) {
-        throw new Error(
-          `Requested limit ${requestLimit} exceeds maxRows ${defaultMaxRows} for table ${binding.table}`,
-        );
+    if (ready.length === 0) {
+      const fallback = executionOrder.find((alias) => unresolved.has(alias));
+      if (!fallback) {
+        throw new Error("Unable to determine next scan task.");
+      }
+      ready = [fallback];
+    }
+
+    for (let index = 0; index < ready.length; index += executionOptions.maxConcurrency) {
+      const batch = ready.slice(index, index + executionOptions.maxConcurrency);
+      const scanResults = await Promise.all(
+        batch.map(async (alias) => {
+          const binding = parsed.bindings.find((candidate) => candidate.alias === alias);
+          if (!binding) {
+            throw new Error(`Unknown alias in execution order: ${alias}`);
+          }
+
+          const dependencyFilters = buildDependencyFilters(
+            alias,
+            parsed.joins,
+            parsed.joinEdges,
+            rowsByAlias,
+          );
+          const localFilters = filtersByAlias.get(alias) ?? [];
+
+          if (
+            dependencyFilters.some((filter) => filter.op === "in" && filter.values.length === 0)
+          ) {
+            return {
+              alias,
+              rows: [] as QueryRow[],
+            };
+          }
+
+          const requestWhere: ScanFilterClause[] = [...localFilters, ...dependencyFilters];
+
+          const canPushFinalSortAndLimit =
+            canPushFinalSortAndLimitAll && alias === rootBinding.alias;
+
+          const requestOrderBy: ScanOrderBy[] | undefined = canPushFinalSortAndLimit
+            ? parsed.orderBy
+                .filter((term): term is SourceOrderColumn => term.kind === "source")
+                .map((term) => ({
+                  column: term.column,
+                  direction: term.direction,
+                }))
+            : undefined;
+
+          let requestLimit = canPushFinalSortAndLimit ? parsed.limit : undefined;
+          const requestOffset = canPushFinalSortAndLimit ? parsed.offset : undefined;
+
+          if (!binding.isCte) {
+            const tableBehavior = resolveTableQueryBehavior(input.schema, binding.table);
+            const defaultMaxRows = tableBehavior.maxRows;
+
+            if (requestLimit == null && defaultMaxRows != null) {
+              requestLimit = defaultMaxRows;
+            }
+
+            if (requestLimit != null && defaultMaxRows != null && requestLimit > defaultMaxRows) {
+              throw new Error(
+                `Requested limit ${requestLimit} exceeds maxRows ${defaultMaxRows} for table ${binding.table}`,
+              );
+            }
+          }
+
+          const projection = projectionByAlias.get(alias);
+          if (!projection) {
+            throw new Error(`Unable to resolve projection columns for alias: ${alias}`);
+          }
+
+          const request: TableScanRequest = {
+            table: binding.table,
+            alias,
+            select: [...projection],
+          };
+
+          if (requestWhere.length > 0) {
+            request.where = requestWhere;
+          }
+
+          if (requestOrderBy && requestOrderBy.length > 0) {
+            request.orderBy = requestOrderBy;
+          }
+
+          if (requestLimit != null) {
+            request.limit = requestLimit;
+          }
+
+          if (requestOffset != null) {
+            request.offset = requestOffset;
+          }
+
+          const rows = await runStepWithController(
+            executionOptions,
+            "scan",
+            `Scan ${alias} (${binding.table})`,
+            aliasDependencies.get(alias) ?? [],
+            async () => runSourceScan(binding, request, cteRows, input),
+          );
+
+          if (!binding.isCte) {
+            validateRowsForBinding(binding.table, rows, input);
+          }
+
+          return {
+            alias,
+            rows,
+          };
+        }),
+      );
+
+      for (const result of scanResults) {
+        rowsByAlias.set(result.alias, result.rows);
+        unresolved.delete(result.alias);
+        resolved.add(result.alias);
       }
     }
-
-    const projection = projectionByAlias.get(alias);
-    if (!projection) {
-      throw new Error(`Unable to resolve projection columns for alias: ${alias}`);
-    }
-
-    const request: TableScanRequest = {
-      table: binding.table,
-      alias,
-      select: [...projection],
-    };
-
-    if (requestWhere.length > 0) {
-      request.where = requestWhere;
-    }
-
-    if (requestOrderBy && requestOrderBy.length > 0) {
-      request.orderBy = requestOrderBy;
-    }
-
-    if (requestLimit != null) {
-      request.limit = requestLimit;
-    }
-
-    if (requestOffset != null) {
-      request.offset = requestOffset;
-    }
-
-    const rows = await runSourceScan(binding, request, cteRows, input);
-    rowsByAlias.set(alias, rows);
   }
 
   let joinedRows = initializeJoinedRows(rowsByAlias, rootBinding.alias);
@@ -941,6 +1546,10 @@ function parseSelectAst(
     throw new Error("Only SELECT statements are currently supported.");
   }
 
+  if ((ast as { window?: unknown }).window != null) {
+    throw new Error("Named WINDOW clauses are not supported yet.");
+  }
+
   const rawFrom: unknown[] = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
   if (rawFrom.length === 0) {
     throw new Error("SELECT queries must include a FROM clause.");
@@ -1005,7 +1614,7 @@ function parseSelectAst(
 
     joinEdges.push(parsedJoin);
   }
-  const where = ast.where;
+  const where = normalizeBooleanOperatorPrecedence(ast.where);
   const whereColumns = collectColumnReferences(where, bindings, aliasToBinding);
   const filters: LiteralFilter[] = [];
   const wherePushdown = tryParseConjunctivePushdownFilters(where, bindings, aliasToBinding);
@@ -1028,6 +1637,7 @@ function parseSelectAst(
   const scalarSelectItems: Array<{ expr: unknown; output: string }> = [];
   const aggregateMetrics: AggregateMetric[] = [];
   const aggregateOutputColumns: AggregateOutputColumn[] = [];
+  const windowFunctions: WindowFunctionSpec[] = [];
 
   if (!selectAll) {
     if (!Array.isArray(selectColumnsRaw)) {
@@ -1042,6 +1652,21 @@ function parseSelectAst(
       const expr = (item as { expr?: unknown }).expr;
       const as = (item as { as?: unknown }).as;
       const explicitOutput = typeof as === "string" && as.length > 0 ? as : undefined;
+
+      const windowFunction = parseWindowFunction(
+        expr,
+        explicitOutput,
+        bindings,
+        aliasToBinding,
+        schema,
+      );
+      if (windowFunction) {
+        if (windowFunctions.some((existing) => existing.output === windowFunction.output)) {
+          throw new Error(`Duplicate window output alias: ${windowFunction.output}`);
+        }
+        windowFunctions.push(windowFunction);
+        continue;
+      }
 
       const aggregateMetric = parseAggregateMetric(
         expr,
@@ -1085,12 +1710,12 @@ function parseSelectAst(
       }
 
       throw new Error(
-        "Only direct column references, scalar subqueries, and aggregate functions are currently supported in SELECT.",
+        "Only direct column references, scalar subqueries, aggregate functions, and supported window functions are currently supported in SELECT.",
       );
     }
   }
 
-  const having = ast.having;
+  const having = normalizeBooleanOperatorPrecedence(ast.having);
   const havingMetrics = collectHavingAggregateMetrics(
     having,
     bindings,
@@ -1108,6 +1733,10 @@ function parseSelectAst(
 
   if (isAggregate && selectAll) {
     throw new Error("SELECT * is not supported for aggregate queries.");
+  }
+
+  if (windowFunctions.length > 0 && (isAggregate || groupBy.length > 0 || having != null)) {
+    throw new Error("Window functions cannot be mixed with GROUP BY/HAVING in this release.");
   }
 
   const groupByKeys = new Set(
@@ -1181,6 +1810,7 @@ function parseSelectAst(
     selectAll,
     selectColumns,
     scalarSelectItems,
+    windowFunctions,
     groupBy,
     aggregateMetrics,
     aggregateOutputColumns,
@@ -1216,6 +1846,160 @@ function parseGroupBy(
   });
 }
 
+function parseWindowFunction(
+  expr: unknown,
+  explicitOutput: string | undefined,
+  bindings: TableBinding[],
+  aliasToBinding: Map<string, TableBinding>,
+  schema: SchemaDefinition,
+): WindowFunctionSpec | null {
+  if (!expr || typeof expr !== "object") {
+    return null;
+  }
+
+  const asWindow = (expr as { over?: unknown }).over;
+  if (!asWindow) {
+    return null;
+  }
+
+  const over = asWindow as { as_window_specification?: unknown };
+  const spec = over.as_window_specification;
+  if (!spec) {
+    throw new Error("Window function OVER clause must include a window specification.");
+  }
+
+  if (typeof spec === "string") {
+    throw new Error("Named window references are not supported yet.");
+  }
+
+  const windowSpecification = (spec as { window_specification?: unknown }).window_specification;
+  if (!windowSpecification || typeof windowSpecification !== "object") {
+    throw new Error("Unsupported window specification.");
+  }
+
+  if ((windowSpecification as { name?: unknown }).name != null) {
+    throw new Error("Named window inheritance is not supported yet.");
+  }
+
+  const frameClause = (windowSpecification as { window_frame_clause?: unknown })
+    .window_frame_clause;
+  if (frameClause != null) {
+    throw new Error("Explicit window frame clauses are not supported yet.");
+  }
+
+  const partitionByRaw = (windowSpecification as { partitionby?: unknown }).partitionby;
+  const partitionByEntries = Array.isArray(partitionByRaw) ? partitionByRaw : [];
+  const partitionBy = partitionByEntries.map((entry) => {
+    const parsed = resolveColumnRef((entry as { expr?: unknown }).expr, bindings, aliasToBinding);
+    if (!parsed) {
+      throw new Error("PARTITION BY currently supports only direct column references.");
+    }
+    return parsed;
+  });
+
+  const orderByRaw = (windowSpecification as { orderby?: unknown }).orderby;
+  const orderByEntries = Array.isArray(orderByRaw) ? orderByRaw : [];
+  const orderBy = orderByEntries.map((entry) => {
+    const column = resolveColumnRef((entry as { expr?: unknown }).expr, bindings, aliasToBinding);
+    if (!column) {
+      throw new Error("Window ORDER BY currently supports only direct column references.");
+    }
+
+    const direction = (entry as { type?: unknown }).type === "DESC" ? "desc" : "asc";
+    return {
+      kind: "source",
+      alias: column.alias,
+      column: column.column,
+      direction,
+    } as SourceOrderColumn;
+  });
+
+  const functionExpr = expr as {
+    type?: unknown;
+    name?: unknown;
+    args?: { expr?: unknown; distinct?: unknown } | { value?: unknown[] };
+  };
+
+  if (functionExpr.type === "function") {
+    const fnName = readFunctionName(functionExpr.name);
+    const fn = mapRankingWindowFunction(fnName);
+    if (!fn) {
+      throw new Error(`Unsupported window function: ${fnName || "unknown"}`);
+    }
+
+    const output = explicitOutput ?? fn;
+    return {
+      fn,
+      output,
+      partitionBy,
+      orderBy,
+    };
+  }
+
+  if (functionExpr.type !== "aggr_func") {
+    throw new Error("Unsupported window expression.");
+  }
+
+  const rawName = typeof functionExpr.name === "string" ? functionExpr.name.toUpperCase() : "";
+  const fn = mapAggregateFunction(rawName);
+  if (!fn) {
+    throw new Error(`Unsupported window aggregate function: ${String(functionExpr.name)}`);
+  }
+
+  const args = functionExpr.args as { expr?: unknown; distinct?: unknown } | undefined;
+  const distinct = args?.distinct === "DISTINCT";
+  const argExpr = args?.expr;
+
+  let column: { alias: string; column: string } | undefined;
+  let countStar = false;
+  if (isStarExpr(argExpr)) {
+    if (fn !== "count") {
+      throw new Error(`${rawName}(*) is not supported as a window function.`);
+    }
+    countStar = true;
+  } else {
+    column = resolveColumnRef(argExpr, bindings, aliasToBinding);
+    if (!column) {
+      throw new Error(`${rawName} window function must reference a column or *.`);
+    }
+    if ((fn === "sum" || fn === "avg") && !isNumericColumn(column, aliasToBinding, schema)) {
+      throw new Error(`${rawName} requires a numeric column.`);
+    }
+  }
+
+  if (distinct && fn !== "count") {
+    throw new Error(`DISTINCT is currently only supported for COUNT window functions.`);
+  }
+
+  const output =
+    explicitOutput ??
+    (column ? `${fn}_${column.column}` : fn === "count" ? "count" : `${fn}_value`);
+
+  return {
+    fn,
+    output,
+    partitionBy,
+    orderBy,
+    ...(column ? { column } : {}),
+    ...(countStar ? { countStar: true } : {}),
+  };
+}
+
+function mapRankingWindowFunction(
+  rawName: string,
+): Exclude<WindowFunctionName, AggregateFunction> | null {
+  switch (rawName) {
+    case "ROW_NUMBER":
+      return "row_number";
+    case "RANK":
+      return "rank";
+    case "DENSE_RANK":
+      return "dense_rank";
+    default:
+      return null;
+  }
+}
+
 function parseAggregateMetric(
   expr: unknown,
   explicitOutput: string | undefined,
@@ -1226,6 +2010,7 @@ function parseAggregateMetric(
   const aggregateExpr = expr as {
     type?: unknown;
     name?: unknown;
+    over?: unknown;
     args?: {
       expr?: unknown;
       distinct?: unknown;
@@ -1233,6 +2018,10 @@ function parseAggregateMetric(
   };
 
   if (aggregateExpr.type !== "aggr_func") {
+    return null;
+  }
+
+  if (aggregateExpr.over != null) {
     return null;
   }
 
@@ -1505,7 +2294,10 @@ function tryParseConjunctivePushdownFilters(
       return null;
     }
 
-    const operator = normalizeBinaryOperator(binary.operator);
+    const operator = tryNormalizeBinaryOperator(binary.operator);
+    if (!operator) {
+      return null;
+    }
     if (operator === "in") {
       const colRef = resolveColumnRef(binary.left, bindings, aliasToBinding);
       if (!colRef) {
@@ -1779,6 +2571,18 @@ function buildProjection(
         projections.get(metric.column.alias)?.add(metric.column.column);
       }
     }
+
+    for (const windowFunction of parsed.windowFunctions) {
+      for (const partition of windowFunction.partitionBy) {
+        projections.get(partition.alias)?.add(partition.column);
+      }
+      for (const orderTerm of windowFunction.orderBy) {
+        projections.get(orderTerm.alias)?.add(orderTerm.column);
+      }
+      if (windowFunction.column) {
+        projections.get(windowFunction.column.alias)?.add(windowFunction.column.column);
+      }
+    }
   }
 
   for (const join of parsed.joinEdges) {
@@ -1942,6 +2746,41 @@ function buildDependencyFilters(
   }
 
   return dedupeInClauses(clauses);
+}
+
+function buildAliasPrerequisites(joins: ParsedJoin[]): Map<string, string[]> {
+  const prerequisites = new Map<string, Set<string>>();
+
+  for (const join of joins) {
+    const existingAlias = getExistingJoinAlias(join);
+    const preservedAliases = getPreservedAliases(join);
+
+    if (join.join === "inner") {
+      const set = prerequisites.get(join.alias) ?? new Set<string>();
+      set.add(existingAlias);
+      prerequisites.set(join.alias, set);
+      continue;
+    }
+
+    if (join.join === "full") {
+      continue;
+    }
+
+    if (!preservedAliases.includes(join.alias)) {
+      const set = prerequisites.get(join.alias) ?? new Set<string>();
+      set.add(existingAlias);
+      prerequisites.set(join.alias, set);
+      continue;
+    }
+
+    if (!preservedAliases.includes(existingAlias)) {
+      const set = prerequisites.get(existingAlias) ?? new Set<string>();
+      set.add(join.alias);
+      prerequisites.set(existingAlias, set);
+    }
+  }
+
+  return new Map([...prerequisites.entries()].map(([alias, values]) => [alias, [...values]]));
 }
 
 function getExistingJoinAlias(join: ParsedJoin): string {
@@ -2258,6 +3097,7 @@ async function applyWhereFilter<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<JoinedRowBundle[]> {
   if (!parsed.where) {
     return rows;
@@ -2269,6 +3109,7 @@ async function applyWhereFilter<TContext>(
       parsed,
       input,
       cteRows,
+      options,
       bundle,
     });
     if (truth === true) {
@@ -2284,6 +3125,7 @@ async function applyHavingFilter<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
   if (!parsed.having) {
     return rows;
@@ -2295,6 +3137,7 @@ async function applyHavingFilter<TContext>(
       parsed,
       input,
       cteRows,
+      options,
       aggregateRow: row,
     });
     if (truth === true) {
@@ -2360,11 +3203,270 @@ interface PredicateEvalScope<TContext> {
   parsed: ParsedSelectQuery;
   input: QueryInput<TContext>;
   cteRows: Map<string, QueryRow[]>;
+  options: ExecutionOptions;
   bundle?: JoinedRowBundle;
   aggregateRow?: QueryRow;
 }
 
 type SqlTruth = true | false | null;
+const WINDOW_OUTPUT_ALIAS = "__window__";
+
+async function applyWindowFunctions(
+  rows: JoinedRowBundle[],
+  parsed: ParsedSelectQuery,
+): Promise<JoinedRowBundle[]> {
+  if (parsed.windowFunctions.length === 0) {
+    return rows;
+  }
+
+  const out = rows.map((bundle) => ({
+    ...bundle,
+    [WINDOW_OUTPUT_ALIAS]: {} as QueryRow,
+  })) as JoinedRowBundle[];
+
+  for (const windowSpec of parsed.windowFunctions) {
+    const partitions = new Map<string, number[]>();
+
+    for (let index = 0; index < out.length; index += 1) {
+      const bundle = out[index];
+      if (!bundle) {
+        continue;
+      }
+      const key = JSON.stringify(
+        windowSpec.partitionBy.map(
+          (partition) => bundle[partition.alias]?.[partition.column] ?? null,
+        ),
+      );
+      const entries = partitions.get(key) ?? [];
+      entries.push(index);
+      partitions.set(key, entries);
+    }
+
+    for (const partitionRows of partitions.values()) {
+      const ordered = [...partitionRows];
+      if (windowSpec.orderBy.length > 0) {
+        ordered.sort((leftIndex, rightIndex) => {
+          const left = out[leftIndex];
+          const right = out[rightIndex];
+          if (!left || !right) {
+            return 0;
+          }
+
+          for (const term of windowSpec.orderBy) {
+            const comparison = compareNullableValues(
+              left[term.alias]?.[term.column] ?? null,
+              right[term.alias]?.[term.column] ?? null,
+            );
+            if (comparison !== 0) {
+              return term.direction === "asc" ? comparison : -comparison;
+            }
+          }
+          return 0;
+        });
+      }
+
+      switch (windowSpec.fn) {
+        case "row_number":
+          for (let index = 0; index < ordered.length; index += 1) {
+            const rowIndex = ordered[index];
+            if (rowIndex == null) {
+              continue;
+            }
+            const row = out[rowIndex];
+            if (!row) {
+              continue;
+            }
+            (row[WINDOW_OUTPUT_ALIAS] as QueryRow)[windowSpec.output] = index + 1;
+          }
+          break;
+        case "rank": {
+          let rank = 1;
+          for (let index = 0; index < ordered.length; index += 1) {
+            if (
+              index > 0 &&
+              !isSameWindowPeer(out, ordered[index - 1], ordered[index], windowSpec)
+            ) {
+              rank = index + 1;
+            }
+
+            const rowIndex = ordered[index];
+            if (rowIndex == null) {
+              continue;
+            }
+            const row = out[rowIndex];
+            if (!row) {
+              continue;
+            }
+            (row[WINDOW_OUTPUT_ALIAS] as QueryRow)[windowSpec.output] = rank;
+          }
+          break;
+        }
+        case "dense_rank": {
+          let denseRank = 1;
+          for (let index = 0; index < ordered.length; index += 1) {
+            if (
+              index > 0 &&
+              !isSameWindowPeer(out, ordered[index - 1], ordered[index], windowSpec)
+            ) {
+              denseRank += 1;
+            }
+
+            const rowIndex = ordered[index];
+            if (rowIndex == null) {
+              continue;
+            }
+            const row = out[rowIndex];
+            if (!row) {
+              continue;
+            }
+            (row[WINDOW_OUTPUT_ALIAS] as QueryRow)[windowSpec.output] = denseRank;
+          }
+          break;
+        }
+        default: {
+          const isRunning = windowSpec.orderBy.length > 0;
+          if (!isRunning) {
+            const aggregateValue = computeWindowAggregate(out, ordered, windowSpec, ordered.length);
+            for (const rowIndex of ordered) {
+              if (rowIndex == null) {
+                continue;
+              }
+              const row = out[rowIndex];
+              if (!row) {
+                continue;
+              }
+              (row[WINDOW_OUTPUT_ALIAS] as QueryRow)[windowSpec.output] = aggregateValue;
+            }
+            break;
+          }
+
+          for (let index = 0; index < ordered.length; index += 1) {
+            const aggregateValue = computeWindowAggregate(out, ordered, windowSpec, index + 1);
+            const rowIndex = ordered[index];
+            if (rowIndex == null) {
+              continue;
+            }
+            const row = out[rowIndex];
+            if (!row) {
+              continue;
+            }
+            (row[WINDOW_OUTPUT_ALIAS] as QueryRow)[windowSpec.output] = aggregateValue;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+function isSameWindowPeer(
+  rows: JoinedRowBundle[],
+  leftIndex: number | undefined,
+  rightIndex: number | undefined,
+  spec: WindowFunctionSpec,
+): boolean {
+  if (leftIndex == null || rightIndex == null) {
+    return false;
+  }
+
+  const left = rows[leftIndex];
+  const right = rows[rightIndex];
+  if (!left || !right) {
+    return false;
+  }
+
+  return spec.orderBy.every(
+    (term) =>
+      compareNullableValues(
+        left[term.alias]?.[term.column] ?? null,
+        right[term.alias]?.[term.column] ?? null,
+      ) === 0,
+  );
+}
+
+function computeWindowAggregate(
+  rows: JoinedRowBundle[],
+  orderedIndices: number[],
+  spec: WindowFunctionSpec,
+  count: number,
+): unknown {
+  let numericSum = 0;
+  let numericCount = 0;
+  let hasValue = false;
+  let minValue: unknown = null;
+  let maxValue: unknown = null;
+  let countValue = 0;
+
+  for (let index = 0; index < count; index += 1) {
+    const rowIndex = orderedIndices[index];
+    if (rowIndex == null) {
+      continue;
+    }
+
+    const row = rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    const value = spec.column ? (row[spec.column.alias]?.[spec.column.column] ?? null) : null;
+
+    switch (spec.fn) {
+      case "count":
+        if (spec.countStar || value != null) {
+          countValue += 1;
+        }
+        break;
+      case "sum":
+        if (value != null) {
+          numericSum += toFiniteNumber(value, "SUM");
+          hasValue = true;
+        }
+        break;
+      case "avg":
+        if (value != null) {
+          numericSum += toFiniteNumber(value, "AVG");
+          numericCount += 1;
+          hasValue = true;
+        }
+        break;
+      case "min":
+        if (value != null) {
+          if (!hasValue || compareNullableValues(value, minValue) < 0) {
+            minValue = value;
+          }
+          hasValue = true;
+        }
+        break;
+      case "max":
+        if (value != null) {
+          if (!hasValue || compareNullableValues(value, maxValue) > 0) {
+            maxValue = value;
+          }
+          hasValue = true;
+        }
+        break;
+      default:
+        throw new Error(`Unsupported window aggregate function: ${spec.fn}`);
+    }
+  }
+
+  switch (spec.fn) {
+    case "count":
+      return countValue;
+    case "sum":
+      return hasValue ? numericSum : null;
+    case "avg":
+      return numericCount > 0 ? numericSum / numericCount : null;
+    case "min":
+      return hasValue ? minValue : null;
+    case "max":
+      return hasValue ? maxValue : null;
+    default:
+      return null;
+  }
+}
 
 async function evaluatePredicateTruth<TContext>(
   expr: unknown,
@@ -2662,7 +3764,7 @@ async function executeSubquery<TContext>(
   scope: PredicateEvalScope<TContext>,
 ): Promise<QueryRow[]> {
   try {
-    return await executeSelectAst(subquery, scope.input, scope.cteRows);
+    return await executeSelectAst(subquery, scope.input, scope.cteRows, scope.options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith("Unknown table alias:")) {
@@ -2734,6 +3836,7 @@ async function projectResultRows<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
   cteRows: Map<string, QueryRow[]>,
+  options: ExecutionOptions,
 ): Promise<QueryRow[]> {
   if (parsed.selectAll) {
     const baseAlias = parsed.bindings[0]?.alias;
@@ -2753,11 +3856,15 @@ async function projectResultRows<TContext>(
       for (const item of parsed.selectColumns) {
         out[item.output] = bundle[item.alias]?.[item.column] ?? null;
       }
+      for (const windowFunction of parsed.windowFunctions) {
+        out[windowFunction.output] = bundle[WINDOW_OUTPUT_ALIAS]?.[windowFunction.output] ?? null;
+      }
       for (const item of parsed.scalarSelectItems) {
         out[item.output] = await evaluateExpressionValue(item.expr, {
           parsed,
           input,
           cteRows,
+          options,
           bundle,
         });
       }
@@ -2846,7 +3953,197 @@ function flattenConjunctiveWhere(where: unknown): unknown[] | null {
   return [expr];
 }
 
-function normalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"], never> {
+type BooleanOperator = "AND" | "OR";
+
+type BooleanToken =
+  | {
+      kind: "expr";
+      expr: unknown;
+    }
+  | {
+      kind: "op";
+      op: BooleanOperator;
+    };
+
+function normalizeBooleanOperatorPrecedence(expr: unknown): unknown {
+  if (!expr || typeof expr !== "object") {
+    return expr;
+  }
+
+  const node = expr as {
+    type?: unknown;
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+    parentheses?: unknown;
+    args?: { value?: unknown };
+  };
+
+  if (node.type === "binary_expr") {
+    const normalized = {
+      ...node,
+      left: normalizeBooleanOperatorPrecedence(node.left),
+      right: normalizeBooleanOperatorPrecedence(node.right),
+    };
+
+    const operator = typeof normalized.operator === "string" ? normalized.operator : "";
+    if ((operator !== "AND" && operator !== "OR") || normalized.parentheses === true) {
+      return normalized;
+    }
+
+    return rebuildBooleanExpression(normalized);
+  }
+
+  if (node.type === "function") {
+    const args = node.args?.value;
+    if (Array.isArray(args)) {
+      return {
+        ...node,
+        args: {
+          ...node.args,
+          value: args.map((arg) => normalizeBooleanOperatorPrecedence(arg)),
+        },
+      };
+    }
+
+    if (args != null) {
+      return {
+        ...node,
+        args: {
+          ...node.args,
+          value: normalizeBooleanOperatorPrecedence(args),
+        },
+      };
+    }
+  }
+
+  return expr;
+}
+
+function rebuildBooleanExpression(root: {
+  type?: unknown;
+  operator?: unknown;
+  left?: unknown;
+  right?: unknown;
+  parentheses?: unknown;
+}): unknown {
+  const tokens = collectBooleanTokens(root);
+  if (tokens.length === 1 && tokens[0]?.kind === "expr") {
+    return tokens[0].expr;
+  }
+
+  const output: BooleanToken[] = [];
+  const operators: BooleanOperator[] = [];
+
+  for (const token of tokens) {
+    if (token.kind === "expr") {
+      output.push(token);
+      continue;
+    }
+
+    while (operators.length > 0) {
+      const top = operators[operators.length - 1];
+      if (!top || precedence(top) < precedence(token.op)) {
+        break;
+      }
+
+      output.push({
+        kind: "op",
+        op: top,
+      });
+      operators.pop();
+    }
+
+    operators.push(token.op);
+  }
+
+  while (operators.length > 0) {
+    const top = operators.pop();
+    if (!top) {
+      continue;
+    }
+    output.push({
+      kind: "op",
+      op: top,
+    });
+  }
+
+  const stack: unknown[] = [];
+  for (const token of output) {
+    if (token.kind === "expr") {
+      stack.push(token.expr);
+      continue;
+    }
+
+    const right = stack.pop();
+    const left = stack.pop();
+    if (left == null || right == null) {
+      return root;
+    }
+
+    stack.push({
+      type: "binary_expr",
+      operator: token.op,
+      left,
+      right,
+    });
+  }
+
+  return stack.length === 1 ? (stack[0] ?? root) : root;
+}
+
+function collectBooleanTokens(expr: unknown): BooleanToken[] {
+  if (!expr || typeof expr !== "object") {
+    return [
+      {
+        kind: "expr",
+        expr,
+      },
+    ];
+  }
+
+  const node = expr as {
+    type?: unknown;
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+    parentheses?: unknown;
+  };
+
+  if (node.type !== "binary_expr" || node.parentheses === true) {
+    return [
+      {
+        kind: "expr",
+        expr,
+      },
+    ];
+  }
+
+  const operator = typeof node.operator === "string" ? node.operator.toUpperCase() : "";
+  if (operator !== "AND" && operator !== "OR") {
+    return [
+      {
+        kind: "expr",
+        expr,
+      },
+    ];
+  }
+
+  return [
+    ...collectBooleanTokens(node.left),
+    {
+      kind: "op",
+      op: operator,
+    },
+    ...collectBooleanTokens(node.right),
+  ];
+}
+
+function precedence(operator: BooleanOperator): number {
+  return operator === "AND" ? 2 : 1;
+}
+
+function tryNormalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"], never> | null {
   switch (raw) {
     case "=":
       return "eq";
@@ -2868,7 +4165,7 @@ function normalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"], 
     case "IS NOT":
       return "is_not_null";
     default:
-      throw new Error(`Unsupported operator: ${String(raw)}`);
+      return null;
   }
 }
 
@@ -3137,6 +4434,107 @@ function toSubqueryAst(raw: unknown): SelectAst | undefined {
 
 function sourceColumnKey(alias: string, column: string): string {
   return `${alias}.${column}`;
+}
+
+function validateRowsForBinding<TContext>(
+  tableName: string,
+  rows: QueryRow[],
+  input: QueryInput<TContext>,
+): void {
+  const payload = {
+    schema: input.schema,
+    tableName,
+    rows,
+  } as const;
+
+  if (input.constraintValidation) {
+    validateTableConstraintRows({
+      ...payload,
+      options: input.constraintValidation,
+    });
+    return;
+  }
+
+  validateTableConstraintRows(payload);
+}
+
+function collectCteDependencies(ast: SelectAst, cteNames: Set<string>, selfName: string): string[] {
+  const out = new Set<string>();
+
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        visit(item);
+      }
+      return;
+    }
+
+    const entry = node as {
+      from?: unknown;
+      table?: unknown;
+      stmt?: { ast?: unknown };
+      with?: unknown;
+      _next?: unknown;
+      left?: unknown;
+      right?: unknown;
+      args?: { value?: unknown };
+      expr?: unknown;
+      value?: unknown;
+    };
+
+    if (typeof entry.table === "string" && cteNames.has(entry.table) && entry.table !== selfName) {
+      out.add(entry.table);
+    }
+
+    if (entry.from) {
+      visit(entry.from);
+    }
+
+    if (entry.stmt?.ast) {
+      visit(entry.stmt.ast);
+    }
+
+    if (entry.with) {
+      visit(entry.with);
+    }
+
+    if (entry._next) {
+      visit(entry._next);
+    }
+
+    if (entry.left) {
+      visit(entry.left);
+    }
+
+    if (entry.right) {
+      visit(entry.right);
+    }
+
+    if (entry.expr) {
+      visit(entry.expr);
+    }
+
+    if (entry.args?.value) {
+      visit(entry.args.value);
+    }
+
+    if (entry.value) {
+      visit(entry.value);
+    }
+
+    for (const value of Object.values(entry)) {
+      if (value && typeof value === "object") {
+        visit(value);
+      }
+    }
+  };
+
+  visit(ast);
+  return [...out];
 }
 
 function astifySingleSelect(sql: string): SelectAst {

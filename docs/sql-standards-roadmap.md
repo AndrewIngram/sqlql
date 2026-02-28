@@ -8,7 +8,7 @@ This roadmap defines how `sqlql` expands SQL support while keeping the user-faci
 
 Planning remains internal; users write SQL, not plans.
 
-## Current Baseline (v0.1.x)
+## Current Baseline (v0.2.x)
 
 Implemented today:
 
@@ -18,7 +18,7 @@ Implemented today:
 - `RIGHT JOIN ... ON a = b`
 - `FULL JOIN ... ON a = b`
 - `WHERE` with boolean predicate trees (`AND`, `OR`, `NOT`)
-- Operators: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`
+- Operators: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `BETWEEN`, `IS NULL`, `IS NOT NULL`
 - `ORDER BY` column refs
 - `LIMIT`, `OFFSET`
 - `GROUP BY` + aggregate functions: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
@@ -29,20 +29,38 @@ Implemented today:
 - Subqueries in predicates: `IN (SELECT ...)`, `EXISTS (SELECT ...)`
 - Scalar subqueries in `WHERE` and `SELECT`
 - Non-recursive `WITH` CTEs
+- Core window functions:
+  - ranking: `ROW_NUMBER`, `RANK`, `DENSE_RANK`
+  - aggregate windows: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+  - `PARTITION BY` + `ORDER BY` with default frame behavior
 - Aggregate route (`aggregate(...)`) with local fallback when route is unavailable
 - Join-aware dependency pushdown via `scan(...)` and optional `lookup(...)`
+- Dependency-aware parallel execution for independent branches:
+  - set-op branches
+  - independent CTE branches
+  - eligible source scan stages
+- Opt-in step execution sessions via `createQuerySession(...)`
+- Schema constraint metadata: `PRIMARY KEY`, `UNIQUE`, `FOREIGN KEY`
+- Optional query-time constraint validation modes: `off`, `warn`, `error`
+  - current checks: `NOT NULL`, primary-key uniqueness, unique-key uniqueness
+  - foreign-key runtime checks are intentionally deferred
 
 Currently rejected (not yet implemented):
 
 - Correlated subqueries
 - Subqueries in `FROM`
 - Recursive CTEs
+- Explicit window frame clauses
+- Named `WINDOW` clauses/references
+- Navigation/value window functions (`LEAD`, `LAG`, `FIRST_VALUE`, `LAST_VALUE`, ...)
 
 Target direction:
 
 - SQL standards compliance for read queries over time.
 - Keep parser/planner/executor behavior converging with SQLite parity for supported subsets.
 - Use a single parser mode (`node-sql-parser` default dialect), with no parser fallbacks/workarounds.
+- Treat schema constraints as communication-first metadata and optional runtime checks (not at-rest guarantees).
+- Defer index metadata and index-driven planning until constraint semantics are fully settled.
 - Continue expanding feature support milestone by milestone.
 - Keep performance pragmatic: semi-optimal pushdown and batching where possible, without pursuing full database-style optimization.
 
@@ -133,21 +151,27 @@ Performance is important but not the primary goal.
 
 ## Compatibility Matrix
 
-| Feature                             | Parser              | Planner             | Executor            | Resolver method           |
-| ----------------------------------- | ------------------- | ------------------- | ------------------- | ------------------------- |
-| Basic select/join/filter            | done                | done                | done                | `scan`, optional `lookup` |
-| Offset/null checks                  | done                | done                | done                | `scan`                    |
-| Aggregates/group by                 | done                | done                | done                | `aggregate` (preferred)   |
-| Non-recursive CTE                   | done                | done                | done                | none new                  |
-| OR/NOT                              | done                | done                | done                | `scan`                    |
-| HAVING                              | done                | done                | done                | `aggregate`/local         |
-| Set ops (`UNION ALL`/`UNION`)       | done                | done                | done                | none new                  |
-| Set ops (`INTERSECT`/`EXCEPT`)      | done                | done                | done                | none new                  |
-| DISTINCT                            | done                | done                | done                | none new                  |
-| Outer joins (`LEFT`/`RIGHT`/`FULL`) | done                | done                | done                | none new                  |
-| Subqueries (uncorrelated)           | done                | done                | done                | none new                  |
-| Subqueries (correlated/from)        | planned             | planned             | planned             | none new                  |
-| Writes (`INSERT/UPDATE/DELETE`)     | explicit no-support | explicit no-support | explicit no-support | none                      |
+| Feature                             | Parser              | Planner             | Executor              | Resolver method           |
+| ----------------------------------- | ------------------- | ------------------- | --------------------- | ------------------------- |
+| Basic select/join/filter            | done                | done                | done                  | `scan`, optional `lookup` |
+| Offset/null checks                  | done                | done                | done                  | `scan`                    |
+| Aggregates/group by                 | done                | done                | done                  | `aggregate` (preferred)   |
+| Non-recursive CTE                   | done                | done                | done                  | none new                  |
+| OR/NOT                              | done                | done                | done                  | `scan`                    |
+| HAVING                              | done                | done                | done                  | `aggregate`/local         |
+| Set ops (`UNION ALL`/`UNION`)       | done                | done                | done                  | none new                  |
+| Set ops (`INTERSECT`/`EXCEPT`)      | done                | done                | done                  | none new                  |
+| DISTINCT                            | done                | done                | done                  | none new                  |
+| Outer joins (`LEFT`/`RIGHT`/`FULL`) | done                | done                | done                  | none new                  |
+| Subqueries (uncorrelated)           | done                | done                | done                  | none new                  |
+| Subqueries (correlated/from)        | planned             | planned             | planned               | none new                  |
+| Window functions (core set)         | done                | done                | done                  | none new                  |
+| Branch-level parallel execution     | n/a                 | done                | done                  | none new                  |
+| Step-by-step query session API      | n/a                 | done                | done                  | none new                  |
+| Schema PK/FK/UNIQUE metadata        | done                | n/a                 | done (DDL)            | none new                  |
+| Constraint runtime validation       | n/a                 | n/a                 | done (off/warn/error) | none new                  |
+| Index metadata/planning hints       | deferred            | deferred            | deferred              | none                      |
+| Writes (`INSERT/UPDATE/DELETE`)     | explicit no-support | explicit no-support | explicit no-support   | none                      |
 
 ## Release Gate for Each Milestone
 
@@ -157,3 +181,9 @@ Each milestone is complete only when all are true:
 - Planner tests showing step graph and pushdown decisions.
 - Dual-engine integration parity tests (`sqlql` vs SQLite) for supported shapes.
 - `explain(...)` output updated to reflect new plan decisions.
+
+Current compliance test locations:
+
+- `test/compliance/*-parity.test.ts`: curated sqllogictest-style parity scenarios split by capability.
+- `test/compliance/standards-gaps.todo.test.ts`: explicit standards-gap TODOs for not-yet-supported SQL features.
+- `docs/parser-known-issues.md`: parser behaviors that currently require executor/planner compensations.

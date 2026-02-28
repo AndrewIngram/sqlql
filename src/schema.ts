@@ -21,9 +21,39 @@ export interface TableQueryOverrides {
   maxRows?: number | null;
 }
 
+export interface PrimaryKeyConstraint {
+  columns: string[];
+  name?: string;
+}
+
+export interface UniqueConstraint {
+  columns: string[];
+  name?: string;
+}
+
+export type ReferentialAction = "NO ACTION" | "RESTRICT" | "CASCADE" | "SET NULL" | "SET DEFAULT";
+
+export interface ForeignKeyConstraint {
+  columns: string[];
+  references: {
+    table: string;
+    columns: string[];
+  };
+  name?: string;
+  onDelete?: ReferentialAction;
+  onUpdate?: ReferentialAction;
+}
+
+export interface TableConstraints {
+  primaryKey?: PrimaryKeyConstraint;
+  unique?: UniqueConstraint[];
+  foreignKeys?: ForeignKeyConstraint[];
+}
+
 export interface TableDefinition {
   columns: TableColumns;
   query?: TableQueryOverrides;
+  constraints?: TableConstraints;
 }
 
 export interface SchemaDefinition {
@@ -67,6 +97,7 @@ export const DEFAULT_QUERY_BEHAVIOR: SchemaQueryDefaults = {
 };
 
 export function defineSchema<TSchema extends SchemaDefinition>(schema: TSchema): TSchema {
+  validateSchemaConstraints(schema);
   return schema;
 }
 
@@ -247,6 +278,8 @@ export interface SqlDdlOptions {
 }
 
 export function toSqlDDL(schema: SchemaDefinition, options: SqlDdlOptions = {}): string {
+  validateSchemaConstraints(schema);
+
   const createPrefix = options.ifNotExists ? "CREATE TABLE IF NOT EXISTS" : "CREATE TABLE";
   const statements: string[] = [];
 
@@ -256,15 +289,36 @@ export function toSqlDDL(schema: SchemaDefinition, options: SqlDdlOptions = {}):
       throw new Error(`Cannot generate DDL for table ${tableName} with no columns.`);
     }
 
-    const columnsSql = columnEntries
-      .map(([columnName, columnDefinition]) => {
-        const resolved = resolveColumnDefinition(columnDefinition);
-        const nullability = resolved.nullable ? "" : " NOT NULL";
-        return `  ${escapeIdentifier(columnName)} ${toSqlType(resolved.type)}${nullability}`;
-      })
-      .join(",\n");
+    const definitionLines = columnEntries.map(([columnName, columnDefinition]) => {
+      const resolved = resolveColumnDefinition(columnDefinition);
+      const nullability = resolved.nullable ? "" : " NOT NULL";
+      return `  ${escapeIdentifier(columnName)} ${toSqlType(resolved.type)}${nullability}`;
+    });
 
-    statements.push(`${createPrefix} ${escapeIdentifier(tableName)} (\n${columnsSql}\n);`);
+    const constraints = table.constraints;
+    if (constraints?.primaryKey) {
+      definitionLines.push(
+        `  ${renderConstraintPrefix(constraints.primaryKey.name)}PRIMARY KEY (${renderColumnList(constraints.primaryKey.columns)})`,
+      );
+    }
+
+    for (const uniqueConstraint of constraints?.unique ?? []) {
+      definitionLines.push(
+        `  ${renderConstraintPrefix(uniqueConstraint.name)}UNIQUE (${renderColumnList(uniqueConstraint.columns)})`,
+      );
+    }
+
+    for (const foreignKey of constraints?.foreignKeys ?? []) {
+      const onDelete = foreignKey.onDelete ? ` ON DELETE ${foreignKey.onDelete}` : "";
+      const onUpdate = foreignKey.onUpdate ? ` ON UPDATE ${foreignKey.onUpdate}` : "";
+      definitionLines.push(
+        `  ${renderConstraintPrefix(foreignKey.name)}FOREIGN KEY (${renderColumnList(foreignKey.columns)}) REFERENCES ${escapeIdentifier(foreignKey.references.table)} (${renderColumnList(foreignKey.references.columns)})${onDelete}${onUpdate}`,
+      );
+    }
+
+    statements.push(
+      `${createPrefix} ${escapeIdentifier(tableName)} (\n${definitionLines.join(",\n")}\n);`,
+    );
   }
 
   return statements.join("\n\n");
@@ -310,4 +364,105 @@ export function resolveColumnType(definition: TableColumnDefinition): SqlScalarT
 
 function escapeIdentifier(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
+}
+
+function renderColumnList(columns: string[]): string {
+  return columns.map(escapeIdentifier).join(", ");
+}
+
+function renderConstraintPrefix(name: string | undefined): string {
+  return name ? `CONSTRAINT ${escapeIdentifier(name)} ` : "";
+}
+
+function validateSchemaConstraints(schema: SchemaDefinition): void {
+  for (const [tableName, table] of Object.entries(schema.tables)) {
+    const constraints = table.constraints;
+    if (!constraints) {
+      continue;
+    }
+
+    if (constraints.primaryKey) {
+      validateConstraintColumns(schema, tableName, "primary key", constraints.primaryKey.columns);
+      validateNoDuplicateColumns(tableName, "primary key", constraints.primaryKey.columns);
+    }
+
+    constraints.unique?.forEach((uniqueConstraint, index) => {
+      const label = uniqueConstraint.name ?? `unique constraint #${index + 1}`;
+      validateConstraintColumns(schema, tableName, label, uniqueConstraint.columns);
+      validateNoDuplicateColumns(tableName, label, uniqueConstraint.columns);
+    });
+
+    constraints.foreignKeys?.forEach((foreignKey, index) => {
+      const label = foreignKey.name ?? `foreign key #${index + 1}`;
+      validateConstraintColumns(schema, tableName, label, foreignKey.columns);
+      validateNoDuplicateColumns(tableName, label, foreignKey.columns);
+
+      const referencedTable = schema.tables[foreignKey.references.table];
+      if (!referencedTable) {
+        throw new Error(
+          `Invalid ${label} on ${tableName}: referenced table "${foreignKey.references.table}" does not exist.`,
+        );
+      }
+
+      if (foreignKey.columns.length !== foreignKey.references.columns.length) {
+        throw new Error(
+          `Invalid ${label} on ${tableName}: local columns (${foreignKey.columns.length}) and referenced columns (${foreignKey.references.columns.length}) must have the same length.`,
+        );
+      }
+
+      if (foreignKey.references.columns.length === 0) {
+        throw new Error(`Invalid ${label} on ${tableName}: referenced columns cannot be empty.`);
+      }
+
+      for (const referencedColumn of foreignKey.references.columns) {
+        if (!(referencedColumn in referencedTable.columns)) {
+          throw new Error(
+            `Invalid ${label} on ${tableName}: referenced column "${referencedColumn}" does not exist on table "${foreignKey.references.table}".`,
+          );
+        }
+      }
+
+      validateNoDuplicateColumns(
+        `${tableName} -> ${foreignKey.references.table}`,
+        `${label} referenced columns`,
+        foreignKey.references.columns,
+      );
+    });
+  }
+}
+
+function validateConstraintColumns(
+  schema: SchemaDefinition,
+  tableName: string,
+  label: string,
+  columns: string[],
+): void {
+  if (columns.length === 0) {
+    throw new Error(`Invalid ${label} on ${tableName}: columns cannot be empty.`);
+  }
+
+  const table = schema.tables[tableName];
+  if (!table) {
+    throw new Error(`Unknown table in schema constraints: ${tableName}`);
+  }
+
+  for (const column of columns) {
+    if (!(column in table.columns)) {
+      throw new Error(
+        `Invalid ${label} on ${tableName}: column "${column}" does not exist on table "${tableName}".`,
+      );
+    }
+  }
+}
+
+function validateNoDuplicateColumns(tableName: string, label: string, columns: string[]): void {
+  const seen = new Set<string>();
+  for (const column of columns) {
+    if (seen.has(column)) {
+      throw new Error(
+        `Invalid ${label} on ${tableName}: duplicate column "${column}" in constraint definition.`,
+      );
+    }
+    seen.add(column);
+  }
 }

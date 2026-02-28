@@ -41,12 +41,15 @@
     "fmt:check": "oxfmt --check",
     "example:build": "pnpm --dir examples/basic build",
     "example:start": "pnpm --dir examples/basic start",
+    "example:drizzle:build": "pnpm --filter @sqlql/drizzle build && pnpm --dir examples/drizzle build",
+    "example:drizzle:start": "pnpm --dir examples/drizzle start",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "node-sql-parser": "^5.3.12"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.3.0",
     "better-sqlite3": "^12.6.2",
     "oxfmt": "latest",

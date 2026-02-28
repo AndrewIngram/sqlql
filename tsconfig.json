@@ -13,7 +13,8 @@
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
-      "sqlql": ["src/index.ts"]
+      "sqlql": ["src/index.ts"],
+      "@sqlql/drizzle": ["packages/drizzle/src/index.ts"]
     }
   },
   "include": ["src", "test", "examples"]

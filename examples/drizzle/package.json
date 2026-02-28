@@ -1,0 +1,19 @@
+{
+  "name": "@sqlql/example-drizzle",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@sqlql/drizzle": "workspace:*",
+    "better-sqlite3": "^12.6.2",
+    "drizzle-orm": "latest",
+    "sqlql": "workspace:*"
+  }
+}

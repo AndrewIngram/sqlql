@@ -6,6 +6,34 @@ import { withQueryHarness } from "../support/query-harness";
 const EMPTY_CONTEXT = {} as const;
 
 describe("query/predicates", () => {
+  it("applies SQL boolean precedence (AND before OR) without explicit parentheses", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT id
+            FROM orders
+            WHERE org_id = 'org_1' OR status = 'paid' AND total_cents > 5000
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1" },
+          { id: "ord_2" },
+          { id: "ord_3" },
+          { id: "ord_4" },
+        ]);
+      },
+    );
+  });
+
   it("supports OR predicates", async () => {
     await withQueryHarness(
       {
@@ -71,6 +99,29 @@ describe("query/predicates", () => {
 
         expect(actual).toEqual(expected);
         expect(actual).toEqual([{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_3" }]);
+      },
+    );
+  });
+
+  it("supports BETWEEN predicates", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT id
+            FROM orders
+            WHERE total_cents BETWEEN 1500 AND 3000
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([{ id: "ord_2" }, { id: "ord_3" }]);
       },
     );
   });

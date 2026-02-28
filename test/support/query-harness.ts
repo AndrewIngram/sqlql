@@ -99,7 +99,7 @@ export async function withQueryHarness<
 function createControlDatabase<TSchema extends SchemaDefinition>(
   schema: TSchema,
   rowsByTable: RowsByTable<TSchema>,
-): Database {
+): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   db.exec(toSqlDDL(schema, { ifNotExists: true }));
 

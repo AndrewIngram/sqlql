@@ -110,6 +110,174 @@ describe("defineSchema", () => {
     );
   });
 
+  it("generates PRIMARY KEY, UNIQUE, and FOREIGN KEY constraints in DDL", () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
+          columns: {
+            id: { type: "text", nullable: false },
+            email: { type: "text", nullable: false },
+            display_name: "text",
+          },
+          constraints: {
+            primaryKey: {
+              columns: ["id"],
+            },
+            unique: [
+              {
+                name: "users_email_unique",
+                columns: ["email"],
+              },
+            ],
+          },
+        },
+        projects: {
+          columns: {
+            id: { type: "text", nullable: false },
+            owner_user_id: { type: "text", nullable: false },
+            name: "text",
+          },
+          constraints: {
+            primaryKey: {
+              columns: ["id"],
+            },
+            foreignKeys: [
+              {
+                name: "projects_owner_fk",
+                columns: ["owner_user_id"],
+                references: {
+                  table: "users",
+                  columns: ["id"],
+                },
+                onDelete: "CASCADE",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(toSqlDDL(schema)).toBe(
+      [
+        'CREATE TABLE "users" (',
+        '  "id" TEXT NOT NULL,',
+        '  "email" TEXT NOT NULL,',
+        '  "display_name" TEXT,',
+        '  PRIMARY KEY ("id"),',
+        '  CONSTRAINT "users_email_unique" UNIQUE ("email")',
+        ");",
+        "",
+        'CREATE TABLE "projects" (',
+        '  "id" TEXT NOT NULL,',
+        '  "owner_user_id" TEXT NOT NULL,',
+        '  "name" TEXT,',
+        '  PRIMARY KEY ("id"),',
+        '  CONSTRAINT "projects_owner_fk" FOREIGN KEY ("owner_user_id") REFERENCES "users" ("id") ON DELETE CASCADE',
+        ");",
+      ].join("\n"),
+    );
+  });
+
+  it("rejects constraints that reference unknown columns/tables or mismatched arity", () => {
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              id: "text",
+            },
+            constraints: {
+              primaryKey: {
+                columns: ["missing_column"],
+              },
+            },
+          },
+        },
+      }),
+    ).toThrow('column "missing_column" does not exist');
+
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              id: "text",
+            },
+          },
+          projects: {
+            columns: {
+              id: "text",
+              owner_id: "text",
+            },
+            constraints: {
+              foreignKeys: [
+                {
+                  columns: ["owner_id"],
+                  references: {
+                    table: "missing_table",
+                    columns: ["id"],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toThrow('referenced table "missing_table" does not exist');
+
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              id: "text",
+              email: "text",
+            },
+          },
+          projects: {
+            columns: {
+              id: "text",
+              owner_id: "text",
+            },
+            constraints: {
+              foreignKeys: [
+                {
+                  columns: ["id", "owner_id"],
+                  references: {
+                    table: "users",
+                    columns: ["id"],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toThrow("must have the same length");
+  });
+
+  it("rejects duplicate columns inside a single constraint", () => {
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              id: "text",
+              email: "text",
+            },
+            constraints: {
+              unique: [
+                {
+                  columns: ["email", "email"],
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toThrow('duplicate column "email"');
+  });
+
   it("infers scan/aggregate request columns from schema", () => {
     const schema = defineSchema({
       tables: {
