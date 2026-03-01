@@ -3,123 +3,56 @@
 _Warning:_ Currently very rough and LLM-generated, not ready for production use.
 
 `sqlql` is a TypeScript library for exposing a SQL interface over arbitrary data sources.
-
-You define:
-
-- a schema (tables + columns)
-- table methods (`scan`, optional `lookup`, optional `aggregate`)
-
-Then users write SQL queries, and `sqlql` parses and executes them by calling your methods.
-
-## SQL capabilities
-
-Parser policy:
-
-- single in-house parser targeting SQLite SQL (baseline aligned to SQLite 3.51 semantics)
-- no parser fallback/workaround paths
-
-Supported:
-
-- `SELECT` queries
-- `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, and `FULL JOIN`
-- boolean `WHERE` predicates (`AND`, `OR`, `NOT`)
-- `IN`, `BETWEEN`, `IS NULL`, `IS NOT NULL`
-- aggregates (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) and `HAVING`
-- `SELECT DISTINCT`
-- `UNION ALL`, `UNION`, `INTERSECT`, and `EXCEPT`
-- uncorrelated subqueries (`IN (SELECT ...)`, `EXISTS`, scalar subqueries)
-- non-recursive CTEs (`WITH ...`)
-- window functions (core set): `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `COUNT/SUM/AVG/MIN/MAX ... OVER (...)`
-
-Not yet supported:
-
-- write statements (`INSERT`, `UPDATE`, `DELETE`)
-- recursive CTEs
-- correlated subqueries
-- subqueries in `FROM`
-- advanced window frame clauses (beyond `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`)
-- some navigation/value window functions (`FIRST_VALUE`, `LAST_VALUE`, etc.)
-
-## Schema constraints
-
-`sqlql` supports schema-level metadata for:
-
-- `PRIMARY KEY`
-- `UNIQUE`
-- `FOREIGN KEY`
-
-This metadata is used to:
-
-- improve schema communication/introspection for consumers (including LLMs)
-- generate richer SQL DDL via `toSqlDDL(...)`
-
-Optional query-time validation is available through `query(...)`:
-
-- `constraintValidation.mode = "off" | "warn" | "error"`
-- runtime checks: `NOT NULL`, `PRIMARY KEY` uniqueness, `UNIQUE` uniqueness on retrieved table rows
-- foreign-key runtime checks are not implemented
-
-Important limitation:
-
-- these constraints are metadata plus optional query-time checks; they do not guarantee at-rest integrity unless the underlying data store enforces them
+You define a logical schema and table methods, then users write SQL and `sqlql` executes by calling your methods.
 
 ## Why
 
 One core motivation is AI tooling.
 
-If you are building tools (for example with the AI SDK) that accept SQL as input, directly exposing your production database is usually a bad fit: security, tenancy boundaries, query cost, and brittle coupling all become immediate risks.
+If you are building tools that accept SQL input, directly exposing production databases is usually a bad fit: security boundaries, tenancy boundaries, query cost, and coupling risks show up immediately.
 
-`sqlql` gives you a middle layer:
+`sqlql` gives you a controlled middle layer:
 
 - expose only an allowlisted logical schema
-- map table access to domain-aware methods (`scan`, `lookup`, `aggregate`)
-- keep full control over what data can be queried and how it is fetched
+- map table access to domain-aware methods (`scan`, optional `lookup`, optional `aggregate`)
+- keep control over what data is queryable and how it is fetched
 
-That means you keep the ergonomic upside of SQL for agents and developers, without requiring direct DB connectivity from the tool runtime.
+This keeps SQL ergonomics for agents and developers without requiring direct DB connectivity from the tool runtime.
 
-Security model:
+For LLM-driven tools specifically, a SQL interface gives the model flexible retrieval patterns while minimizing how much raw data needs to be injected into the context window, all through a single tool surface.
 
-- `sqlql` does not provide authorization or tenancy guarantees by itself.
-- The underlying domain methods (`scan`, `lookup`, `aggregate`) are responsible for enforcing access control and data-security constraints.
-- `sqlql` can help with query-shape guardrails, but security guarantees must come from your domain/storage layer.
+## Conceptual limits and non-goals
+
+`sqlql` intentionally does not try to be a full database.
 
 Explicit non-goals:
 
 - write statements (`INSERT`, `UPDATE`, `DELETE`)
+
+Currently unsupported query shapes:
+
 - recursive CTEs
-- correlated / `FROM` subqueries
-
-Performance philosophy:
-
-- `sqlql` should be reasonably efficient and avoid obvious over-fetching.
-- It should use pragmatic optimizations (projection pushdown, filter pushdown, lookup batching, aggregate routing) when available.
-- It can execute independent branches in parallel (set-op branches, independent CTEs, and eligible scan stages).
-- It is not trying to be a full database or a cost-based optimizer.
-- Correctness, safety, and predictable behavior are prioritized over aggressive optimization.
+- correlated subqueries
+- subqueries in `FROM`
 
 Accepted limitation (relational data sources):
 
 - `sqlql` executes relational workflows in staged table-method calls.
 - `sqlql` does not currently collapse multi-stage relational work into a single provider-native joined query.
-- Even when a backing relational store could answer in one SQL statement, execution may still involve multiple stage calls.
-- This is an accepted limitation for now.
+- Even when a relational backing store could answer in one SQL statement, execution may still involve multiple stage calls.
 
-## Install
+## Quick usage
+
+Install:
 
 ```bash
 pnpm add sqlql
 ```
 
-## Quick start
+Minimal end-to-end flow:
 
 ```ts
-import {
-  createArrayTableMethods,
-  defineSchema,
-  defineTableMethods,
-  query,
-  type QueryRow,
-} from "sqlql";
+import { defineSchema, defineTableMethods, query } from "sqlql";
 
 const schema = defineSchema({
   tables: {
@@ -140,14 +73,17 @@ const schema = defineSchema({
   },
 });
 
-const tableData = {
-  orders: [] as QueryRow<typeof schema, "orders">[],
-  users: [] as QueryRow<typeof schema, "users">[],
-};
-
 const methods = defineTableMethods(schema, {
-  orders: createArrayTableMethods(tableData.orders),
-  users: createArrayTableMethods(tableData.users),
+  orders: {
+    async scan(_request, _context) {
+      return [];
+    },
+  },
+  users: {
+    async scan(_request, _context) {
+      return [];
+    },
+  },
 });
 
 const rows = await query({
@@ -164,69 +100,139 @@ const rows = await query({
 });
 ```
 
-`createArrayTableMethods(...)` is useful for demos/tests where each table is a JSON-like object array.
+## Method contract examples (scan + aggregate)
 
-## Step-by-step execution session (experimental)
-
-For debugging and tooling UIs, you can create a query session and step execution manually:
+Inside `defineTableMethods(schema, ...)`, request parameter types are inferred from your schema, so typical implementations can stay concise:
 
 ```ts
-import { createQuerySession } from "sqlql";
+import { defineTableMethods } from "sqlql";
 
-const session = createQuerySession({
-  schema,
-  methods,
-  context: {},
-  sql: "SELECT id FROM orders",
+const methods = defineTableMethods(schema, {
+  orders: {
+    async scan(request, context) {
+      return context.ordersRepo.scan({
+        table: request.table,
+        alias: request.alias,
+        select: request.select,
+        where: request.where,
+        orderBy: request.orderBy,
+        limit: request.limit,
+        offset: request.offset,
+      });
+    },
+    async aggregate(request, context) {
+      return context.ordersRepo.aggregate({
+        table: request.table,
+        alias: request.alias,
+        where: request.where,
+        groupBy: request.groupBy,
+        metrics: request.metrics,
+        limit: request.limit,
+      });
+    },
+  },
+  users: {
+    async scan(request, context) {
+      return context.usersRepo.scan({
+        table: request.table,
+        alias: request.alias,
+        select: request.select,
+        where: request.where,
+        orderBy: request.orderBy,
+        limit: request.limit,
+        offset: request.offset,
+      });
+    },
+  },
 });
-
-const plan = session.getPlan(); // full pre-execution plan
-const event = await session.next(); // execute one step
-const rows = await session.runToCompletion(); // finish remaining steps
 ```
 
-Session steps include:
+`scan(request, context)` argument shape:
 
-- logical metadata (`phase`, `sqlOrigin`, `operation`, `dependsOn`)
-- normalized request/pushdown hints where available
-- runtime overlays (`status`, `executionIndex`, timing, row counts, optional row snapshots)
+- `request.table`: logical table name for the method call.
+- `request.alias`: optional SQL alias for the table binding.
+- `request.select`: projected column list to return.
+- `request.where`: optional normalized filter clauses (`eq`, `in`, `is_null`, etc.).
+- `request.orderBy`: optional sort terms (`column`, `direction`).
+- `request.limit` / `request.offset`: optional pagination bounds.
+- `context`: your app/domain context from `query({ context })`.
+- return type: `Promise<QueryRow[]>`.
 
-## DDL output
+`aggregate(request, context)` argument shape:
+
+- `request.table`: logical table name for the method call.
+- `request.alias`: optional SQL alias for the table binding.
+- `request.where`: optional normalized filter clauses before grouping.
+- `request.groupBy`: optional grouping columns.
+- `request.metrics`: aggregate spec list (`fn`, optional `column`, `as`, optional `distinct`).
+- `request.limit`: optional output row cap.
+- `context`: your app/domain context from `query({ context })`.
+- return type: `Promise<QueryRow[]>` with grouped rows and metric outputs.
+
+## JSON helper methods (optional)
+
+For demos, tests, and rapid prototypes, `createArrayTableMethods(...)` generates table methods from in-memory rows:
 
 ```ts
-import { toSqlDDL } from "sqlql";
+import { createArrayTableMethods, defineTableMethods } from "sqlql";
 
-console.log(toSqlDDL(schema, { ifNotExists: true }));
+const methods = defineTableMethods(schema, {
+  orders: createArrayTableMethods(ordersRows),
+  users: createArrayTableMethods(usersRows),
+});
 ```
 
-`toSqlDDL(...)` targets SQLite-friendly type output (`TEXT`, `INTEGER`) and includes timestamp
-metadata comments (ISO-8601 expectation) on timestamp columns.
+## Security model
 
-## Facade example (Drizzle)
+- `sqlql` does not provide authorization or tenancy guarantees by itself.
+- Domain methods (`scan`, `lookup`, `aggregate`) must enforce access control and data security.
+- `sqlql` can add query-shape guardrails, but security guarantees come from your domain/storage layer.
 
-The Drizzle example demonstrates a restricted, consumer-oriented facade:
+## Performance philosophy
 
-- internal DB has org tables and internal-only tables
-- exposed schema omits internal plumbing (`organizations`, `org_id`, `admin_notes`)
-- all table methods scope implicitly from `ctx.userId`
+- `sqlql` should be reasonably efficient and avoid obvious over-fetching.
+- It should use pragmatic optimizations when available (projection pushdown, filter pushdown, lookup routing, aggregate routing).
+- It can execute independent branches in parallel (for example set-op branches and independent CTEs).
+- It is not a full cost-based optimizer.
+- Correctness, safety, and predictable behavior are prioritized over aggressive optimization.
 
-Run:
+## SQLite alignment and feature status
 
-```bash
-pnpm example:drizzle:build
-pnpm example:drizzle:start
-```
+Parser alignment:
 
-## Playground webapp
+- single in-house parser targeting SQLite SQL (baseline aligned to SQLite 3.51 semantics)
+- no parser fallback/workaround paths
 
-The playground is a Vite + React app for interactive planning and execution:
+Supported:
 
-- author schema JSON and rows JSON directly in Monaco editors
-- get schema-aware SQL completions (tables, aliases, columns, functions)
-- run/step queries with `createQuerySession(...)`
-- visualize plan dependencies as a node graph
-- inspect step state and row snapshots
-- rewind with replay-based `Back`
+- `SELECT` queries
+- `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL JOIN`
+- boolean `WHERE` predicates (`AND`, `OR`, `NOT`)
+- `IN`, `BETWEEN`, `IS NULL`, `IS NOT NULL`
+- aggregates (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) and `HAVING`
+- `SELECT DISTINCT`
+- `UNION ALL`, `UNION`, `INTERSECT`, `EXCEPT`
+- uncorrelated subqueries (`IN (SELECT ...)`, `EXISTS`, scalar subqueries)
+- non-recursive CTEs (`WITH ...`)
+- window functions (core set): `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LEAD`, `LAG`, and aggregate windows
+- `toSqlDDL(...)` with SQLite-oriented output (`TEXT`/`INTEGER`) and timestamp metadata comments
+
+Not yet supported:
+
+- write statements (`INSERT`, `UPDATE`, `DELETE`)
+- recursive CTEs
+- correlated subqueries
+- subqueries in `FROM`
+- advanced window frame clauses (beyond `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`)
+- some navigation/value window functions (`FIRST_VALUE`, `LAST_VALUE`, etc.)
+
+## Playground
+
+The playground is a Vite + React app for interactive exploration:
+
+- edit schema/data/query in Monaco
+- run queries and inspect results
+- view plan dependencies as a graph
 
 Run:
 
@@ -234,55 +240,23 @@ Run:
 pnpm example:playground:dev
 ```
 
-Build + preview:
+## Facade example (Drizzle)
+
+Optional example showing a restricted SQL facade over a Drizzle-backed store.
+
+Run:
 
 ```bash
-pnpm example:playground:build
-pnpm example:playground:start
+pnpm example:drizzle:build
+pnpm example:drizzle:start
 ```
 
-## Project structure
-
-- `src/schema.ts`: schema and table method contracts
-- `src/constraints.ts`: optional query-time constraint validation
-- `src/parser.ts`: SQL parser adapter (in-house SQLite parser)
-- `src/sqlite-parser/*`: in-house SQLite lexer/parser + AST
-- `src/query.ts`: SQL parsing + query execution
-- `src/planning.ts`: planning model types
-- `src/index.ts`: package entrypoint
-- `packages/drizzle`: optional Drizzle adapter helpers (`@sqlql/drizzle`)
-- `docs/sql-standards-roadmap.md`: incremental SQL support plan
-- `docs/parser-known-issues.md`: parser behavior notes and known gaps
-- `examples/playground`: interactive schema/data/query playground
-
-## Local development
+## Contributing (quick start)
 
 ```bash
 pnpm install
 pnpm build
 pnpm test
 pnpm typecheck
-```
-
-Run the example:
-
-```bash
-pnpm example:build
-pnpm example:start
-pnpm example:drizzle:build
-pnpm example:drizzle:start
-pnpm example:playground:build
-pnpm example:playground:start
-```
-
-Run compliance-focused parity tests:
-
-```bash
-pnpm test -- test/compliance
-```
-
-## Publish
-
-```bash
-pnpm publish --access public
+pnpm example:playground:dev
 ```

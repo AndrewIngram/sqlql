@@ -191,6 +191,7 @@ function PlanGraphCanvas({
         nodes={graphModel.nodes}
         edges={graphModel.edges}
         nodeTypes={nodeTypes}
+        proOptions={{ hideAttribution: true }}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable
@@ -204,7 +205,7 @@ function PlanGraphCanvas({
         }}
         onPaneClick={() => onClearSelection?.()}
       >
-        <Controls position="top-right" showInteractive={false} />
+        <Controls position="bottom-left" orientation="horizontal" showInteractive={false} />
         <Background gap={24} size={1} color="#d6e3ef" />
       </ReactFlow>
     </div>
