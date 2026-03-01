@@ -174,10 +174,16 @@ const session = createQuerySession({
   sql: "SELECT id FROM orders",
 });
 
-const event = await session.next(); // one execution step
-const rows = await session.runToCompletion(); // finish all remaining steps
-const plan = session.getPlan(); // discovered execution steps
+const plan = session.getPlan(); // full pre-execution plan
+const event = await session.next(); // execute one step
+const rows = await session.runToCompletion(); // finish remaining steps
 ```
+
+Session steps include:
+
+- logical metadata (`phase`, `sqlOrigin`, `operation`, `dependsOn`)
+- normalized request/pushdown hints where available
+- runtime overlays (`status`, `executionIndex`, timing, row counts, optional row snapshots)
 
 ## DDL output
 
@@ -202,6 +208,30 @@ pnpm example:drizzle:build
 pnpm example:drizzle:start
 ```
 
+## Playground webapp
+
+The playground is a Vite + React app for interactive planning and execution:
+
+- author schema JSON and rows JSON directly in Monaco editors
+- get schema-aware SQL completions (tables, aliases, columns, functions)
+- run/step queries with `createQuerySession(...)`
+- visualize plan dependencies as a node graph
+- inspect step state and row snapshots
+- rewind with replay-based `Back`
+
+Run:
+
+```bash
+pnpm example:playground:dev
+```
+
+Build + preview:
+
+```bash
+pnpm example:playground:build
+pnpm example:playground:start
+```
+
 ## Project structure
 
 - `src/schema.ts`: schema and table method contracts
@@ -213,6 +243,7 @@ pnpm example:drizzle:start
 - `packages/drizzle`: optional Drizzle adapter helpers (`@sqlql/drizzle`)
 - `docs/sql-standards-roadmap.md`: incremental SQL support plan
 - `docs/parser-known-issues.md`: parser-specific limitations and desired future behavior
+- `examples/playground`: interactive schema/data/query playground
 
 ## Local development
 
@@ -230,6 +261,8 @@ pnpm example:build
 pnpm example:start
 pnpm example:drizzle:build
 pnpm example:drizzle:start
+pnpm example:playground:build
+pnpm example:playground:start
 ```
 
 Run compliance-focused parity tests:

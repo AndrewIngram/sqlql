@@ -17,5 +17,5 @@
       "@sqlql/drizzle": ["packages/drizzle/src/index.ts"]
     }
   },
-  "include": ["src", "test", "examples"]
+  "include": ["src", "test", "examples/**/*.ts"]
 }

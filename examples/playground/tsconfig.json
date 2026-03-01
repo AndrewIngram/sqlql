@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client", "node", "react", "react-dom"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "sqlql": ["../../src/index.ts"],
+      "@sqlql/drizzle": ["../../packages/drizzle/src/index.ts"]
+    }
+  },
+  "include": ["src", "test", "vite.config.ts"]
+}

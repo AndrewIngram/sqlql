@@ -43,6 +43,9 @@
     "example:start": "pnpm --dir examples/basic start",
     "example:drizzle:build": "pnpm --filter @sqlql/drizzle build && pnpm --dir examples/drizzle build",
     "example:drizzle:start": "pnpm --dir examples/drizzle start",
+    "example:playground:build": "pnpm --dir examples/playground build",
+    "example:playground:start": "pnpm --dir examples/playground start",
+    "example:playground:dev": "pnpm --dir examples/playground dev",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

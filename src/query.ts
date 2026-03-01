@@ -46,11 +46,34 @@ export type QueryStepKind =
   | "limit_offset"
   | "projection";
 
+export type QueryStepPhase = "logical" | "fetch" | "transform" | "output";
+export type QuerySqlOrigin =
+  | "SELECT"
+  | "FROM"
+  | "WHERE"
+  | "GROUP BY"
+  | "HAVING"
+  | "ORDER BY"
+  | "WITH"
+  | "SET_OP";
+export type QueryStepRoute = "scan" | "lookup" | "aggregate" | "local";
+
+export interface QueryStepOperation {
+  name: string;
+  details?: Record<string, unknown>;
+}
+
 export interface QueryExecutionPlanStep {
   id: string;
   kind: QueryStepKind;
   dependsOn: string[];
   summary: string;
+  phase: QueryStepPhase;
+  operation: QueryStepOperation;
+  request?: Record<string, unknown>;
+  pushdown?: Record<string, unknown>;
+  outputs?: string[];
+  sqlOrigin?: QuerySqlOrigin;
 }
 
 export interface QueryExecutionPlan {
@@ -65,11 +88,16 @@ export interface QueryStepState {
   status: QueryStepStatus;
   summary: string;
   dependsOn: string[];
+  executionIndex?: number;
   startedAt?: number;
   endedAt?: number;
   durationMs?: number;
   rowCount?: number;
+  inputRowCount?: number;
+  outputRowCount?: number;
   rows?: QueryRow[];
+  routeUsed?: QueryStepRoute;
+  notes?: string[];
   error?: string;
 }
 
@@ -79,11 +107,16 @@ export interface QueryStepEvent {
   status: "done" | "failed";
   summary: string;
   dependsOn: string[];
+  executionIndex: number;
   startedAt: number;
   endedAt: number;
   durationMs: number;
   rowCount?: number;
+  inputRowCount?: number;
+  outputRowCount?: number;
   rows?: QueryRow[];
+  routeUsed?: QueryStepRoute;
+  notes?: string[];
   error?: string;
 }
 
@@ -257,16 +290,91 @@ interface MetricAccumulator {
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 
+interface StepRunMetadata {
+  inputRowCount?: number;
+  outputRowCount?: number;
+  routeUsed?: QueryStepRoute;
+  notes?: string[];
+}
+
+interface StepRunWithMetadata<T> {
+  value: T;
+  metadata?: StepRunMetadata;
+}
+
+interface StepRuntimeOptions {
+  metadata?: StepRunMetadata;
+}
+
+interface StepTemplateOptions {
+  phase?: QueryStepPhase;
+  operation?: QueryStepOperation;
+  request?: Record<string, unknown>;
+  pushdown?: Record<string, unknown>;
+  outputs?: string[];
+  sqlOrigin?: QuerySqlOrigin;
+}
+
+interface PrecompiledPlanMatchState {
+  byKey: Map<string, string[]>;
+}
+
+function stepKey(kind: QueryStepKind, summary: string): string {
+  return `${kind}::${summary}`;
+}
+
+function createExecutionPlanStep(
+  id: string,
+  kind: QueryStepKind,
+  summary: string,
+  dependsOn: string[],
+  template: StepTemplateOptions = {},
+): QueryExecutionPlanStep {
+  return {
+    id,
+    kind,
+    dependsOn: [...dependsOn],
+    summary,
+    phase: template.phase ?? defaultPhaseForStep(kind),
+    operation:
+      template.operation ??
+      ({
+        name: kind,
+      } satisfies QueryStepOperation),
+    ...(template.request ? { request: template.request } : {}),
+    ...(template.pushdown ? { pushdown: template.pushdown } : {}),
+    ...(template.outputs ? { outputs: [...template.outputs] } : {}),
+    ...(template.sqlOrigin ? { sqlOrigin: template.sqlOrigin } : {}),
+  };
+}
+
+function defaultPhaseForStep(kind: QueryStepKind): QueryStepPhase {
+  switch (kind) {
+    case "scan":
+    case "aggregate":
+      return "fetch";
+    case "projection":
+      return "output";
+    case "cte":
+    case "set_op_branch":
+      return "logical";
+    default:
+      return "transform";
+  }
+}
+
 class StepController {
   readonly #options: QuerySessionOptions;
   readonly #steps: QueryExecutionPlanStep[] = [];
   readonly #states = new Map<string, QueryStepState>();
+  readonly #precompiled: PrecompiledPlanMatchState;
   readonly #events: QueryStepEvent[] = [];
   readonly #manual: boolean;
   #permits = 0;
   #pendingTurnResolvers: Array<() => void> = [];
   #eventWaiters: Array<() => void> = [];
   #stepCounter = 0;
+  #executionIndex = 0;
   #eventCursor = 0;
   #activeStepDepth = 0;
   #started = false;
@@ -276,10 +384,37 @@ class StepController {
   #executionPromise: Promise<QueryRow[]> | null = null;
   readonly #execute: () => Promise<QueryRow[]>;
 
-  constructor(options: QuerySessionOptions, execute: () => Promise<QueryRow[]>) {
+  constructor(
+    options: QuerySessionOptions,
+    execute: () => Promise<QueryRow[]>,
+    initialPlan: QueryExecutionPlanStep[] = [],
+    manual = true,
+  ) {
     this.#options = options;
     this.#execute = execute;
-    this.#manual = true;
+    this.#manual = manual;
+    this.#precompiled = {
+      byKey: new Map<string, string[]>(),
+    };
+
+    for (const step of initialPlan) {
+      this.#steps.push({ ...step, dependsOn: [...step.dependsOn] });
+      this.#states.set(step.id, {
+        id: step.id,
+        kind: step.kind,
+        summary: step.summary,
+        dependsOn: [...step.dependsOn],
+        status: "ready",
+      });
+      const key = stepKey(step.kind, step.summary);
+      const queue = this.#precompiled.byKey.get(key) ?? [];
+      queue.push(step.id);
+      this.#precompiled.byKey.set(key, queue);
+      const parsedIndex = Number(step.id.replace("step_", ""));
+      if (Number.isFinite(parsedIndex)) {
+        this.#stepCounter = Math.max(this.#stepCounter, parsedIndex);
+      }
+    }
   }
 
   start(): void {
@@ -379,9 +514,11 @@ class StepController {
     kind: QueryStepKind,
     summary: string,
     dependsOn: string[],
-    run: () => Promise<T>,
+    run: () => Promise<T | StepRunWithMetadata<T>>,
+    template: StepTemplateOptions = {},
+    runtime: StepRuntimeOptions = {},
   ): Promise<T> {
-    const stepId = this.#createStep(kind, summary, dependsOn);
+    const stepId = this.#assignStepId(kind, summary, dependsOn, template);
     const state = this.#states.get(stepId);
     if (!state) {
       throw new Error(`Unknown step state for step ${stepId}`);
@@ -397,18 +534,39 @@ class StepController {
     this.#activeStepDepth += 1;
 
     try {
-      const output = await run();
+      const rawOutput = await run();
+      const { value, metadata } = this.#unwrapStepOutput(rawOutput);
+      const combinedMetadata = {
+        ...runtime.metadata,
+        ...metadata,
+      };
       const endedAt = Date.now();
-      const rowSummary = this.#summarizeRows(output);
+      const rowSummary = this.#summarizeRows(value);
+      const executionIndex = this.#executionIndex + 1;
+      this.#executionIndex = executionIndex;
 
       state.status = "done";
+      state.executionIndex = executionIndex;
       state.endedAt = endedAt;
       state.durationMs = endedAt - startedAt;
       if (rowSummary) {
         state.rowCount = rowSummary.rowCount;
+        state.outputRowCount = rowSummary.rowCount;
         if (rowSummary.rows) {
           state.rows = rowSummary.rows;
         }
+      }
+      if (combinedMetadata.inputRowCount != null) {
+        state.inputRowCount = combinedMetadata.inputRowCount;
+      }
+      if (combinedMetadata.outputRowCount != null) {
+        state.outputRowCount = combinedMetadata.outputRowCount;
+      }
+      if (combinedMetadata.routeUsed) {
+        state.routeUsed = combinedMetadata.routeUsed;
+      }
+      if (combinedMetadata.notes && combinedMetadata.notes.length > 0) {
+        state.notes = [...combinedMetadata.notes];
       }
 
       this.#emitEvent({
@@ -416,19 +574,34 @@ class StepController {
         kind,
         status: "done",
         summary,
-        dependsOn: [...dependsOn],
+        dependsOn: [...state.dependsOn],
+        executionIndex,
         startedAt,
         endedAt,
         durationMs: endedAt - startedAt,
         ...(rowSummary ? { rowCount: rowSummary.rowCount } : {}),
+        ...(rowSummary ? { outputRowCount: rowSummary.rowCount } : {}),
+        ...(combinedMetadata.inputRowCount != null
+          ? { inputRowCount: combinedMetadata.inputRowCount }
+          : {}),
+        ...(combinedMetadata.outputRowCount != null
+          ? { outputRowCount: combinedMetadata.outputRowCount }
+          : {}),
         ...(rowSummary?.rows ? { rows: rowSummary.rows } : {}),
+        ...(combinedMetadata.routeUsed ? { routeUsed: combinedMetadata.routeUsed } : {}),
+        ...(combinedMetadata.notes && combinedMetadata.notes.length > 0
+          ? { notes: [...combinedMetadata.notes] }
+          : {}),
       });
 
-      return output;
+      return value;
     } catch (error) {
       const endedAt = Date.now();
       const message = error instanceof Error ? error.message : String(error);
+      const executionIndex = this.#executionIndex + 1;
+      this.#executionIndex = executionIndex;
       state.status = "failed";
+      state.executionIndex = executionIndex;
       state.endedAt = endedAt;
       state.durationMs = endedAt - startedAt;
       state.error = message;
@@ -438,10 +611,21 @@ class StepController {
         kind,
         status: "failed",
         summary,
-        dependsOn: [...dependsOn],
+        dependsOn: [...state.dependsOn],
+        executionIndex,
         startedAt,
         endedAt,
         durationMs: endedAt - startedAt,
+        ...(runtime.metadata?.inputRowCount != null
+          ? { inputRowCount: runtime.metadata.inputRowCount }
+          : {}),
+        ...(runtime.metadata?.outputRowCount != null
+          ? { outputRowCount: runtime.metadata.outputRowCount }
+          : {}),
+        ...(runtime.metadata?.routeUsed ? { routeUsed: runtime.metadata.routeUsed } : {}),
+        ...(runtime.metadata?.notes && runtime.metadata.notes.length > 0
+          ? { notes: [...runtime.metadata.notes] }
+          : {}),
         error: message,
       });
       throw error;
@@ -450,15 +634,32 @@ class StepController {
     }
   }
 
-  #createStep(kind: QueryStepKind, summary: string, dependsOn: string[]): string {
+  #assignStepId(
+    kind: QueryStepKind,
+    summary: string,
+    dependsOn: string[],
+    template: StepTemplateOptions,
+  ): string {
+    const key = stepKey(kind, summary);
+    const queue = this.#precompiled.byKey.get(key);
+    const precompiledStepId = queue?.shift();
+    if (precompiledStepId) {
+      this.#precompiled.byKey.set(key, queue ?? []);
+      return precompiledStepId;
+    }
+
+    return this.#createStep(kind, summary, dependsOn, template);
+  }
+
+  #createStep(
+    kind: QueryStepKind,
+    summary: string,
+    dependsOn: string[],
+    template: StepTemplateOptions,
+  ): string {
     const stepId = `step_${this.#stepCounter + 1}`;
     this.#stepCounter += 1;
-    const step: QueryExecutionPlanStep = {
-      id: stepId,
-      kind,
-      summary,
-      dependsOn: [...dependsOn],
-    };
+    const step = createExecutionPlanStep(stepId, kind, summary, dependsOn, template);
     this.#steps.push(step);
     this.#states.set(stepId, {
       id: stepId,
@@ -528,6 +729,26 @@ class StepController {
 
     return { rowCount };
   }
+
+  #unwrapStepOutput<T>(output: T | StepRunWithMetadata<T>): {
+    value: T;
+    metadata?: StepRunMetadata;
+  } {
+    if (
+      output &&
+      typeof output === "object" &&
+      "value" in output &&
+      Object.prototype.hasOwnProperty.call(output, "value")
+    ) {
+      const asWithMeta = output as StepRunWithMetadata<T>;
+      return {
+        value: asWithMeta.value,
+        ...(asWithMeta.metadata ? { metadata: asWithMeta.metadata } : {}),
+      };
+    }
+
+    return { value: output as T };
+  }
 }
 
 async function runStepWithController<T>(
@@ -535,13 +756,19 @@ async function runStepWithController<T>(
   kind: QueryStepKind,
   summary: string,
   dependsOn: string[],
-  run: () => Promise<T>,
+  run: () => Promise<T | StepRunWithMetadata<T>>,
+  template: StepTemplateOptions = {},
+  runtime: StepRuntimeOptions = {},
 ): Promise<T> {
   if (!options.stepController) {
-    return run();
+    const raw = await run();
+    if (raw && typeof raw === "object" && "value" in (raw as Record<string, unknown>)) {
+      return (raw as StepRunWithMetadata<T>).value;
+    }
+    return raw as T;
   }
 
-  return options.stepController.runStep(kind, summary, dependsOn, run);
+  return options.stepController.runStep(kind, summary, dependsOn, run, template, runtime);
 }
 
 export function parseSql(query: SqlQuery, schema: SchemaDefinition): PlannedQuery {
@@ -564,16 +791,640 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
   });
 }
 
+class StaticPlanBuilder {
+  #counter = 0;
+  readonly steps: QueryExecutionPlanStep[] = [];
+
+  addStep(
+    kind: QueryStepKind,
+    summary: string,
+    dependsOn: string[],
+    template: StepTemplateOptions = {},
+  ): string {
+    const id = `step_${this.#counter + 1}`;
+    this.#counter += 1;
+    this.steps.push(createExecutionPlanStep(id, kind, summary, dependsOn, template));
+    return id;
+  }
+
+  result(): QueryExecutionPlan {
+    return {
+      steps: [...this.steps],
+    };
+  }
+}
+
+interface StaticCompileResult {
+  terminalStepIds: string[];
+  cteStepIdsByName: Map<string, string>;
+}
+
+function compileStaticExecutionPlan<TContext>(input: QueryInput<TContext>): QueryExecutionPlan {
+  const ast = astifySingleSelect(input.sql);
+  const builder = new StaticPlanBuilder();
+  compileStaticSelectAst(
+    ast,
+    {
+      schema: input.schema,
+      methods: input.methods,
+    },
+    new Set<string>(),
+    builder,
+  );
+  return builder.result();
+}
+
+function compileStaticSelectAst<TContext>(
+  ast: SelectAst,
+  input: {
+    schema: SchemaDefinition;
+    methods: TableMethodsMap<TContext>;
+  },
+  parentCteNames: Set<string>,
+  builder: StaticPlanBuilder,
+): StaticCompileResult {
+  if (ast.type !== "select") {
+    throw new Error("Only SELECT statements are currently supported.");
+  }
+
+  if (ast.set_op != null || ast._next != null) {
+    return compileStaticSetOperation(ast, input, parentCteNames, builder);
+  }
+
+  const cteStepIdsByName = new Map<string, string>();
+  const rawCtes = Array.isArray(ast.with) ? ast.with : [];
+  const cteEntries = rawCtes.map((rawCte, index) => {
+    const cteName = readCteName(rawCte);
+    const cteStatement = (rawCte as { stmt?: { ast?: unknown } }).stmt?.ast;
+    if (!cteStatement || typeof cteStatement !== "object") {
+      throw new Error(`Unable to parse CTE statement for: ${cteName}`);
+    }
+    const cteAst = cteStatement as SelectAst;
+    if (cteAst.type !== "select") {
+      throw new Error("Only SELECT CTE statements are currently supported.");
+    }
+
+    return {
+      cteName,
+      cteAst,
+      index,
+    };
+  });
+
+  if (cteEntries.length > 0) {
+    const cteNameSet = new Set(cteEntries.map((entry) => entry.cteName));
+    const cteDependencies = new Map<string, string[]>();
+    for (const entry of cteEntries) {
+      cteDependencies.set(
+        entry.cteName,
+        collectCteDependencies(entry.cteAst, cteNameSet, entry.cteName),
+      );
+    }
+
+    const remaining = new Map(cteEntries.map((entry) => [entry.cteName, entry]));
+    while (remaining.size > 0) {
+      const ready = [...remaining.values()]
+        .filter((entry) =>
+          (cteDependencies.get(entry.cteName) ?? []).every((dep) => cteStepIdsByName.has(dep)),
+        )
+        .sort((left, right) => left.index - right.index);
+
+      if (ready.length === 0) {
+        throw new Error("Unable to resolve CTE dependencies.");
+      }
+
+      for (const entry of ready) {
+        const cteScopeNames = new Set<string>([
+          ...parentCteNames,
+          ...cteNameSet,
+          ...cteStepIdsByName.keys(),
+        ]);
+        const compiled = compileStaticSelectAst(entry.cteAst, input, cteScopeNames, builder);
+        const dependencyStepIds = (cteDependencies.get(entry.cteName) ?? [])
+          .map((dep) => cteStepIdsByName.get(dep))
+          .filter((dep): dep is string => typeof dep === "string");
+        const cteStepId = builder.addStep(
+          "cte",
+          `CTE ${entry.cteName}`,
+          [...dependencyStepIds, ...compiled.terminalStepIds],
+          {
+            phase: "logical",
+            operation: {
+              name: "cte",
+              details: {
+                cte: entry.cteName,
+                dependencies: cteDependencies.get(entry.cteName) ?? [],
+              },
+            },
+            sqlOrigin: "WITH",
+          },
+        );
+        cteStepIdsByName.set(entry.cteName, cteStepId);
+        remaining.delete(entry.cteName);
+      }
+    }
+  }
+
+  const cteRows = new Map<string, QueryRow[]>();
+  for (const name of parentCteNames) {
+    cteRows.set(name, []);
+  }
+  for (const name of cteStepIdsByName.keys()) {
+    cteRows.set(name, []);
+  }
+
+  const parsed = parseSelectAst(ast, input.schema, cteRows);
+  if (parsed.isAggregate) {
+    const aggregate = compileStaticAggregateSelect(parsed, input, cteRows, builder);
+    return {
+      terminalStepIds: aggregate.terminalStepIds,
+      cteStepIdsByName,
+    };
+  }
+
+  const nonAggregate = compileStaticNonAggregateSelect(parsed, input, cteRows, builder);
+  return {
+    terminalStepIds: nonAggregate.terminalStepIds,
+    cteStepIdsByName,
+  };
+}
+
+function compileStaticSetOperation<TContext>(
+  ast: SelectAst,
+  input: {
+    schema: SchemaDefinition;
+    methods: TableMethodsMap<TContext>;
+  },
+  parentCteNames: Set<string>,
+  builder: StaticPlanBuilder,
+): StaticCompileResult {
+  const operation = typeof ast.set_op === "string" ? ast.set_op.toLowerCase() : "";
+  const nextRaw = readSetOperationNext(ast._next);
+  const next =
+    nextRaw && ast.with && !nextRaw.with
+      ? {
+          ...nextRaw,
+          with: ast.with,
+        }
+      : nextRaw;
+  if (!next) {
+    throw new Error("Invalid set operation: missing right-hand SELECT.");
+  }
+
+  const leftAst = cloneSelectWithoutSetOperation(ast);
+  const leftCompiled = compileStaticSelectAst(leftAst, input, parentCteNames, builder);
+  const leftStepId = builder.addStep(
+    "set_op_branch",
+    "Set operation left branch",
+    leftCompiled.terminalStepIds,
+    {
+      phase: "logical",
+      operation: {
+        name: "set_op_branch",
+        details: {
+          side: "left",
+          operation,
+        },
+      },
+      sqlOrigin: "SET_OP",
+    },
+  );
+
+  const rightCompiled = compileStaticSelectAst(next, input, parentCteNames, builder);
+  const rightStepId = builder.addStep(
+    "set_op_branch",
+    "Set operation right branch",
+    rightCompiled.terminalStepIds,
+    {
+      phase: "logical",
+      operation: {
+        name: "set_op_branch",
+        details: {
+          side: "right",
+          operation,
+        },
+      },
+      sqlOrigin: "SET_OP",
+    },
+  );
+
+  return {
+    terminalStepIds: [leftStepId, rightStepId],
+    cteStepIdsByName: new Map(),
+  };
+}
+
+function compileStaticNonAggregateSelect<TContext>(
+  parsed: ParsedSelectQuery,
+  input: {
+    schema: SchemaDefinition;
+    methods: TableMethodsMap<TContext>;
+  },
+  cteRows: Map<string, QueryRow[]>,
+  builder: StaticPlanBuilder,
+): { terminalStepIds: string[] } {
+  const { orderedScanStepIds } = compileStaticScanSteps(parsed, input, cteRows, builder);
+
+  const joinStepId = builder.addStep("join", "Join source bindings", orderedScanStepIds, {
+    phase: "transform",
+    operation: {
+      name: "join",
+      details: {
+        joinCount: parsed.joins.length,
+        joins: parsed.joins.map((join) => ({
+          alias: join.alias,
+          join: join.join,
+          condition: `${join.condition.leftAlias}.${join.condition.leftColumn} = ${join.condition.rightAlias}.${join.condition.rightColumn}`,
+        })),
+      },
+    },
+    sqlOrigin: "FROM",
+  });
+
+  const filterStepId = builder.addStep("filter", "Apply WHERE filter", [joinStepId], {
+    phase: "transform",
+    operation: {
+      name: "filter",
+      details: {
+        wherePushdownSafe: parsed.wherePushdownSafe,
+      },
+    },
+    request: {
+      whereColumns: parsed.whereColumns.map((column) => `${column.alias}.${column.column}`),
+    },
+    sqlOrigin: "WHERE",
+  });
+
+  let previousStepId = filterStepId;
+  if (parsed.windowFunctions.length > 0) {
+    const windowStepId = builder.addStep("window", "Compute window functions", [previousStepId], {
+      phase: "transform",
+      operation: {
+        name: "window",
+        details: {
+          functions: parsed.windowFunctions.map((fn) => fn.output),
+        },
+      },
+      request: {
+        functions: parsed.windowFunctions.map((fn) => ({
+          fn: fn.fn,
+          output: fn.output,
+          partitionBy: fn.partitionBy.map((entry) => `${entry.alias}.${entry.column}`),
+          orderBy: fn.orderBy.map((entry) => `${entry.alias}.${entry.column}:${entry.direction}`),
+        })),
+      },
+      outputs: parsed.windowFunctions.map((fn) => fn.output),
+      sqlOrigin: "SELECT",
+    });
+    previousStepId = windowStepId;
+  }
+
+  const projectedOutputs = parsed.selectAll
+    ? deriveSelectAllOutputs(parsed, input.schema, cteRows)
+    : [
+        ...parsed.selectColumns.map((column) => column.output),
+        ...parsed.scalarSelectItems.map((item) => item.output),
+        ...parsed.windowFunctions.map((fn) => fn.output),
+      ];
+
+  const projectionStepId = builder.addStep("projection", "Project result rows", [previousStepId], {
+    phase: "output",
+    operation: {
+      name: "projection",
+    },
+    outputs: projectedOutputs,
+    sqlOrigin: "SELECT",
+  });
+
+  if (parsed.distinct) {
+    const distinctStepId = builder.addStep("distinct", "Apply DISTINCT", [projectionStepId], {
+      phase: "transform",
+      operation: {
+        name: "distinct",
+      },
+      sqlOrigin: "SELECT",
+    });
+    const orderStepId = builder.addStep(
+      "order",
+      "Apply ORDER/LIMIT/OFFSET on projected rows",
+      [distinctStepId],
+      {
+        phase: "output",
+        operation: {
+          name: "order_limit_offset",
+        },
+        request: {
+          orderBy: parsed.orderBy.map((column) => {
+            if (column.kind === "source") {
+              return `${column.alias}.${column.column}:${column.direction}`;
+            }
+            return `${column.output}:${column.direction}`;
+          }),
+          ...(parsed.limit != null ? { limit: parsed.limit } : {}),
+          ...(parsed.offset != null ? { offset: parsed.offset } : {}),
+        },
+        sqlOrigin: "ORDER BY",
+      },
+    );
+    return { terminalStepIds: [orderStepId] };
+  }
+
+  return {
+    terminalStepIds: [projectionStepId],
+  };
+}
+
+function compileStaticAggregateSelect<TContext>(
+  parsed: ParsedSelectQuery,
+  input: {
+    schema: SchemaDefinition;
+    methods: TableMethodsMap<TContext>;
+  },
+  cteRows: Map<string, QueryRow[]>,
+  builder: StaticPlanBuilder,
+): { terminalStepIds: string[] } {
+  const { orderedScanStepIds } = compileStaticScanSteps(parsed, input, cteRows, builder);
+  const rootBinding = parsed.bindings[0];
+  const aggregateRoutePossible =
+    parsed.bindings.length === 1 &&
+    parsed.joins.length === 0 &&
+    !parsed.having &&
+    parsed.wherePushdownSafe &&
+    !!rootBinding &&
+    !rootBinding.isCte &&
+    !!input.methods[rootBinding.table]?.aggregate;
+
+  let previousStepId = builder.addStep("aggregate", "Run aggregate route", orderedScanStepIds, {
+    phase: "fetch",
+    operation: {
+      name: "aggregate",
+    },
+    request: {
+      groupBy: parsed.groupBy.map((column) => `${column.alias}.${column.column}`),
+      metrics: parsed.aggregateMetrics.map((metric) => ({
+        fn: metric.fn,
+        output: metric.output,
+        ...(metric.column
+          ? {
+              column: `${metric.column.alias}.${metric.column.column}`,
+            }
+          : {}),
+        distinct: metric.distinct,
+      })),
+    },
+    pushdown: {
+      routeCandidates: aggregateRoutePossible ? ["aggregate", "local"] : ["local"],
+      aggregateRoutePossible,
+    },
+    outputs: [
+      ...parsed.aggregateOutputColumns.map((column) => column.output),
+      ...parsed.aggregateMetrics.filter((metric) => !metric.hidden).map((metric) => metric.output),
+    ],
+    sqlOrigin: "SELECT",
+  });
+
+  if (parsed.having) {
+    previousStepId = builder.addStep("filter", "Apply HAVING filter", [previousStepId], {
+      phase: "transform",
+      operation: {
+        name: "having_filter",
+      },
+      sqlOrigin: "HAVING",
+    });
+  }
+
+  if (parsed.distinct) {
+    previousStepId = builder.addStep("distinct", "Apply DISTINCT", [previousStepId], {
+      phase: "transform",
+      operation: {
+        name: "distinct",
+      },
+      sqlOrigin: "SELECT",
+    });
+  }
+
+  if (parsed.orderBy.length > 0) {
+    previousStepId = builder.addStep("order", "Apply ORDER BY", [previousStepId], {
+      phase: "output",
+      operation: {
+        name: "order",
+      },
+      request: {
+        orderBy: parsed.orderBy.map((column) => {
+          if (column.kind === "source") {
+            return `${column.alias}.${column.column}:${column.direction}`;
+          }
+          return `${column.output}:${column.direction}`;
+        }),
+      },
+      sqlOrigin: "ORDER BY",
+    });
+  }
+
+  if (parsed.offset != null || parsed.limit != null) {
+    previousStepId = builder.addStep("limit_offset", "Apply LIMIT/OFFSET", [previousStepId], {
+      phase: "output",
+      operation: {
+        name: "limit_offset",
+      },
+      request: {
+        ...(parsed.limit != null ? { limit: parsed.limit } : {}),
+        ...(parsed.offset != null ? { offset: parsed.offset } : {}),
+      },
+      sqlOrigin: "ORDER BY",
+    });
+  }
+
+  const projectionStepId = builder.addStep(
+    "projection",
+    "Project aggregate output",
+    [previousStepId],
+    {
+      phase: "output",
+      operation: {
+        name: "projection",
+      },
+      outputs: [
+        ...parsed.aggregateOutputColumns.map((column) => column.output),
+        ...parsed.aggregateMetrics
+          .filter((metric) => !metric.hidden)
+          .map((metric) => metric.output),
+      ],
+      sqlOrigin: "SELECT",
+    },
+  );
+
+  return {
+    terminalStepIds: [projectionStepId],
+  };
+}
+
+function compileStaticScanSteps<TContext>(
+  parsed: ParsedSelectQuery,
+  input: {
+    schema: SchemaDefinition;
+    methods: TableMethodsMap<TContext>;
+  },
+  cteRows: Map<string, QueryRow[]>,
+  builder: StaticPlanBuilder,
+): { scanStepIdsByAlias: Map<string, string>; orderedScanStepIds: string[] } {
+  const rootBinding = parsed.bindings[0];
+  if (!rootBinding) {
+    throw new Error("SELECT queries must include a FROM clause.");
+  }
+
+  const projectionByAlias = buildProjection(parsed, input.schema, cteRows);
+  const filtersByAlias = groupFiltersByAlias(parsed.filters);
+  const executionOrder = buildExecutionOrder(parsed.bindings, parsed.joinEdges, filtersByAlias);
+  const aliasDependencies = buildAliasPrerequisites(parsed.joins);
+  const scanStepIdsByAlias = new Map<string, string>();
+  const orderedScanStepIds: string[] = [];
+
+  const canPushFinalSortAndLimitAll =
+    !parsed.distinct &&
+    parsed.bindings.length === 1 &&
+    parsed.orderBy.every((term) => term.kind === "source" && term.alias === rootBinding.alias);
+
+  for (const alias of executionOrder) {
+    const binding = parsed.bindings.find((candidate) => candidate.alias === alias);
+    if (!binding) {
+      continue;
+    }
+
+    const dependencyAliases = aliasDependencies.get(alias) ?? [];
+    const dependsOn = dependencyAliases
+      .map((dependencyAlias) => scanStepIdsByAlias.get(dependencyAlias))
+      .filter((stepId): stepId is string => typeof stepId === "string");
+
+    const localFilters = filtersByAlias.get(alias) ?? [];
+    const dependencyFilters = deriveStaticDependencyFilters(alias, parsed.joinEdges);
+    const canPushFinalSortAndLimit = canPushFinalSortAndLimitAll && alias === rootBinding.alias;
+    const requestOrderBy: ScanOrderBy[] | undefined = canPushFinalSortAndLimit
+      ? parsed.orderBy
+          .filter((term): term is SourceOrderColumn => term.kind === "source")
+          .map((term) => ({
+            column: term.column,
+            direction: term.direction,
+          }))
+      : undefined;
+
+    const projection = projectionByAlias.get(alias) ?? new Set<string>();
+    const request: Record<string, unknown> = {
+      table: binding.table,
+      alias,
+      select: [...projection],
+    };
+
+    const requestWhere = [...localFilters, ...dependencyFilters];
+    if (requestWhere.length > 0) {
+      request.where = requestWhere;
+    }
+    if (requestOrderBy && requestOrderBy.length > 0) {
+      request.orderBy = requestOrderBy;
+    }
+    if (canPushFinalSortAndLimit && parsed.limit != null) {
+      request.limit = parsed.limit;
+    }
+    if (canPushFinalSortAndLimit && parsed.offset != null) {
+      request.offset = parsed.offset;
+    }
+
+    const tableMethods = input.methods[binding.table];
+    const lookupCandidate =
+      !binding.isCte &&
+      !!tableMethods?.lookup &&
+      requestWhere.filter((clause) => clause.op === "in").length === 1 &&
+      requestOrderBy == null &&
+      parsed.limit == null &&
+      parsed.offset == null;
+
+    const stepId = builder.addStep("scan", `Scan ${alias} (${binding.table})`, dependsOn, {
+      phase: "fetch",
+      operation: {
+        name: "scan",
+        details: {
+          alias,
+          table: binding.table,
+          isCte: binding.isCte,
+        },
+      },
+      request,
+      pushdown: {
+        where: parsed.wherePushdownSafe ? "pushed" : "local",
+        orderBy: canPushFinalSortAndLimit ? "pushed" : "local",
+        limit: canPushFinalSortAndLimit ? "pushed" : "local",
+        routeCandidates: lookupCandidate ? ["lookup", "scan"] : ["scan"],
+      },
+      outputs: [...projection],
+      sqlOrigin: "FROM",
+    });
+
+    scanStepIdsByAlias.set(alias, stepId);
+    orderedScanStepIds.push(stepId);
+  }
+
+  return { scanStepIdsByAlias, orderedScanStepIds };
+}
+
+function deriveSelectAllOutputs(
+  parsed: ParsedSelectQuery,
+  schema: SchemaDefinition,
+  cteRows: Map<string, QueryRow[]>,
+): string[] {
+  const base = parsed.bindings[0];
+  if (!base) {
+    return [];
+  }
+
+  return getBindingColumns(base, schema, cteRows);
+}
+
+function deriveStaticDependencyFilters(
+  alias: string,
+  joinEdges: JoinCondition[],
+): ScanFilterClause[] {
+  const clauses: ScanFilterClause[] = [];
+  for (const edge of joinEdges) {
+    if (edge.leftAlias === alias) {
+      clauses.push({
+        op: "in",
+        column: edge.leftColumn,
+        values: [`<from ${edge.rightAlias}.${edge.rightColumn}>`],
+      });
+    } else if (edge.rightAlias === alias) {
+      clauses.push({
+        op: "in",
+        column: edge.rightColumn,
+        values: [`<from ${edge.leftAlias}.${edge.leftColumn}>`],
+      });
+    }
+  }
+  return dedupeInClauses(clauses);
+}
+
 export function createQuerySession<TContext>(input: QuerySessionInput<TContext>): QuerySession {
   const options = input.options ?? {};
+  let precompiledPlan: QueryExecutionPlan = { steps: [] };
+  let precompileError: unknown;
+  try {
+    precompiledPlan = compileStaticExecutionPlan(input);
+  } catch (error) {
+    precompileError = error;
+  }
   let stepController: StepController;
   stepController = new StepController(
     options,
-    (): Promise<QueryRow[]> =>
-      executeQueryInternal(input, {
+    (): Promise<QueryRow[]> => {
+      if (precompileError) {
+        throw precompileError;
+      }
+
+      return executeQueryInternal(input, {
         maxConcurrency: Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY),
         stepController,
-      }),
+      });
+    },
+    precompiledPlan.steps,
   );
 
   return {
@@ -822,10 +1673,35 @@ async function executeAggregateSelect<TContext>(
     throw new Error("Window functions are not supported in grouped aggregate queries yet.");
   }
 
-  let aggregateRows =
-    (await runStepWithController(options, "aggregate", "Run aggregate route", [], () =>
-      tryRunAggregateRoute(parsed, input),
-    )) ?? (await runLocalAggregate(parsed, input, cteRows, options));
+  let aggregateRows = await runStepWithController(
+    options,
+    "aggregate",
+    "Run aggregate route",
+    [],
+    async () => {
+      const routed = await tryRunAggregateRoute(parsed, input);
+      if (routed) {
+        return {
+          value: routed,
+          metadata: {
+            routeUsed: "aggregate",
+            outputRowCount: routed.length,
+            notes: ["Aggregate handler route was used."],
+          },
+        };
+      }
+
+      const local = await runLocalAggregate(parsed, input, cteRows, options);
+      return {
+        value: local,
+        metadata: {
+          routeUsed: "local",
+          outputRowCount: local.length,
+          notes: ["Fell back to local aggregate execution."],
+        },
+      };
+    },
+  );
 
   if (parsed.having) {
     aggregateRows = await runStepWithController(options, "filter", "Apply HAVING filter", [], () =>
@@ -1357,10 +2233,18 @@ async function runSourceScan<TContext>(
   request: TableScanRequest,
   cteRows: Map<string, QueryRow[]>,
   input: QueryInput<TContext>,
-): Promise<QueryRow[]> {
+): Promise<StepRunWithMetadata<QueryRow[]>> {
   if (binding.isCte) {
     const rows = cteRows.get(binding.table) ?? [];
-    return scanRows(rows, request);
+    const scanned = scanRows(rows, request);
+    return {
+      value: scanned,
+      metadata: {
+        routeUsed: "local",
+        outputRowCount: scanned.length,
+        notes: ["Resolved from CTE materialization."],
+      },
+    };
   }
 
   const method = input.methods[binding.table];
@@ -1495,7 +2379,7 @@ async function runScan<TContext>(
   method: TableMethods<TContext>,
   request: TableScanRequest,
   context: TContext,
-): Promise<QueryRow[]> {
+): Promise<StepRunWithMetadata<QueryRow[]>> {
   const dependencyFilters = request.where?.filter((clause) => clause.op === "in") ?? [];
 
   if (
@@ -1509,7 +2393,14 @@ async function runScan<TContext>(
   ) {
     const lookup = dependencyFilters[0];
     if (!lookup) {
-      return method.scan(request, context);
+      const scanned = await method.scan(request, context);
+      return {
+        value: scanned,
+        metadata: {
+          routeUsed: "scan",
+          outputRowCount: scanned.length,
+        },
+      };
     }
 
     const nonDependencyFilters = request.where?.filter((clause) => clause !== lookup);
@@ -1531,10 +2422,25 @@ async function runScan<TContext>(
       fullLookupRequest.where = nonDependencyFilters;
     }
 
-    return method.lookup(fullLookupRequest, context);
+    const lookedUp = await method.lookup(fullLookupRequest, context);
+    return {
+      value: lookedUp,
+      metadata: {
+        routeUsed: "lookup",
+        outputRowCount: lookedUp.length,
+        notes: ["Lookup route selected due a single IN dependency filter."],
+      },
+    };
   }
 
-  return method.scan(request, context);
+  const scanned = await method.scan(request, context);
+  return {
+    value: scanned,
+    metadata: {
+      routeUsed: "scan",
+      outputRowCount: scanned.length,
+    },
+  };
 }
 
 function parseSelectAst(
