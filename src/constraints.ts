@@ -1,6 +1,9 @@
 import {
   getTable,
   resolveColumnDefinition,
+  resolveTablePrimaryKeyConstraint,
+  resolveTableUniqueConstraints,
+  type CheckConstraint,
   type QueryRow,
   type SchemaDefinition,
   type TableColumnDefinition,
@@ -14,7 +17,7 @@ export interface ConstraintValidationOptions {
   onViolation?: (violation: ConstraintViolation) => void;
 }
 
-export type ConstraintViolationType = "not_null" | "primary_key" | "unique";
+export type ConstraintViolationType = "not_null" | "primary_key" | "unique" | "check";
 
 export interface ConstraintViolation {
   table: string;
@@ -91,7 +94,7 @@ function collectConstraintViolations(
     });
   }
 
-  const primaryKey = table.constraints?.primaryKey;
+  const primaryKey = resolveTablePrimaryKeyConstraint(table);
   if (primaryKey && rowsHaveColumns(rows, primaryKey.columns)) {
     const duplicate = findDuplicateKey(rows, primaryKey.columns);
     if (duplicate) {
@@ -107,7 +110,7 @@ function collectConstraintViolations(
     }
   }
 
-  for (const uniqueConstraint of table.constraints?.unique ?? []) {
+  for (const uniqueConstraint of resolveTableUniqueConstraints(table)) {
     if (!rowsHaveColumns(rows, uniqueConstraint.columns)) {
       continue;
     }
@@ -125,6 +128,62 @@ function collectConstraintViolations(
       rowIndexes: duplicate.rowIndexes,
       message: renderUniqueViolationMessage(tableName, uniqueConstraint, duplicate.key),
       ...(uniqueConstraint.name ? { constraintName: uniqueConstraint.name } : {}),
+    });
+  }
+
+  for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
+    const resolved = resolveColumnDefinition(columnDefinition, {
+      tableQuery: table.query,
+      columnName,
+    });
+    if (!resolved.enum || !rowsHaveColumn(rows, columnName)) {
+      continue;
+    }
+
+    rows.forEach((row, rowIndex) => {
+      const value = row[columnName];
+      if (value == null) {
+        return;
+      }
+
+      if (typeof value !== "string" || !resolved.enum?.includes(value)) {
+        violations.push({
+          table: tableName,
+          type: "check",
+          columns: [columnName],
+          constraintName: `${tableName}_${columnName}_enum_check`,
+          rowIndexes: [rowIndex],
+          message: `Constraint violation on table ${tableName}: enum check failed for column "${columnName}" with value ${JSON.stringify(value)}.`,
+        });
+      }
+    });
+  }
+
+  for (const check of table.constraints?.checks ?? []) {
+    if (check.kind !== "in") {
+      continue;
+    }
+    if (!rowsHaveColumn(rows, check.column)) {
+      continue;
+    }
+
+    const allowed = new Set(check.values.filter((value): value is string | number | boolean => value != null));
+    rows.forEach((row, rowIndex) => {
+      const value = row[check.column];
+      if (value == null) {
+        return;
+      }
+
+      if (!allowed.has(value as string | number | boolean)) {
+        violations.push({
+          table: tableName,
+          type: "check",
+          columns: [check.column],
+          ...(check.name ? { constraintName: check.name } : {}),
+          rowIndexes: [rowIndex],
+          message: renderCheckViolationMessage(tableName, check, value),
+        });
+      }
     });
   }
 
@@ -183,4 +242,17 @@ function renderUniqueViolationMessage(
 ): string {
   const nameSuffix = constraint.name ? ` (${constraint.name})` : "";
   return `Constraint violation on table ${tableName}${nameSuffix}: duplicate unique key (${renderKey(key)}) for columns ${constraint.columns.join(", ")}.`;
+}
+
+function renderCheckViolationMessage(
+  tableName: string,
+  check: CheckConstraint,
+  value: unknown,
+): string {
+  if (check.kind === "in") {
+    const nameSuffix = check.name ? ` (${check.name})` : "";
+    return `Constraint violation on table ${tableName}${nameSuffix}: value ${JSON.stringify(value)} for column ${check.column} is outside CHECK IN set ${JSON.stringify(check.values)}.`;
+  }
+
+  return `Constraint violation on table ${tableName}: check constraint failed.`;
 }

@@ -23,11 +23,11 @@ export function createArrayTableMethods<
 >(
   rows: ArrayRowSource<TRow>,
   options: ArrayTableMethodsOptions = {},
-): TableMethods<TContext, TTable, TColumn> {
+): TableMethods<TContext, TTable, TColumn, any> {
   const includeLookup = options.includeLookup ?? true;
   const includeAggregate = options.includeAggregate ?? true;
 
-  const methods: TableMethods<TContext, TTable, TColumn> = {
+  const methods: TableMethods<TContext, TTable, TColumn, any> = {
     async scan(request) {
       return scanArrayRows<TRow, TTable, TColumn>(readRows(rows), request);
     },
@@ -306,10 +306,10 @@ function filterRows<TRow extends QueryRow, TColumn extends string>(
         });
         break;
       case "in": {
-        const set = new Set(clause.values.filter((value) => value != null));
+        const set = new Set<unknown>(clause.values.filter((value) => value != null));
         out = out.filter((row) => {
           const value = row[clause.column];
-          return value != null && set.has(value);
+          return value != null && set.has(value as unknown);
         });
         break;
       }

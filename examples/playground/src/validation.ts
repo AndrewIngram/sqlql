@@ -4,6 +4,7 @@ import {
   type QueryRow,
   type SchemaDefinition,
   type TableColumnDefinition,
+  type TableDefinition,
 } from "sqlql";
 
 import {
@@ -16,11 +17,30 @@ import {
 
 const sqlScalarTypeSchema = z.enum(["text", "integer", "boolean", "timestamp"]);
 
+const queryRejectSchema = z
+  .object({
+    requiresLimit: z.boolean().optional(),
+    forbidFullScan: z.boolean().optional(),
+    requireAnyFilterOn: z.array(z.string()).optional(),
+  })
+  .strict();
+
+const queryFallbackSchema = z
+  .object({
+    filters: z.enum(["allow_local", "require_pushdown"]).optional(),
+    sorting: z.enum(["allow_local", "require_pushdown"]).optional(),
+    aggregates: z.enum(["allow_local", "require_pushdown"]).optional(),
+    limitOffset: z.enum(["allow_local", "require_pushdown"]).optional(),
+  })
+  .strict();
+
 const queryDefaultsSchema = z
   .object({
+    maxRows: z.number().int().nonnegative().nullable().optional(),
+    reject: queryRejectSchema.optional(),
+    fallback: queryFallbackSchema.optional(),
     filterable: z.union([z.literal("all"), z.array(z.string())]).optional(),
     sortable: z.union([z.literal("all"), z.array(z.string())]).optional(),
-    maxRows: z.number().int().nonnegative().nullable().optional(),
   })
   .strict();
 
@@ -46,6 +66,16 @@ const referentialActionSchema = z.enum([
   "SET DEFAULT",
 ]);
 
+const columnForeignKeySchema = z
+  .object({
+    table: z.string().min(1),
+    column: z.string().min(1),
+    name: z.string().optional(),
+    onDelete: referentialActionSchema.optional(),
+    onUpdate: referentialActionSchema.optional(),
+  })
+  .strict();
+
 const foreignKeySchema = z
   .object({
     columns: z.array(z.string()).min(1),
@@ -61,15 +91,39 @@ const foreignKeySchema = z
   })
   .strict();
 
-const columnDefinitionSchema = z.union([
-  sqlScalarTypeSchema,
-  z
-    .object({
-      type: sqlScalarTypeSchema,
-      nullable: z.boolean().optional(),
-    })
-    .strict(),
-]);
+const checkConstraintSchema = z
+  .object({
+    kind: z.literal("in"),
+    column: z.string().min(1),
+    values: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).min(1),
+    name: z.string().optional(),
+  })
+  .strict();
+
+const columnObjectDefinitionSchema = z
+  .object({
+    type: sqlScalarTypeSchema,
+    nullable: z.boolean().optional(),
+    filterable: z.boolean().optional(),
+    sortable: z.boolean().optional(),
+    primaryKey: z.boolean().optional(),
+    unique: z.boolean().optional(),
+    enum: z.array(z.string()).min(1).optional(),
+    foreignKey: columnForeignKeySchema.optional(),
+    description: z.string().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.primaryKey === true && value.unique === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["unique"],
+        message: "A column cannot be both primaryKey and unique.",
+      });
+    }
+  });
+
+const columnDefinitionSchema = z.union([sqlScalarTypeSchema, columnObjectDefinitionSchema]);
 
 const tableSchema = z
   .object({
@@ -80,6 +134,7 @@ const tableSchema = z
         primaryKey: primaryKeySchema.optional(),
         unique: z.array(uniqueSchema).optional(),
         foreignKeys: z.array(foreignKeySchema).optional(),
+        checks: z.array(checkConstraintSchema).optional(),
       })
       .strict()
       .optional(),
@@ -166,12 +221,17 @@ export function parseSchemaText(value: string): SchemaParseResult {
 
 function validatorForColumn(column: TableColumnDefinition): z.ZodType<unknown> {
   const type = readColumnType(column);
+  const enumValues =
+    typeof column === "string" ? undefined : (column.type === "text" ? column.enum : undefined);
   let validator: z.ZodType<unknown>;
 
   switch (type) {
     case "text":
     case "timestamp":
       validator = z.string();
+      if (type === "text" && enumValues && enumValues.length > 0) {
+        validator = z.enum([...enumValues] as [string, ...string[]]);
+      }
       break;
     case "integer":
       validator = z.number().finite();
@@ -236,18 +296,22 @@ export function parseRowsText(schema: SchemaDefinition, value: string): RowsPars
   };
 }
 
-function toJsonSchemaType(column: TableColumnDefinition): { type: string | string[] } {
+function toJsonSchemaType(column: TableColumnDefinition): Record<string, unknown> {
   const type = readColumnType(column);
   const baseType = type === "integer" ? "number" : type === "boolean" ? "boolean" : "string";
+  const enumValues =
+    typeof column === "string" ? undefined : (column.type === "text" ? column.enum : undefined);
 
   if (isColumnNullable(column)) {
     return {
       type: [baseType, "null"],
+      ...(enumValues && enumValues.length > 0 ? { enum: [...enumValues, null] } : {}),
     };
   }
 
   return {
     type: baseType,
+    ...(enumValues && enumValues.length > 0 ? { enum: [...enumValues] } : {}),
   };
 }
 
@@ -281,6 +345,26 @@ export function buildRowsJsonSchema(schema: SchemaDefinition): Record<string, un
   };
 }
 
+export function buildTableRowsJsonSchema(table: TableDefinition): Record<string, unknown> {
+  const columnProperties: Record<string, unknown> = {};
+  const required: string[] = [];
+
+  for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
+    columnProperties[columnName] = toJsonSchemaType(columnDefinition);
+    required.push(columnName);
+  }
+
+  return {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required,
+      properties: columnProperties,
+    },
+  };
+}
+
 export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
@@ -294,6 +378,31 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
           type: "object",
           additionalProperties: false,
           properties: {
+            maxRows: {
+              anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
+            },
+            reject: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                requiresLimit: { type: "boolean" },
+                forbidFullScan: { type: "boolean" },
+                requireAnyFilterOn: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+              },
+            },
+            fallback: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                filters: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                sorting: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                aggregates: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                limitOffset: { type: "string", enum: ["allow_local", "require_pushdown"] },
+              },
+            },
             filterable: {
               anyOf: [
                 { type: "string", enum: ["all"] },
@@ -311,9 +420,6 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                   items: { type: "string" },
                 },
               ],
-            },
-            maxRows: {
-              anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
             },
           },
         },
@@ -344,7 +450,47 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                       enum: ["text", "integer", "boolean", "timestamp"],
                     },
                     nullable: { type: "boolean" },
+                    filterable: { type: "boolean" },
+                    sortable: { type: "boolean" },
+                    primaryKey: { type: "boolean" },
+                    unique: { type: "boolean" },
+                    enum: {
+                      type: "array",
+                      minItems: 1,
+                      items: { type: "string" },
+                    },
+                    foreignKey: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["table", "column"],
+                      properties: {
+                        table: { type: "string" },
+                        column: { type: "string" },
+                        name: { type: "string" },
+                        onDelete: {
+                          type: "string",
+                          enum: ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"],
+                        },
+                        onUpdate: {
+                          type: "string",
+                          enum: ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"],
+                        },
+                      },
+                    },
+                    description: { type: "string" },
                   },
+                  allOf: [
+                    {
+                      not: {
+                        type: "object",
+                        properties: {
+                          primaryKey: { const: true },
+                          unique: { const: true },
+                        },
+                        required: ["primaryKey", "unique"],
+                      },
+                    },
+                  ],
                 },
               ],
             },
@@ -353,6 +499,31 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
             type: "object",
             additionalProperties: false,
             properties: {
+              maxRows: {
+                anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
+              },
+              reject: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  requiresLimit: { type: "boolean" },
+                  forbidFullScan: { type: "boolean" },
+                  requireAnyFilterOn: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                },
+              },
+              fallback: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  filters: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                  sorting: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                  aggregates: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                  limitOffset: { type: "string", enum: ["allow_local", "require_pushdown"] },
+                },
+              },
               filterable: {
                 anyOf: [
                   { type: "string", enum: ["all"] },
@@ -364,9 +535,6 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                   { type: "string", enum: ["all"] },
                   { type: "array", items: { type: "string" } },
                 ],
-              },
-              maxRows: {
-                anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
               },
             },
           },
@@ -437,6 +605,31 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                       type: "string",
                       enum: ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"],
                     },
+                  },
+                },
+              },
+              checks: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["kind", "column", "values"],
+                  properties: {
+                    kind: { type: "string", enum: ["in"] },
+                    column: { type: "string" },
+                    values: {
+                      type: "array",
+                      minItems: 1,
+                      items: {
+                        anyOf: [
+                          { type: "string" },
+                          { type: "number" },
+                          { type: "boolean" },
+                          { type: "null" },
+                        ],
+                      },
+                    },
+                    name: { type: "string" },
                   },
                 },
               },

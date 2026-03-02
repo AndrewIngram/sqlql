@@ -1,96 +1,53 @@
-# Resolver and Planning API (Draft)
+# Resolver and Planning API
 
-The user-facing surface should stay minimal:
+`sqlql` keeps planning internal, but table methods can now participate in pushdown decisions.
 
-1. Define schema once.
-2. Define per-table methods (`scan`, optional `lookup`, optional `aggregate`).
-3. Run `query(sql)`.
+## Runtime surface
 
-SQL parsing and plan-step wiring stay internal.
+Users of the library still write:
 
-## Current direction
+1. `defineSchema(...)`
+2. `defineTableMethods(schema, ...)`
+3. `query({ sql, ... })`
 
-- Schema is the single source of table metadata and query defaults.
-- Table methods only describe execution hooks.
-- No duplicated capabilities between schema and resolver.
-- Defaults are permissive:
-  - all columns filterable
-  - all columns sortable
-  - no max row limit
+## Schema policy model
 
-## Shape
+- Column-level capabilities (default `true`):
+  - `filterable`
+  - `sortable`
+- Table-level non-column policy:
+  - `maxRows`
+  - `reject` (`requiresLimit`, `forbidFullScan`, `requireAnyFilterOn`)
+  - `fallback` (`allow_local` or `require_pushdown` per category)
 
-```ts
-import { defineSchema, defineTableMethods, query } from "sqlql";
+Static schema policy is enforced before table method execution.
 
-const schema = defineSchema({
-  tables: {
-    orders: {
-      columns: {
-        id: "text",
-        org_id: "text",
-        user_id: "text",
-        total_cents: "integer",
-      },
-    },
-    users: {
-      columns: {
-        id: "text",
-        team_id: "text",
-        email: "text",
-      },
-    },
-    teams: {
-      columns: {
-        id: "text",
-        tier: "text",
-      },
-    },
-  },
-});
+## Planner hooks
 
-const methods = defineTableMethods(schema, {
-  orders: {
-    async scan(request, ctx) {
-      return [];
-    },
-  },
-  users: {
-    async scan(request, ctx) {
-      return [];
-    },
-  },
-  teams: {
-    async scan(request, ctx) {
-      return [];
-    },
-  },
-});
+Table methods may define optional hooks:
 
-const rows = await query({
-  schema,
-  methods,
-  context: {},
-  sql: `
-    SELECT o.id, u.email
-    FROM orders o
-    JOIN users u ON o.user_id = u.id
-    WHERE o.org_id = 'org_1'
-  `,
-});
-```
+- `planScan(request, context)`
+- `planLookup(request, context)`
+- `planAggregate(request, context)`
 
-## Internal planning behavior
+Planned requests carry stable IDs:
 
-- SQL is parsed to an internal representation.
-- Join dependencies are converted into chained scan calls.
-- Downstream scans receive `IN (...)` filters derived from upstream rows.
-- Final join/order/limit/projection are applied after scan steps.
+- `where: [{ id, clause }]`
+- `orderBy: [{ id, term }]`
+- `metrics: [{ id, metric }]`
 
-This gives Grafast-like dependency flow while keeping plans invisible to consumers.
+Hooks can return:
 
-## Roadmap
+- ID-based pushdown decisions (`whereIds`, `orderByIds`, `metricIds`, etc.)
+- explicit `mode: "remote_residual"` with separate `remote` and `residual` sections
+- `reject: { code, message }`
+- `notes`
 
-For incremental SQL standards support, see:
+Residual work is executed locally unless blocked by fallback policy (`require_pushdown`).
 
-- `docs/sql-standards-roadmap.md`
+## Enums and checks
+
+- Column `enum` metadata is first-class.
+- DDL includes generated `CHECK ... IN (...)` for enums.
+- Structured table checks are supported via `constraints.checks` (`kind: "in"`).
+- Optional runtime constraint validation (`warn`/`error`) reports enum/check violations in returned rows.

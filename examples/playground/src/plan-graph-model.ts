@@ -306,7 +306,7 @@ export function buildPlanGraphModel(
   const scopeList = scopes ?? [];
   const { boundsById: scopeBoundsById, visibleParentById } = buildScopeBounds(layout, scopeList);
   const scopeById = new Map(scopeList.map((scope) => [scope.id, scope]));
-  const visibleScopeIds = new Set([...scopeBoundsById.keys()]);
+  const visibleScopeIds = new Set(scopeBoundsById.keys());
 
   const resolveVisibleScopeId = (scopeId: string | undefined): string | undefined => {
     let current = scopeId;

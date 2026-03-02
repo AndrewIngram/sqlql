@@ -219,6 +219,42 @@ describe("query/constraints", () => {
     ).rejects.toThrow("duplicate unique key");
   });
 
+  it("validates field-level primaryKey/unique constraints at runtime", async () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
+          columns: {
+            id: { type: "text", nullable: false, primaryKey: true },
+            email: { type: "text", nullable: false, unique: true },
+          },
+        },
+      },
+    });
+
+    const methods = defineTableMethods(schema, {
+      users: {
+        async scan() {
+          return [
+            { id: "usr_1", email: "alice@example.com" },
+            { id: "usr_1", email: "alice@example.com" },
+          ];
+        },
+      },
+    });
+
+    await expect(
+      query({
+        schema,
+        methods,
+        context: EMPTY_CONTEXT,
+        sql: "SELECT id, email FROM users",
+        constraintValidation: {
+          mode: "error",
+        },
+      }),
+    ).rejects.toThrow("duplicate primary key");
+  });
+
   it("does not perform foreign-key runtime validation", async () => {
     const schema = defineSchema({
       tables: {

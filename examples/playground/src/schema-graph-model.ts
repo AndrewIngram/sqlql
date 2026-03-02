@@ -71,6 +71,81 @@ function rowHeightForTable(schema: SchemaDefinition, tableName: string): number 
   return HEADER_HEIGHT + columnCount * ROW_HEIGHT + FOOTER_HEIGHT;
 }
 
+function readTableForeignKeys(
+  schema: SchemaDefinition,
+  tableName: string,
+): Array<{
+  sourceColumn: string;
+  targetTable: string;
+  targetColumn: string;
+}> {
+  const table = schema.tables[tableName];
+  if (!table) {
+    return [];
+  }
+
+  const out: Array<{
+    sourceColumn: string;
+    targetTable: string;
+    targetColumn: string;
+  }> = [];
+
+  for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
+    if (typeof columnDefinition === "string" || !columnDefinition.foreignKey) {
+      continue;
+    }
+
+    out.push({
+      sourceColumn: columnName,
+      targetTable: columnDefinition.foreignKey.table,
+      targetColumn: columnDefinition.foreignKey.column,
+    });
+  }
+
+  for (const foreignKey of table.constraints?.foreignKeys ?? []) {
+    for (let index = 0; index < foreignKey.columns.length; index += 1) {
+      const sourceColumn = foreignKey.columns[index];
+      const targetColumn = foreignKey.references.columns[index];
+      if (!sourceColumn || !targetColumn) {
+        continue;
+      }
+
+      out.push({
+        sourceColumn,
+        targetTable: foreignKey.references.table,
+        targetColumn,
+      });
+    }
+  }
+
+  const unique = new Map<string, { sourceColumn: string; targetTable: string; targetColumn: string }>();
+  for (const entry of out) {
+    const key = `${entry.sourceColumn}->${entry.targetTable}.${entry.targetColumn}`;
+    if (!unique.has(key)) {
+      unique.set(key, entry);
+    }
+  }
+
+  return [...unique.values()];
+}
+
+function readTablePrimaryKeyColumns(schema: SchemaDefinition, tableName: string): string[] {
+  const table = schema.tables[tableName];
+  if (!table) {
+    return [];
+  }
+
+  if (table.constraints?.primaryKey) {
+    return [...table.constraints.primaryKey.columns];
+  }
+
+  return Object.entries(table.columns)
+    .filter(([, columnDefinition]) => {
+      return typeof columnDefinition !== "string" && columnDefinition.primaryKey === true;
+    })
+    .map(([columnName]) => columnName);
+}
+
 export function buildSchemaGraphLayout(schema: SchemaDefinition): SchemaGraphLayout {
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
@@ -92,29 +167,19 @@ export function buildSchemaGraphLayout(schema: SchemaDefinition): SchemaGraphLay
     });
   }
 
-  for (const [tableName, table] of Object.entries(schema.tables)) {
-    for (const foreignKey of table.constraints?.foreignKeys ?? []) {
-      const referencedTable = foreignKey.references.table;
-      if (!schema.tables[referencedTable]) {
+  for (const tableName of Object.keys(schema.tables)) {
+    for (const foreignKey of readTableForeignKeys(schema, tableName)) {
+      if (!schema.tables[foreignKey.targetTable]) {
         continue;
       }
 
-      for (let index = 0; index < foreignKey.columns.length; index += 1) {
-        const sourceColumn = foreignKey.columns[index];
-        const targetColumn = foreignKey.references.columns[index];
-
-        if (!sourceColumn || !targetColumn) {
-          continue;
-        }
-
-        graph.setEdge(tableName, referencedTable);
-        edges.push({
-          sourceTable: tableName,
-          sourceColumn,
-          targetTable: referencedTable,
-          targetColumn,
-        });
-      }
+      graph.setEdge(tableName, foreignKey.targetTable);
+      edges.push({
+        sourceTable: tableName,
+        sourceColumn: foreignKey.sourceColumn,
+        targetTable: foreignKey.targetTable,
+        targetColumn: foreignKey.targetColumn,
+      });
     }
   }
 
@@ -165,8 +230,8 @@ export function buildSchemaGraphModel(
       data: {
         tableName,
         columns,
-        primaryKeyColumns: table.constraints?.primaryKey?.columns ?? [],
-        foreignKeyCount: table.constraints?.foreignKeys?.length ?? 0,
+        primaryKeyColumns: readTablePrimaryKeyColumns(schema, tableName),
+        foreignKeyCount: readTableForeignKeys(schema, tableName).length,
         isSelected: selectedTableName === tableName,
       },
       targetPosition: Position.Left,

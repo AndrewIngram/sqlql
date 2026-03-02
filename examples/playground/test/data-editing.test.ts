@@ -35,6 +35,13 @@ describe("playground/data-editing", () => {
       ok: true,
       value: null,
     });
+
+    expect(
+      coerceCellInput({ type: "text", nullable: false, enum: ["pending", "paid"] as const }, "paid"),
+    ).toEqual({
+      ok: true,
+      value: "paid",
+    });
   });
 
   it("rejects invalid coercions", () => {
@@ -46,19 +53,30 @@ describe("playground/data-editing", () => {
 
     const missingRequired = coerceCellInput({ type: "text", nullable: false }, "");
     expect(missingRequired.ok).toBe(false);
+
+    const invalidEnum = coerceCellInput(
+      { type: "text", nullable: false, enum: ["pending", "paid"] as const },
+      "void",
+    );
+    expect(invalidEnum.ok).toBe(false);
   });
 
   it("supports row CRUD helpers", () => {
     const table = {
       columns: {
         id: { type: "text" as const, nullable: false },
+        status: {
+          type: "text" as const,
+          nullable: false,
+          enum: ["pending", "paid"] as const,
+        },
         score: { type: "integer" as const, nullable: false },
         active: { type: "boolean" as const, nullable: false },
       },
     };
 
     const empty = buildEmptyRow(table);
-    expect(empty).toEqual({ id: "", score: 0, active: false });
+    expect(empty).toEqual({ id: "", status: "pending", score: 0, active: false });
 
     const withRow = addEmptyRow([], table);
     expect(withRow).toHaveLength(1);

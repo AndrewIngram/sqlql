@@ -8,73 +8,56 @@ const commerce: ExamplePack = {
     tables: {
       customers: {
         columns: {
-          id: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
           full_name: { type: "text", nullable: false },
-          region: { type: "text", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
+          region: { type: "text", nullable: false, enum: ["us-east", "eu-west"] as const },
         },
       },
       products: {
         columns: {
-          id: { type: "text", nullable: false },
-          sku: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
+          sku: { type: "text", nullable: false, unique: true },
           name: { type: "text", nullable: false },
-          category: { type: "text", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          unique: [{ columns: ["sku"] }],
+          category: { type: "text", nullable: false, enum: ["wearables", "footwear"] as const },
         },
       },
       orders: {
         columns: {
-          id: { type: "text", nullable: false },
-          customer_id: { type: "text", nullable: false },
-          status: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
+          customer_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "customers",
+              column: "id",
+            },
+          },
+          status: { type: "text", nullable: false, enum: ["pending", "paid"] as const },
           total_cents: { type: "integer", nullable: false },
           ordered_at: { type: "timestamp", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          foreignKeys: [
-            {
-              columns: ["customer_id"],
-              references: {
-                table: "customers",
-                columns: ["id"],
-              },
-            },
-          ],
         },
       },
       order_items: {
         columns: {
-          id: { type: "text", nullable: false },
-          order_id: { type: "text", nullable: false },
-          product_id: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
+          order_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "orders",
+              column: "id",
+            },
+          },
+          product_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "products",
+              column: "id",
+            },
+          },
           quantity: { type: "integer", nullable: false },
           line_total_cents: { type: "integer", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          foreignKeys: [
-            {
-              columns: ["order_id"],
-              references: {
-                table: "orders",
-                columns: ["id"],
-              },
-            },
-            {
-              columns: ["product_id"],
-              references: {
-                table: "products",
-                columns: ["id"],
-              },
-            },
-          ],
         },
       },
     },
@@ -201,55 +184,46 @@ const finance: ExamplePack = {
     tables: {
       accounts: {
         columns: {
-          id: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
           owner_name: { type: "text", nullable: false },
-          account_type: { type: "text", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
+          account_type: {
+            type: "text",
+            nullable: false,
+            enum: ["checking", "savings"] as const,
+          },
         },
       },
       transactions: {
         columns: {
-          id: { type: "text", nullable: false },
-          account_id: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
+          account_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "accounts",
+              column: "id",
+            },
+          },
           posted_at: { type: "timestamp", nullable: false },
-          kind: { type: "text", nullable: false },
+          kind: { type: "text", nullable: false, enum: ["expense", "income"] as const },
           amount_cents: { type: "integer", nullable: false },
           merchant: { type: "text", nullable: true },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          foreignKeys: [
-            {
-              columns: ["account_id"],
-              references: {
-                table: "accounts",
-                columns: ["id"],
-              },
-            },
-          ],
         },
       },
       monthly_budgets: {
         columns: {
-          id: { type: "text", nullable: false },
-          account_id: { type: "text", nullable: false },
-          month: { type: "text", nullable: false },
-          category: { type: "text", nullable: false },
-          limit_cents: { type: "integer", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          foreignKeys: [
-            {
-              columns: ["account_id"],
-              references: {
-                table: "accounts",
-                columns: ["id"],
-              },
+          id: { type: "text", nullable: false, primaryKey: true },
+          account_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "accounts",
+              column: "id",
             },
-          ],
+          },
+          month: { type: "text", nullable: false },
+          category: { type: "text", nullable: false, enum: ["food", "coffee"] as const },
+          limit_cents: { type: "integer", nullable: false },
         },
       },
     },
@@ -359,54 +333,49 @@ const fitness: ExamplePack = {
     tables: {
       athletes: {
         columns: {
-          id: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
           display_name: { type: "text", nullable: false },
-          level: { type: "text", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
+          level: {
+            type: "text",
+            nullable: false,
+            enum: ["beginner", "intermediate", "advanced"] as const,
+          },
         },
       },
       workouts: {
         columns: {
-          id: { type: "text", nullable: false },
-          athlete_id: { type: "text", nullable: false },
-          workout_type: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
+          athlete_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "athletes",
+              column: "id",
+            },
+          },
+          workout_type: {
+            type: "text",
+            nullable: false,
+            enum: ["strength", "run", "bike"] as const,
+          },
           duration_min: { type: "integer", nullable: false },
           completed_at: { type: "timestamp", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          foreignKeys: [
-            {
-              columns: ["athlete_id"],
-              references: {
-                table: "athletes",
-                columns: ["id"],
-              },
-            },
-          ],
         },
       },
       runs: {
         columns: {
-          id: { type: "text", nullable: false },
-          athlete_id: { type: "text", nullable: false },
+          id: { type: "text", nullable: false, primaryKey: true },
+          athlete_id: {
+            type: "text",
+            nullable: false,
+            foreignKey: {
+              table: "athletes",
+              column: "id",
+            },
+          },
           run_date: { type: "timestamp", nullable: false },
           distance_km: { type: "integer", nullable: false },
           pace_sec: { type: "integer", nullable: false },
-        },
-        constraints: {
-          primaryKey: { columns: ["id"] },
-          foreignKeys: [
-            {
-              columns: ["athlete_id"],
-              references: {
-                table: "athletes",
-                columns: ["id"],
-              },
-            },
-          ],
         },
       },
     },

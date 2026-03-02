@@ -1,6 +1,6 @@
 import type { QueryRow, TableColumnDefinition, TableDefinition } from "sqlql";
 
-import { isColumnNullable, readColumnType } from "./types";
+import { isColumnNullable, readColumnEnumValues, readColumnType } from "./types";
 
 export interface CoerceInputSuccess {
   ok: true;
@@ -22,6 +22,7 @@ export function defaultValueForColumn(column: TableColumnDefinition): unknown {
 
   switch (type) {
     case "text":
+      return readColumnEnumValues(column)?.[0] ?? "";
     case "timestamp":
       return "";
     case "integer":
@@ -43,7 +44,17 @@ export function coerceCellInput(column: TableColumnDefinition, raw: string): Coe
 
   const type = readColumnType(column);
   switch (type) {
-    case "text":
+    case "text": {
+      const enumValues = readColumnEnumValues(column);
+      if (enumValues && enumValues.length > 0 && !enumValues.includes(raw)) {
+        return {
+          ok: false,
+          error: `Expected one of: ${enumValues.join(", ")}.`,
+        };
+      }
+      return { ok: true, value: raw };
+    }
+
     case "timestamp":
       return { ok: true, value: raw };
 

@@ -37,6 +37,7 @@ import { SqlPreviewLine } from "@/SqlPreviewLine";
 import { registerSqlCompletionProvider } from "@/sql-completion";
 import {
   PLAYGROUND_SCHEMA_JSON_SCHEMA,
+  buildTableRowsJsonSchema,
   parseRowsText,
   parseSchemaText,
 } from "@/validation";
@@ -79,6 +80,10 @@ type TopTab = "schema" | "data" | "query";
 type SchemaTab = "diagram" | "ddl";
 type QueryTab = "result" | "explain";
 type DataEditorMode = "json" | "grid";
+
+function dataTableModelPath(tableName: string): string {
+  return `inmemory://sqlql/data-table-${tableName}.json`;
+}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -162,7 +167,273 @@ function findQualifiedIdentifierRange(sql: string, qualifier: string, identifier
   return rangeFromIndex(sql, match.index, match.index + match[0].length);
 }
 
+function findClauseBounds(sql: string, clause: "where" | "order_by"): {
+  start: number;
+  end: number;
+} | null {
+  const source = sql;
+  const startMatch =
+    clause === "where"
+      ? /\bwhere\b/iu.exec(source)
+      : /\border\s+by\b/iu.exec(source);
+  if (!startMatch || startMatch.index == null) {
+    return null;
+  }
+
+  const start = startMatch.index;
+  const remainder = source.slice(start + startMatch[0].length);
+  const endPatterns = clause === "where"
+    ? [/\bgroup\s+by\b/iu, /\border\s+by\b/iu, /\blimit\b/iu, /\boffset\b/iu, /\bhaving\b/iu, /\bunion\b/iu, /\bintersect\b/iu, /\bexcept\b/iu, /;/u]
+    : [/\blimit\b/iu, /\boffset\b/iu, /\bunion\b/iu, /\bintersect\b/iu, /\bexcept\b/iu, /;/u];
+  let minRelativeEnd = remainder.length;
+
+  for (const pattern of endPatterns) {
+    const match = pattern.exec(remainder);
+    if (match?.index == null) {
+      continue;
+    }
+    minRelativeEnd = Math.min(minRelativeEnd, match.index);
+  }
+
+  return {
+    start,
+    end: start + startMatch[0].length + minRelativeEnd,
+  };
+}
+
+function findQualifiedIdentifierRangeInSlice(
+  sql: string,
+  qualifier: string,
+  identifier: string,
+  start: number,
+  end: number,
+) {
+  const slice = sql.slice(start, end);
+  const pattern = new RegExp(
+    `\\b${escapeRegExp(qualifier)}\\b\\s*\\.\\s*\\b${escapeRegExp(identifier)}\\b`,
+    "iu",
+  );
+  const match = pattern.exec(slice);
+  if (!match || match.index == null) {
+    return undefined;
+  }
+  const absoluteStart = start + match.index;
+  return rangeFromIndex(sql, absoluteStart, absoluteStart + match[0].length);
+}
+
+function findIdentifierRangeInSlice(
+  sql: string,
+  identifier: string,
+  start: number,
+  end: number,
+) {
+  const slice = sql.slice(start, end);
+  const pattern = new RegExp(`\\b${escapeRegExp(identifier)}\\b`, "iu");
+  const match = pattern.exec(slice);
+  if (!match || match.index == null) {
+    return undefined;
+  }
+  const absoluteStart = start + match.index;
+  return rangeFromIndex(sql, absoluteStart, absoluteStart + match[0].length);
+}
+
+function readAliasesForSql(sqlText: string): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const aliasRegex = /\b(?:from|join)\s+([a-z_][\w]*)\s*(?:as\s+)?([a-z_][\w]*)?/gi;
+
+  let match = aliasRegex.exec(sqlText);
+  while (match) {
+    const tableName = match[1];
+    if (tableName) {
+      const alias = (match[2] ?? tableName).toLowerCase();
+      aliases.set(alias, tableName);
+    }
+    match = aliasRegex.exec(sqlText);
+  }
+
+  return aliases;
+}
+
+function findStringLiteralRange(sql: string, value: string): ReturnType<typeof rangeFromIndex> | undefined {
+  const escapedValue = value.replaceAll("'", "''");
+  const pattern = new RegExp(`'${escapeRegExp(escapedValue)}'`, "gu");
+  const match = pattern.exec(sql);
+  if (!match || match.index == null) {
+    return undefined;
+  }
+  return rangeFromIndex(sql, match.index, match.index + match[0].length);
+}
+
+function findEnumLiteralRange(
+  sql: string,
+  tableName: string,
+  columnName: string,
+  enumValue: string,
+): ReturnType<typeof rangeFromIndex> | undefined {
+  const aliases = readAliasesForSql(sql);
+  const qualifiers = new Set<string>([tableName.toLowerCase()]);
+  for (const [alias, resolvedTable] of aliases.entries()) {
+    if (resolvedTable.toLowerCase() === tableName.toLowerCase()) {
+      qualifiers.add(alias);
+    }
+  }
+
+  const escapedValue = enumValue.replaceAll("'", "''");
+  const literalPattern = new RegExp(`'${escapeRegExp(escapedValue)}'`, "gu");
+  let literalMatch = literalPattern.exec(sql);
+  while (literalMatch) {
+    if (literalMatch.index == null) {
+      literalMatch = literalPattern.exec(sql);
+      continue;
+    }
+
+    const contextStart = Math.max(0, literalMatch.index - 180);
+    const contextText = sql.slice(contextStart, literalMatch.index);
+    const simpleColumnPattern = new RegExp(`\\b${escapeRegExp(columnName)}\\b`, "iu");
+    const qualifiedPatterns = [...qualifiers].map((qualifier) =>
+      new RegExp(
+        `\\b${escapeRegExp(qualifier)}\\b\\s*\\.\\s*\\b${escapeRegExp(columnName)}\\b`,
+        "iu",
+      ));
+    const hasColumnContext =
+      simpleColumnPattern.test(contextText) ||
+      qualifiedPatterns.some((pattern) => pattern.test(contextText));
+
+    if (hasColumnContext) {
+      return rangeFromIndex(sql, literalMatch.index, literalMatch.index + literalMatch[0].length);
+    }
+
+    literalMatch = literalPattern.exec(sql);
+  }
+
+  return findStringLiteralRange(sql, enumValue);
+}
+
 function inferSqlErrorRange(sql: string, message: string) {
+  const unsupportedFilterMatch =
+    /^Filtering on\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+is not supported by schema policy\.?$/u.exec(
+      message,
+    );
+  if (unsupportedFilterMatch?.[1] && unsupportedFilterMatch?.[2]) {
+    const tableName = unsupportedFilterMatch[1];
+    const columnName = unsupportedFilterMatch[2];
+    const aliases = readAliasesForSql(sql);
+    const whereBounds = findClauseBounds(sql, "where");
+    const qualifiers = new Set<string>([tableName]);
+    for (const [alias, resolvedTable] of aliases.entries()) {
+      if (resolvedTable.toLowerCase() === tableName.toLowerCase()) {
+        qualifiers.add(alias);
+      }
+    }
+
+    if (whereBounds) {
+      for (const qualifier of qualifiers) {
+        const range = findQualifiedIdentifierRangeInSlice(
+          sql,
+          qualifier,
+          columnName,
+          whereBounds.start,
+          whereBounds.end,
+        );
+        if (range) {
+          return range;
+        }
+      }
+      const range = findIdentifierRangeInSlice(
+        sql,
+        columnName,
+        whereBounds.start,
+        whereBounds.end,
+      );
+      if (range) {
+        return range;
+      }
+    }
+
+    for (const qualifier of qualifiers) {
+      const range = findQualifiedIdentifierRange(sql, qualifier, columnName);
+      if (range) {
+        return range;
+      }
+    }
+    return findIdentifierRange(sql, columnName);
+  }
+
+  const unsupportedSortMatch =
+    /^Sorting by\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+is not supported by schema policy\.?$/u.exec(
+      message,
+    );
+  if (unsupportedSortMatch?.[1] && unsupportedSortMatch?.[2]) {
+    const tableName = unsupportedSortMatch[1];
+    const columnName = unsupportedSortMatch[2];
+    const aliases = readAliasesForSql(sql);
+    const orderByBounds = findClauseBounds(sql, "order_by");
+    const qualifiers = new Set<string>([tableName]);
+    for (const [alias, resolvedTable] of aliases.entries()) {
+      if (resolvedTable.toLowerCase() === tableName.toLowerCase()) {
+        qualifiers.add(alias);
+      }
+    }
+
+    if (orderByBounds) {
+      for (const qualifier of qualifiers) {
+        const range = findQualifiedIdentifierRangeInSlice(
+          sql,
+          qualifier,
+          columnName,
+          orderByBounds.start,
+          orderByBounds.end,
+        );
+        if (range) {
+          return range;
+        }
+      }
+      const range = findIdentifierRangeInSlice(
+        sql,
+        columnName,
+        orderByBounds.start,
+        orderByBounds.end,
+      );
+      if (range) {
+        return range;
+      }
+    }
+
+    for (const qualifier of qualifiers) {
+      const range = findQualifiedIdentifierRange(sql, qualifier, columnName);
+      if (range) {
+        return range;
+      }
+    }
+    return findIdentifierRange(sql, columnName);
+  }
+
+  const invalidEnumMatch =
+    /^Invalid enum value for\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*):\s*(.+?)\.\s+Allowed values:/u.exec(
+      message,
+    );
+  if (invalidEnumMatch?.[1] && invalidEnumMatch?.[2] && invalidEnumMatch?.[3]) {
+    try {
+      const parsedValue = JSON.parse(invalidEnumMatch[3]);
+      if (typeof parsedValue === "string") {
+        const literalRange = findEnumLiteralRange(
+          sql,
+          invalidEnumMatch[1],
+          invalidEnumMatch[2],
+          parsedValue,
+        );
+        if (literalRange) {
+          return literalRange;
+        }
+      }
+    } catch {
+      // fall through to generic handling
+    }
+
+    return findQualifiedIdentifierRange(sql, invalidEnumMatch[1], invalidEnumMatch[2]) ??
+      findIdentifierRange(sql, invalidEnumMatch[2]);
+  }
+
   const parserPositionMatch = /\(at position (\d+)\)\s*$/u.exec(message);
   if (parserPositionMatch?.[1]) {
     return findTokenRangeAtPosition(sql, Number.parseInt(parserPositionMatch[1], 10));
@@ -538,84 +809,44 @@ export function App(): React.JSX.Element {
     })).filter((group) => group.entries.length > 0);
   }, [queryCatalog]);
 
-  useEffect(() => {
+  const applyJsonSchemas = useCallback((): void => {
     schemaForCompletionRef.current = schemaParse.ok ? schemaParse.schema ?? null : null;
+    const monaco = monacoRef.current;
+    if (!monaco) {
+      return;
+    }
 
-    if (monacoRef.current) {
-      monacoRef.current.languages.json.jsonDefaults.setDiagnosticsOptions({
-        validate: true,
-        allowComments: false,
-        schemas: [
-          {
-            uri: "sqlql://schema-format",
-            fileMatch: [SCHEMA_MODEL_PATH],
-            schema: PLAYGROUND_SCHEMA_JSON_SCHEMA,
-          },
-        ],
+    const schemas: Array<{ uri: string; fileMatch: string[]; schema: Record<string, unknown> }> = [
+      {
+        uri: "sqlql://schema-format",
+        fileMatch: [SCHEMA_MODEL_PATH],
+        schema: PLAYGROUND_SCHEMA_JSON_SCHEMA,
+      },
+    ];
+    if (currentDataTable && currentDataTableDefinition) {
+      schemas.push({
+        uri: `sqlql://rows-table-${currentDataTable}`,
+        fileMatch: [dataTableModelPath(currentDataTable)],
+        schema: buildTableRowsJsonSchema(currentDataTableDefinition),
       });
     }
-  }, [schemaParse]);
 
-  useEffect(() => {
-    if (!schemaParse.ok || !schemaParse.schema) {
-      setSelectedSchemaTable(null);
-      setSelectedDataTable(null);
-      return;
-    }
+    monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+      validate: true,
+      allowComments: false,
+      schemas,
+    });
+  }, [currentDataTable, currentDataTableDefinition, schemaParse]);
 
-    const tableNames = Object.keys(schemaParse.schema.tables);
-    const firstTable = tableNames[0] ?? null;
-
-    setSelectedSchemaTable((current) =>
-      current && tableNames.includes(current) ? current : firstTable,
-    );
-    setSelectedDataTable((current) =>
-      current && tableNames.includes(current) ? current : firstTable,
-    );
-  }, [schemaParse]);
-
-  useEffect(() => {
-    setSelectedCatalogQueryId((current) => selectionAfterSchemaChange(current, queryCompatibilityById));
-  }, [queryCompatibilityById]);
-
-  useEffect(() => {
-    const editor = schemaEditorRef.current;
+  const applySqlMarkers = useCallback((): void => {
     const monaco = monacoRef.current;
-    if (!editor || !monaco) {
+    if (!monaco) {
       return;
     }
 
-    if (!selectedSchemaTable) {
-      schemaDecorationIdsRef.current = editor.deltaDecorations(schemaDecorationIdsRef.current, []);
-      return;
-    }
-
-    const line = findTableLineNumber(schemaJsonText, selectedSchemaTable);
-    if (!line) {
-      schemaDecorationIdsRef.current = editor.deltaDecorations(schemaDecorationIdsRef.current, []);
-      return;
-    }
-
-    editor.revealLineInCenter(line);
-    schemaDecorationIdsRef.current = editor.deltaDecorations(schemaDecorationIdsRef.current, [
-      {
-        range: new monaco.Range(line, 1, line, 1),
-        options: {
-          isWholeLine: true,
-          className: "schema-table-highlight",
-        },
-      },
-    ]);
-  }, [schemaJsonText, selectedSchemaTable]);
-
-  useEffect(() => {
-    const monaco = monacoRef.current;
-    const sqlEditor = sqlEditorRef.current;
-    if (!monaco || !sqlEditor) {
-      return;
-    }
-
-    const model = sqlEditor.getModel();
+    const model =
+      sqlEditorRef.current?.getModel() ??
+      monaco.editor.getModel(monaco.Uri.parse(SQL_MODEL_PATH));
     if (!model) {
       return;
     }
@@ -671,6 +902,66 @@ export function App(): React.JSX.Element {
     monaco.editor.setModelMarkers(model, "sqlql", []);
   }, [rowsJsonText, runtimeError, schemaJsonText, schemaParse, sqlText]);
 
+  useEffect(() => {
+    applyJsonSchemas();
+  }, [applyJsonSchemas]);
+
+  useEffect(() => {
+    if (!schemaParse.ok || !schemaParse.schema) {
+      setSelectedSchemaTable(null);
+      setSelectedDataTable(null);
+      return;
+    }
+
+    const tableNames = Object.keys(schemaParse.schema.tables);
+    const firstTable = tableNames[0] ?? null;
+
+    setSelectedSchemaTable((current) =>
+      current && tableNames.includes(current) ? current : firstTable,
+    );
+    setSelectedDataTable((current) =>
+      current && tableNames.includes(current) ? current : firstTable,
+    );
+  }, [schemaParse]);
+
+  useEffect(() => {
+    setSelectedCatalogQueryId((current) => selectionAfterSchemaChange(current, queryCompatibilityById));
+  }, [queryCompatibilityById]);
+
+  useEffect(() => {
+    const editor = schemaEditorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) {
+      return;
+    }
+
+    if (!selectedSchemaTable) {
+      schemaDecorationIdsRef.current = editor.deltaDecorations(schemaDecorationIdsRef.current, []);
+      return;
+    }
+
+    const line = findTableLineNumber(schemaJsonText, selectedSchemaTable);
+    if (!line) {
+      schemaDecorationIdsRef.current = editor.deltaDecorations(schemaDecorationIdsRef.current, []);
+      return;
+    }
+
+    editor.revealLineInCenter(line);
+    schemaDecorationIdsRef.current = editor.deltaDecorations(schemaDecorationIdsRef.current, [
+      {
+        range: new monaco.Range(line, 1, line, 1),
+        options: {
+          isWholeLine: true,
+          className: "schema-table-highlight",
+        },
+      },
+    ]);
+  }, [schemaJsonText, selectedSchemaTable]);
+
+  useEffect(() => {
+    applySqlMarkers();
+  }, [applySqlMarkers]);
+
   const applyExample = (packId: string): void => {
     const pack = EXAMPLE_PACKS.find((candidate) => candidate.id === packId);
     if (!pack) {
@@ -702,6 +993,8 @@ export function App(): React.JSX.Element {
 
     const compileResult = compilePlaygroundInput(schemaJsonText, rowsJsonText, sqlText);
     if (!compileResult.ok) {
+      const issueMessage = compileResult.issues[0] ?? "Invalid SQL query.";
+      setRuntimeError(issueMessage);
       sessionRef.current = null;
       setPlanSteps([]);
       setPlanScopes([]);
@@ -738,6 +1031,7 @@ export function App(): React.JSX.Element {
 
   const handleMonacoMount: OnMount = (editor, monaco) => {
     monacoRef.current = monaco;
+    applyJsonSchemas();
 
     if (!sqlProviderDisposableRef.current) {
       sqlProviderDisposableRef.current = registerSqlCompletionProvider(
@@ -751,6 +1045,7 @@ export function App(): React.JSX.Element {
       sqlEditorRef.current = editor;
       window.requestAnimationFrame(() => {
         recalculateExpandedQueryEditorHeight();
+        applySqlMarkers();
       });
     }
 
@@ -1069,6 +1364,13 @@ export function App(): React.JSX.Element {
                                 fontSize: 13,
                                 scrollBeyondLastLine: false,
                                 fixedOverflowWidgets: true,
+                                suggestOnTriggerCharacters: true,
+                                quickSuggestions: {
+                                  other: true,
+                                  comments: false,
+                                  strings: true,
+                                },
+                                quickSuggestionsDelay: 0,
                               }}
                               height={`${expandedQueryEditorHeightPx}px`}
                             />
@@ -1376,7 +1678,14 @@ export function App(): React.JSX.Element {
               <TabsContent value="query" forceMount className="mt-0 h-full min-h-0">
                 {activeQueryTab === "result" ? (
                   <div className="h-full min-h-0">
-                    {resultRows ? (
+                    {runtimeError ? (
+                      <Alert variant="destructive">
+                        <AlertTitle>Query rejected</AlertTitle>
+                        <AlertDescription className="whitespace-pre-wrap font-mono text-xs">
+                          {runtimeError}
+                        </AlertDescription>
+                      </Alert>
+                    ) : resultRows ? (
                       renderRows(resultRows, { heightClassName: "h-full" })
                     ) : (
                       <div className="flex h-full items-center justify-center text-sm text-slate-500">

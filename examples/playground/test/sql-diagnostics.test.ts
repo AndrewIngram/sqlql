@@ -41,4 +41,5 @@ describe("playground/sql-diagnostics", () => {
     }
     expect(compiled.issues[0]).toBe("Unknown column: c.missing_column");
   });
+
 });

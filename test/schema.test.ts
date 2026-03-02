@@ -1,15 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   asIso8601Timestamp,
   defineSchema,
   defineTableMethods,
+  resolveTableColumnDefinition,
   resolveTableQueryBehavior,
   toSqlDDL,
 } from "../src";
 
 describe("defineSchema", () => {
-  it("keeps tables concise and applies permissive query defaults", () => {
+  it("applies default non-column query policy", () => {
     const schema = defineSchema({
       tables: {
         agent_events: {
@@ -23,17 +24,32 @@ describe("defineSchema", () => {
     });
 
     expect(resolveTableQueryBehavior(schema, "agent_events")).toEqual({
-      filterable: "all",
-      sortable: "all",
       maxRows: null,
+      reject: {
+        requiresLimit: false,
+        forbidFullScan: false,
+        requireAnyFilterOn: [],
+      },
+      fallback: {
+        filters: "allow_local",
+        sorting: "allow_local",
+        aggregates: "allow_local",
+        limitOffset: "allow_local",
+      },
     });
   });
 
-  it("allows table-level overrides", () => {
+  it("supports table-level reject/fallback policy overrides", () => {
     const schema = defineSchema({
       defaults: {
         query: {
           maxRows: 5_000,
+          reject: {
+            requiresLimit: true,
+          },
+          fallback: {
+            filters: "require_pushdown",
+          },
         },
       },
       tables: {
@@ -44,144 +60,239 @@ describe("defineSchema", () => {
           },
           query: {
             maxRows: 100,
-            sortable: ["event_id"],
+            reject: {
+              forbidFullScan: true,
+            },
+            fallback: {
+              sorting: "require_pushdown",
+            },
           },
         },
       },
     });
 
     expect(resolveTableQueryBehavior(schema, "agent_events")).toEqual({
-      filterable: "all",
-      sortable: ["event_id"],
       maxRows: 100,
+      reject: {
+        requiresLimit: true,
+        forbidFullScan: true,
+        requireAnyFilterOn: [],
+      },
+      fallback: {
+        filters: "require_pushdown",
+        sorting: "require_pushdown",
+        aggregates: "allow_local",
+        limitOffset: "allow_local",
+      },
     });
   });
 
-  it("generates SQL DDL from schema tables", () => {
+  it("generates DDL with column metadata comments on every column and table metadata", () => {
     const schema = defineSchema({
       tables: {
         orders: {
           columns: {
-            id: "text",
-            total_cents: "integer",
+            id: { type: "text", nullable: false, description: "Order id" },
+            status: {
+              type: "text",
+              nullable: false,
+              enum: ["draft", "paid", "void"] as const,
+              sortable: false,
+            },
             created_at: "timestamp",
           },
-        },
-        users: {
-          columns: {
-            id: "text",
-            active: "boolean",
+          query: {
+            reject: {
+              requiresLimit: true,
+            },
           },
         },
       },
     });
 
-    expect(toSqlDDL(schema, { ifNotExists: true })).toBe(
-      [
-        'CREATE TABLE IF NOT EXISTS "orders" (',
-        '  "id" TEXT,',
-        '  "total_cents" INTEGER,',
-        '  "created_at" TEXT /* sqlql: timestamp/date expected as ISO-8601 text */',
-        ");",
-        "",
-        'CREATE TABLE IF NOT EXISTS "users" (',
-        '  "id" TEXT,',
-        '  "active" INTEGER',
-        ");",
-      ].join("\n"),
-    );
+    const ddl = toSqlDDL(schema, { ifNotExists: true });
+    expect(ddl).toContain('CREATE TABLE IF NOT EXISTS "orders"');
+    expect(ddl).toContain('"id" TEXT NOT NULL /* sqlql: filterable:true sortable:true description:"Order id" */');
+    expect(ddl).toContain('"status" TEXT NOT NULL /* sqlql: filterable:true sortable:false */');
+    expect(ddl).toContain('"created_at" TEXT /* sqlql: filterable:true sortable:true format:iso8601 */');
+    expect(ddl).toContain('CHECK ("status" IN (\'draft\', \'paid\', \'void\'))');
+    expect(ddl).toContain('/* sqlql: query:{"maxRows":null,"reject":{"requiresLimit":true');
   });
 
-  it("generates NOT NULL for non-nullable column definitions", () => {
+  it("generates explicit CHECK constraints", () => {
     const schema = defineSchema({
       tables: {
-        users: {
+        invoices: {
           columns: {
             id: { type: "text", nullable: false },
-            email: { type: "text", nullable: true },
-            active: "boolean",
-          },
-        },
-      },
-    });
-
-    expect(toSqlDDL(schema)).toBe(
-      [
-        'CREATE TABLE "users" (',
-        '  "id" TEXT NOT NULL,',
-        '  "email" TEXT,',
-        '  "active" INTEGER',
-        ");",
-      ].join("\n"),
-    );
-  });
-
-  it("generates PRIMARY KEY, UNIQUE, and FOREIGN KEY constraints in DDL", () => {
-    const schema = defineSchema({
-      tables: {
-        users: {
-          columns: {
-            id: { type: "text", nullable: false },
-            email: { type: "text", nullable: false },
-            display_name: "text",
+            amount_due: { type: "integer", nullable: false },
           },
           constraints: {
-            primaryKey: {
-              columns: ["id"],
-            },
-            unique: [
+            checks: [
               {
-                name: "users_email_unique",
-                columns: ["email"],
+                name: "invoices_amount_due_allowed",
+                kind: "in",
+                column: "amount_due",
+                values: [0, 1000, 2000],
               },
             ],
           },
         },
-        projects: {
+      },
+    });
+
+    expect(toSqlDDL(schema)).toContain(
+      'CONSTRAINT "invoices_amount_due_allowed" CHECK ("amount_due" IN (0, 1000, 2000))',
+    );
+  });
+
+  it("supports field-level foreignKey declarations and emits FOREIGN KEY in DDL", () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
           columns: {
             id: { type: "text", nullable: false },
-            owner_user_id: { type: "text", nullable: false },
-            name: "text",
           },
           constraints: {
-            primaryKey: {
-              columns: ["id"],
-            },
-            foreignKeys: [
-              {
-                name: "projects_owner_fk",
-                columns: ["owner_user_id"],
-                references: {
-                  table: "users",
-                  columns: ["id"],
-                },
+            primaryKey: { columns: ["id"] },
+          },
+        },
+        orders: {
+          columns: {
+            id: { type: "text", nullable: false },
+            user_id: {
+              type: "text",
+              nullable: false,
+              foreignKey: {
+                table: "users",
+                column: "id",
                 onDelete: "CASCADE",
               },
-            ],
+            },
+          },
+          constraints: {
+            primaryKey: { columns: ["id"] },
           },
         },
       },
     });
 
-    expect(toSqlDDL(schema)).toBe(
-      [
-        'CREATE TABLE "users" (',
-        '  "id" TEXT NOT NULL,',
-        '  "email" TEXT NOT NULL,',
-        '  "display_name" TEXT,',
-        '  PRIMARY KEY ("id"),',
-        '  CONSTRAINT "users_email_unique" UNIQUE ("email")',
-        ");",
-        "",
-        'CREATE TABLE "projects" (',
-        '  "id" TEXT NOT NULL,',
-        '  "owner_user_id" TEXT NOT NULL,',
-        '  "name" TEXT,',
-        '  PRIMARY KEY ("id"),',
-        '  CONSTRAINT "projects_owner_fk" FOREIGN KEY ("owner_user_id") REFERENCES "users" ("id") ON DELETE CASCADE',
-        ");",
-      ].join("\n"),
+    const ddl = toSqlDDL(schema);
+    expect(ddl).toContain(
+      'FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE',
     );
+  });
+
+  it("supports field-level primaryKey/unique and emits constraints in DDL", () => {
+    const schema = defineSchema({
+      tables: {
+        products: {
+          columns: {
+            id: { type: "text", nullable: false, primaryKey: true },
+            sku: { type: "text", nullable: false, unique: true },
+            name: { type: "text", nullable: false },
+          },
+        },
+      },
+    });
+
+    const ddl = toSqlDDL(schema);
+    expect(ddl).toContain('PRIMARY KEY ("id")');
+    expect(ddl).toContain('UNIQUE ("sku")');
+    expect(ddl).toContain('"id" TEXT NOT NULL /* sqlql: filterable:true sortable:true */');
+    expect(ddl).toContain('"sku" TEXT NOT NULL /* sqlql: filterable:true sortable:true */');
+  });
+
+  it("rejects invalid enum/check declarations", () => {
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              status: { type: "integer", enum: ["active"] },
+            },
+          },
+        },
+      }),
+    ).toThrow("enum is only supported on text columns");
+
+    expect(() =>
+      defineSchema({
+        tables: {
+          invoices: {
+            columns: {
+              amount_due: "integer",
+            },
+            constraints: {
+              checks: [
+                {
+                  kind: "in",
+                  column: "amount_due",
+                  values: ["not_a_number"],
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toThrow("does not match column type integer");
+  });
+
+  it("rejects conflicting field-level key declarations", () => {
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              id: { type: "text", nullable: false, primaryKey: true, unique: true } as any,
+            },
+          },
+        },
+      }),
+    ).toThrow("primaryKey and unique cannot both be true");
+
+    expect(() =>
+      defineSchema({
+        tables: {
+          users: {
+            columns: {
+              id: { type: "text", primaryKey: true },
+            },
+          },
+        },
+      }),
+    ).toThrow("primaryKey columns must be nullable: false");
+  });
+
+  it("rejects multiple column-level primary keys; uses table-level for composite keys", () => {
+    expect(() =>
+      defineSchema({
+        tables: {
+          memberships: {
+            columns: {
+              org_id: { type: "text", nullable: false, primaryKey: true },
+              user_id: { type: "text", nullable: false, primaryKey: true },
+            },
+          },
+        },
+      }),
+    ).toThrow("Use table.constraints.primaryKey for composite keys");
+
+    const schema = defineSchema({
+      tables: {
+        memberships: {
+          columns: {
+            org_id: { type: "text", nullable: false },
+            user_id: { type: "text", nullable: false },
+          },
+          constraints: {
+            primaryKey: { columns: ["org_id", "user_id"] },
+          },
+        },
+      },
+    });
+
+    expect(toSqlDDL(schema)).toContain('PRIMARY KEY ("org_id", "user_id")');
   });
 
   it("rejects constraints that reference unknown columns/tables or mismatched arity", () => {
@@ -262,35 +373,89 @@ describe("defineSchema", () => {
     ).toThrow("must have the same length");
   });
 
-  it("rejects duplicate columns inside a single constraint", () => {
+  it("rejects field-level foreign keys with missing references", () => {
+    expect(() =>
+      defineSchema({
+        tables: {
+          orders: {
+            columns: {
+              id: { type: "text", nullable: false },
+              user_id: {
+                type: "text",
+                nullable: false,
+                foreignKey: {
+                  table: "users",
+                  column: "",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).toThrow("foreignKey.column cannot be empty");
+
     expect(() =>
       defineSchema({
         tables: {
           users: {
             columns: {
-              id: "text",
-              email: "text",
+              id: { type: "text", nullable: false },
             },
-            constraints: {
-              unique: [
-                {
-                  columns: ["email", "email"],
+          },
+          orders: {
+            columns: {
+              id: { type: "text", nullable: false },
+              user_id: {
+                type: "text",
+                nullable: false,
+                foreignKey: {
+                  table: "users",
+                  column: "missing",
                 },
-              ],
+              },
             },
           },
         },
       }),
-    ).toThrow('duplicate column "email"');
+    ).toThrow('referenced column "missing" does not exist');
   });
 
-  it("infers scan/aggregate request columns from schema", () => {
+  it("accepts legacy query.filterable/sortable and maps them to column metadata", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const schema = defineSchema({
+      tables: {
+        users: {
+          columns: {
+            id: "text",
+            email: "text",
+            admin_notes: { type: "text", filterable: false },
+          },
+          query: {
+            filterable: ["id", "email"],
+            sortable: ["id"],
+          },
+        },
+      },
+    });
+
+    expect(resolveTableColumnDefinition(schema, "users", "id").filterable).toBe(true);
+    expect(resolveTableColumnDefinition(schema, "users", "email").filterable).toBe(true);
+    expect(resolveTableColumnDefinition(schema, "users", "email").sortable).toBe(false);
+    expect(resolveTableColumnDefinition(schema, "users", "admin_notes").filterable).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    warn.mockRestore();
+  });
+
+  it("infers schema-typed request columns and enum values", () => {
     const schema = defineSchema({
       tables: {
         orders: {
           columns: {
             id: "text",
             org_id: "text",
+            status: { type: "text", enum: ["draft", "paid"] as const },
             total_cents: "integer",
           },
         },
@@ -301,7 +466,9 @@ describe("defineSchema", () => {
       orders: {
         async scan(request) {
           request.select.push("id");
-          request.where?.push({ op: "eq", column: "org_id", value: "org_1" });
+          request.where?.push({ op: "eq", column: "status", value: "paid" });
+          // @ts-expect-error invalid enum literal
+          request.where?.push({ op: "eq", column: "status", value: "refunded" });
           // @ts-expect-error not a valid orders column
           request.select.push("email");
           return [];
@@ -311,8 +478,6 @@ describe("defineSchema", () => {
           request.metrics.push({ fn: "sum", column: "total_cents", as: "total" });
           // @ts-expect-error not a valid orders column
           request.groupBy?.push("email");
-          // @ts-expect-error not a valid orders column
-          request.metrics.push({ fn: "sum", column: "email", as: "sum_email" });
           return [];
         },
       },

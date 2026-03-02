@@ -4,6 +4,7 @@ import { EXAMPLE_PACKS, serializeJson } from "../src/examples";
 import {
   PLAYGROUND_SCHEMA_JSON_SCHEMA,
   buildRowsJsonSchema,
+  buildTableRowsJsonSchema,
   parseRowsText,
   parseSchemaText,
 } from "../src/validation";
@@ -62,6 +63,31 @@ describe("playground/validation", () => {
     });
   });
 
+  it("builds table rows JSON schema with enum metadata", () => {
+    const pack = EXAMPLE_PACKS[0];
+    if (!pack) {
+      throw new Error("Expected default example pack.");
+    }
+
+    const table = pack.schema.tables.orders;
+    if (!table) {
+      throw new Error("Expected orders table.");
+    }
+
+    const tableSchema = buildTableRowsJsonSchema(table);
+    expect(tableSchema).toMatchObject({
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          status: {
+            enum: ["pending", "paid"],
+          },
+        },
+      },
+    });
+  });
+
   it("schema editor JSON schema allows table constraints", () => {
     const tables = (PLAYGROUND_SCHEMA_JSON_SCHEMA.properties as Record<string, unknown>)
       .tables as Record<string, unknown>;
@@ -73,5 +99,31 @@ describe("playground/validation", () => {
     expect(constraintsProperties).toHaveProperty("primaryKey");
     expect(constraintsProperties).toHaveProperty("unique");
     expect(constraintsProperties).toHaveProperty("foreignKeys");
+    expect(constraintsProperties).toHaveProperty("checks");
+  });
+
+  it("schema editor JSON schema allows column-level foreignKey + enum metadata", () => {
+    const tables = (PLAYGROUND_SCHEMA_JSON_SCHEMA.properties as Record<string, unknown>)
+      .tables as Record<string, unknown>;
+    const tableDefinition = tables.additionalProperties as Record<string, unknown>;
+    const properties = tableDefinition.properties as Record<string, unknown>;
+    const columns = properties.columns as Record<string, unknown>;
+    const anyOf = (columns.additionalProperties as Record<string, unknown>).anyOf as Array<Record<
+      string,
+      unknown
+    >>;
+    const objectVariant = anyOf.find((entry) => entry.type === "object");
+    if (!objectVariant) {
+      throw new Error("Expected object-based column schema variant.");
+    }
+
+    const objectProperties = (objectVariant.properties as Record<string, unknown>) ?? {};
+    expect(objectProperties).toHaveProperty("enum");
+    expect(objectProperties).toHaveProperty("foreignKey");
+    expect(objectProperties).toHaveProperty("primaryKey");
+    expect(objectProperties).toHaveProperty("unique");
+
+    const allOf = (objectVariant.allOf as Array<Record<string, unknown>> | undefined) ?? [];
+    expect(allOf.length).toBeGreaterThan(0);
   });
 });

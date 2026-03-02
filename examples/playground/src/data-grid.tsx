@@ -12,7 +12,7 @@ import {
   formatCellValue,
   updateRowCell,
 } from "@/data-editing";
-import { isColumnNullable, readColumnType } from "@/types";
+import { isColumnNullable, readColumnEnumValues, readColumnType } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface DataGridProps {
@@ -24,6 +24,29 @@ interface DataGridProps {
 
 function cellKey(rowIndex: number, columnName: string): string {
   return `${rowIndex}:${columnName}`;
+}
+
+function toDateTimeLocalValue(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  const dateOnly = /^(\d{4}-\d{2}-\d{2})$/u.exec(trimmed);
+  if (dateOnly?.[1]) {
+    return `${dateOnly[1]}T00:00`;
+  }
+
+  const dateTime = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z)?$/u.exec(trimmed);
+  if (dateTime?.[1] && dateTime?.[2]) {
+    return `${dateTime[1]}T${dateTime[2]}`;
+  }
+
+  return "";
 }
 
 export function DataGrid({
@@ -144,10 +167,39 @@ export function DataGrid({
                   const displayValue = draftValue ?? formatCellValue(currentValue);
                   const error = errors[key];
                   const type = readColumnType(columnDefinition);
+                  const enumValues = readColumnEnumValues(columnDefinition) ?? [];
+                  const timestampValue = draftValue ?? toDateTimeLocalValue(currentValue);
+                  const timestampFallback =
+                    draftValue == null &&
+                    typeof currentValue === "string" &&
+                    currentValue.length > 0 &&
+                    timestampValue.length === 0;
 
                   return (
                     <TableCell key={columnName} className="align-top">
-                      {type === "boolean" ? (
+                      {enumValues.length > 0 ? (
+                        <select
+                          className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"
+                          value={currentValue == null ? "__null__" : String(currentValue)}
+                          onChange={(event) =>
+                            commitCellText(
+                              rowIndex,
+                              columnName,
+                              columnDefinition,
+                              event.target.value === "__null__" ? "" : event.target.value,
+                            )
+                          }
+                        >
+                          {isColumnNullable(columnDefinition) ? (
+                            <option value="__null__"></option>
+                          ) : null}
+                          {enumValues.map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      ) : type === "boolean" ? (
                         <select
                           className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"
                           value={
@@ -172,6 +224,36 @@ export function DataGrid({
                           <option value="true">true</option>
                           <option value="false">false</option>
                         </select>
+                      ) : type === "integer" ? (
+                        <input
+                          type="number"
+                          step={1}
+                          inputMode="numeric"
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs"
+                          value={displayValue}
+                          onChange={(event) =>
+                            commitCellText(
+                              rowIndex,
+                              columnName,
+                              columnDefinition,
+                              event.target.value,
+                            )
+                          }
+                        />
+                      ) : type === "timestamp" && !timestampFallback ? (
+                        <input
+                          type="datetime-local"
+                          className="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs"
+                          value={timestampValue}
+                          onChange={(event) =>
+                            commitCellText(
+                              rowIndex,
+                              columnName,
+                              columnDefinition,
+                              event.target.value,
+                            )
+                          }
+                        />
                       ) : (
                         <input
                           className="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs"

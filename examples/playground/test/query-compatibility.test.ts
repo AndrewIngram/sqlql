@@ -8,6 +8,18 @@ import {
 import type { SchemaParseResult } from "../src/types";
 
 describe("playground/query-compatibility", () => {
+  it("marks every preset query as compatible with its own schema", () => {
+    for (const pack of EXAMPLE_PACKS) {
+      for (const query of pack.queries) {
+        const result = checkQueryCompatibility(pack.schema, query.sql);
+        expect(
+          result.compatible,
+          `[${pack.id}] ${query.label} should be compatible`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("marks compatible queries as compatible", () => {
     const pack = EXAMPLE_PACKS[0];
     const query = pack?.queries[0]?.sql;
@@ -55,4 +67,3 @@ describe("playground/query-compatibility", () => {
     );
   });
 });
-

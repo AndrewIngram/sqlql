@@ -55,3 +55,10 @@ export function readColumnType(column: TableColumnDefinition): SqlScalarType {
 export function isColumnNullable(column: TableColumnDefinition): boolean {
   return typeof column === "string" ? true : (column.nullable ?? true);
 }
+
+export function readColumnEnumValues(column: TableColumnDefinition): readonly string[] | undefined {
+  if (typeof column === "string" || column.type !== "text") {
+    return undefined;
+  }
+  return column.enum;
+}

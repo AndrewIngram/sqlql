@@ -34,19 +34,106 @@ interface PlanGraphProps {
   heightClassName?: string;
 }
 
-function isDomainInteractingStep(step: QueryExecutionPlanStep): boolean {
-  return step.phase === "fetch" || step.kind === "scan" || step.kind === "aggregate";
+type StepExecutionClass = "domain_call" | "local_over_fetched_rows" | "internal_op";
+
+function isCteScanStep(step: QueryExecutionPlanStep): boolean {
+  if (step.kind !== "scan" || step.operation.name !== "scan") {
+    return false;
+  }
+
+  const details = step.operation.details;
+  if (!details || typeof details !== "object") {
+    return false;
+  }
+
+  const isCte = (details as { isCte?: unknown }).isCte;
+  return isCte === true;
+}
+
+function classifyStepExecution(
+  step: QueryExecutionPlanStep,
+  state: QueryStepState | null,
+): StepExecutionClass {
+  if (isCteScanStep(step)) {
+    return "local_over_fetched_rows";
+  }
+
+  if (state?.routeUsed === "local") {
+    if (step.kind === "scan" || step.kind === "aggregate" || step.phase === "fetch") {
+      return "local_over_fetched_rows";
+    }
+    return "internal_op";
+  }
+
+  if (state?.routeUsed) {
+    if (
+      state.routeUsed === "scan" ||
+      state.routeUsed === "lookup" ||
+      state.routeUsed === "aggregate"
+    ) {
+      return "domain_call";
+    }
+    return "internal_op";
+  }
+
+  if (
+    step.kind === "aggregate" &&
+    Array.isArray((step.pushdown as { routeCandidates?: unknown })?.routeCandidates) &&
+    ((step.pushdown as { routeCandidates?: string[] }).routeCandidates ?? []).length === 1 &&
+    (step.pushdown as { routeCandidates?: string[] }).routeCandidates?.[0] === "local"
+  ) {
+    return "local_over_fetched_rows";
+  }
+
+  if (step.phase === "fetch" || step.kind === "scan" || step.kind === "aggregate") {
+    return "domain_call";
+  }
+
+  return "internal_op";
+}
+
+function classLabel(stepClass: StepExecutionClass): string {
+  switch (stepClass) {
+    case "domain_call":
+      return "domain call";
+    case "local_over_fetched_rows":
+      return "local over fetched rows";
+    case "internal_op":
+      return "internal op";
+  }
+}
+
+function classContainerStyles(stepClass: StepExecutionClass): string {
+  switch (stepClass) {
+    case "domain_call":
+      return "border-emerald-300 bg-emerald-50";
+    case "local_over_fetched_rows":
+      return "border-amber-300 bg-amber-50";
+    case "internal_op":
+      return "bg-white";
+  }
+}
+
+function classHandleStyles(stepClass: StepExecutionClass): string {
+  switch (stepClass) {
+    case "domain_call":
+      return "!bg-emerald-500";
+    case "local_over_fetched_rows":
+      return "!bg-amber-500";
+    case "internal_op":
+      return "!bg-slate-400";
+  }
 }
 
 const StepNode = memo(function StepNode({ data }: NodeProps): React.JSX.Element {
   const stepData = data as PlanNodeData;
-  const isDomainStep = isDomainInteractingStep(stepData.step);
+  const stepClass = classifyStepExecution(stepData.step, stepData.state);
 
   return (
     <div
       className={cn(
         "h-[170px] w-[320px] rounded-xl border p-3 text-xs shadow-sm transition",
-        isDomainStep ? "border-emerald-300 bg-emerald-50" : "bg-white",
+        classContainerStyles(stepClass),
         stepData.isSelected && "border-sky-600 ring-2 ring-sky-200",
         !stepData.isSelected && stepData.isHighlighted && "border-sky-300",
         !stepData.isHighlighted && !stepData.isSelected && "border-slate-200",
@@ -55,12 +142,12 @@ const StepNode = memo(function StepNode({ data }: NodeProps): React.JSX.Element 
       <Handle
         type="target"
         position={Position.Left}
-        className={cn("!h-2 !w-2", isDomainStep ? "!bg-emerald-500" : "!bg-slate-400")}
+        className={cn("!h-2 !w-2", classHandleStyles(stepClass))}
       />
       <Handle
         type="source"
         position={Position.Right}
-        className={cn("!h-2 !w-2", isDomainStep ? "!bg-emerald-500" : "!bg-slate-400")}
+        className={cn("!h-2 !w-2", classHandleStyles(stepClass))}
       />
 
       <div className="mb-2">
@@ -71,7 +158,7 @@ const StepNode = memo(function StepNode({ data }: NodeProps): React.JSX.Element 
 
       <div className="mb-1 text-sm font-semibold text-slate-900">{stepData.step.kind}</div>
       <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">
-        {isDomainStep ? "domain call" : "internal op"}
+        {classLabel(stepClass)}
       </div>
       <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">{stepData.step.phase}</div>
       <div className="line-clamp-3 text-[12px] text-slate-700">{stepData.step.summary}</div>
@@ -181,6 +268,10 @@ function PlanGraphCanvas({
         <div className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
           Domain call
+        </div>
+        <div className="inline-flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-amber-500" />
+          Local over fetched rows
         </div>
         <div className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-slate-400" />

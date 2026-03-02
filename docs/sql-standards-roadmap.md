@@ -41,8 +41,11 @@ Implemented:
   - eligible source scan stages
 - Opt-in step execution sessions via `createQuerySession(...)`
 - Schema constraint metadata: `PRIMARY KEY`, `UNIQUE`, `FOREIGN KEY`
+- Structured `CHECK` metadata (`kind: "in"`) and enum-derived checks
+- Column-centric static capabilities (`filterable`, `sortable`) with schema-level query rejection
+- Optional adapter planner hooks (`planScan`, `planLookup`, `planAggregate`) for pushdown partitioning
 - Optional query-time constraint validation modes: `off`, `warn`, `error`
-  - runtime checks: `NOT NULL`, primary-key uniqueness, unique-key uniqueness
+  - runtime checks: `NOT NULL`, primary-key uniqueness, unique-key uniqueness, enum/CHECK validation
   - foreign-key runtime checks are not implemented
 
 Unsupported:
@@ -59,6 +62,7 @@ Target direction:
 - Keep parser/planner/executor behavior converging with SQLite parity for supported subsets.
 - Use a single in-house parser targeting SQLite SQL, with no parser fallbacks/workarounds.
 - Treat schema constraints as communication-first metadata and optional runtime checks (not at-rest guarantees).
+- Column capability flags are communication + enforcement metadata at planning time.
 - Defer index metadata and index-driven planning until constraint semantics are fully settled.
 - Continue expanding feature support milestone by milestone.
 - Keep performance pragmatic: semi-optimal pushdown and batching where possible, without pursuing full database-style optimization.
@@ -168,6 +172,9 @@ Performance is important but not the primary goal.
 | Branch-level parallel execution     | n/a                 | done                | done                  | none new                  |
 | Step-by-step query session API      | n/a                 | done                | done                  | none new                  |
 | Schema PK/FK/UNIQUE metadata        | done                | n/a                 | done (DDL)            | none new                  |
+| Schema CHECK/enum metadata          | done                | n/a                 | done (DDL)            | none new                  |
+| Column filter/sort capability gates | n/a                 | done                | done                  | none new                  |
+| Planner pushdown hooks              | n/a                 | done                | done                  | `planScan/Lookup/Aggregate` |
 | Constraint runtime validation       | n/a                 | n/a                 | done (off/warn/error) | none new                  |
 | Index metadata/planning hints       | deferred            | deferred            | deferred              | none                      |
 | Writes (`INSERT/UPDATE/DELETE`)     | explicit no-support | explicit no-support | explicit no-support   | none                      |

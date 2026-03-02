@@ -180,6 +180,38 @@ describe("query/session", () => {
     expect(rightStep?.scopeId).toBe(rightBranch?.id);
   });
 
+  it("adds a projected ORDER step when ordering by window output alias", () => {
+    const methods = defineTableMethods(commerceSchema, {
+      orders: createArrayTableMethods(commerceRows.orders),
+      users: createArrayTableMethods(commerceRows.users),
+      teams: createArrayTableMethods(commerceRows.teams),
+    });
+
+    const session = createQuerySession({
+      schema: commerceSchema,
+      methods,
+      context: EMPTY_CONTEXT,
+      sql: `
+        SELECT
+          o.id,
+          o.user_id,
+          RANK() OVER (PARTITION BY o.user_id ORDER BY o.total_cents DESC) AS spend_rank
+        FROM orders o
+        ORDER BY o.user_id ASC, spend_rank ASC, o.id ASC
+      `,
+    });
+
+    const plan = session.getPlan();
+    const projectionStep = plan.steps.find((step) => step.summary === "Project result rows");
+    const projectedOrderStep = plan.steps.find(
+      (step) => step.summary === "Apply ORDER/LIMIT/OFFSET on projected rows",
+    );
+
+    expect(projectionStep).toBeDefined();
+    expect(projectedOrderStep).toBeDefined();
+    expect(projectedOrderStep?.dependsOn).toContain(projectionStep?.id);
+  });
+
   it("steps through execution using next() and returns final result", async () => {
     const methods = defineTableMethods(commerceSchema, {
       orders: createArrayTableMethods(commerceRows.orders),

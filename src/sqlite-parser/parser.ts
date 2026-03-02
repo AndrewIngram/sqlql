@@ -33,18 +33,6 @@ type BinaryOperatorSpec =
       precedence: number;
     };
 
-const CLAUSE_BOUNDARY_KEYWORDS = new Set([
-  "WHERE",
-  "GROUP",
-  "HAVING",
-  "WINDOW",
-  "ORDER",
-  "LIMIT",
-  "UNION",
-  "INTERSECT",
-  "EXCEPT",
-]);
-
 export function parseSqliteSelectAst(sql: string): SelectAst {
   const parser = new SqliteSelectParser(sql);
   const ast = parser.parseStatement();

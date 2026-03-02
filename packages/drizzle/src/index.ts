@@ -44,7 +44,7 @@ export interface CreateDrizzleTableMethodsOptions<
 
 export function createDrizzleTableMethods<TContext, TTable extends string, TColumn extends string>(
   options: CreateDrizzleTableMethodsOptions<TContext, TTable, TColumn>,
-): TableMethods<TContext, TTable, TColumn> {
+): TableMethods<TContext, TTable, TColumn, any> {
   const includeLookup = options.includeLookup ?? true;
 
   const scan = async (
@@ -70,7 +70,7 @@ export function createDrizzleTableMethods<TContext, TTable extends string, TColu
     return runDrizzleScan(payload);
   };
 
-  const methods: TableMethods<TContext, TTable, TColumn> = {
+  const methods: TableMethods<TContext, TTable, TColumn, any> = {
     scan,
   };
 
@@ -85,7 +85,7 @@ export function createDrizzleTableMethods<TContext, TTable extends string, TColu
           column: request.key,
           op: "in",
           values: request.values,
-        },
+        } as ScanFilterClause<TColumn>,
       ];
 
       const scanRequest: TableScanRequest<TTable, TColumn> = {
@@ -199,7 +199,7 @@ function toSqlCondition<TColumn extends string>(
   columns: DrizzleColumnMap<TColumn>,
   tableName: string,
 ): SQL {
-  const source = columns[clause.column];
+  const source = columns[clause.column as TColumn];
   if (!source) {
     throw new Error(`Unsupported filter column "${clause.column}" for table "${tableName}".`);
   }

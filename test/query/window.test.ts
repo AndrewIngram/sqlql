@@ -117,6 +117,37 @@ describe("query/window", () => {
     );
   });
 
+  it("supports ORDER BY window output aliases with sqlite parity", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              o.id,
+              o.user_id,
+              o.total_cents,
+              RANK() OVER (PARTITION BY o.user_id ORDER BY o.total_cents DESC) AS spend_rank
+            FROM orders o
+            ORDER BY o.user_id ASC, spend_rank ASC, o.id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_2", user_id: "usr_1", total_cents: 1800, spend_rank: 1 },
+          { id: "ord_1", user_id: "usr_1", total_cents: 1200, spend_rank: 2 },
+          { id: "ord_3", user_id: "usr_2", total_cents: 2400, spend_rank: 1 },
+          { id: "ord_4", user_id: "usr_3", total_cents: 9900, spend_rank: 1 },
+        ]);
+      },
+    );
+  });
+
   it("supports explicit ROWS frame clauses", async () => {
     await withQueryHarness(
       {

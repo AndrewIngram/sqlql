@@ -21,6 +21,12 @@ This keeps SQL ergonomics for agents and developers without requiring direct DB 
 
 For LLM-driven tools specifically, a SQL interface gives the model flexible retrieval patterns while minimizing how much raw data needs to be injected into the context window, all through a single tool surface.
 
+## Guides
+
+- Schema guide: [`docs/defining-your-schema.md`](./docs/defining-your-schema.md)
+- Integration guide: [`docs/integrating-with-your-system.md`](./docs/integrating-with-your-system.md)
+- Planner hooks overview: [`docs/resolver-plan-api.md`](./docs/resolver-plan-api.md)
+
 ## Conceptual limits and non-goals
 
 `sqlql` intentionally does not try to be a full database.
@@ -169,6 +175,51 @@ const methods = defineTableMethods(schema, {
 - `context`: your app/domain context from `query({ context })`.
 - return type: `Promise<QueryRow[]>` with grouped rows and metric outputs.
 
+## Column capabilities and query policy
+
+Capabilities are defined per column:
+
+- `filterable?: boolean` (default `true`)
+- `sortable?: boolean` (default `true`)
+- `enum?: readonly string[]` (text columns only)
+- `description?: string`
+
+Table-level query policy is for non-column governance:
+
+- `query.maxRows`
+- `query.reject.requiresLimit`
+- `query.reject.forbidFullScan`
+- `query.reject.requireAnyFilterOn`
+- `query.fallback.*` (`allow_local` or `require_pushdown`)
+
+When a query violates static schema policy, `sqlql` rejects it before calling table methods.
+Legacy `query.filterable` / `query.sortable` are still accepted for migration, but deprecated (column-level flags win when both are present).
+
+## Planner hooks (optional)
+
+Resolvers can optionally provide planning hooks:
+
+- `planScan(request, context)`
+- `planLookup(request, context)`
+- `planAggregate(request, context)`
+
+Each planned request contains stable term IDs for `where`/`orderBy`/metrics, so hooks can:
+
+- choose pushdown by term ID (`whereIds`, `orderByIds`, `metricIds`)
+- or use explicit `remote/residual` mode
+- or reject with a structured `code/message`
+
+Residual work runs locally unless table fallback policy requires full pushdown.
+
+## Enums and CHECK constraints
+
+- Column `enum` metadata emits deterministic `CHECK (... IN (...))` in DDL.
+- Structured table checks are supported via `constraints.checks` (`kind: "in"`).
+- Column-level constraints are supported directly on columns: `primaryKey`, `unique`, `foreignKey`.
+- Table-level constraints remain available for composite keys/uniques/FKs via `constraints.*`.
+- `toSqlDDL(...)` emits compact column metadata comments (`filterable:*`, `sortable:*`, `format:iso8601` for timestamps) and table-level policy metadata as JSON (`sqlql: query:{...}`).
+- Optional runtime `constraintValidation` modes (`warn`/`error`) include enum/CHECK violations on returned rows.
+
 ## JSON helper methods (optional)
 
 For demos, tests, and rapid prototypes, `createArrayTableMethods(...)` generates table methods from in-memory rows:
@@ -215,6 +266,7 @@ Supported:
 - uncorrelated subqueries (`IN (SELECT ...)`, `EXISTS`, scalar subqueries)
 - non-recursive CTEs (`WITH ...`)
 - window functions (core set): `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LEAD`, `LAG`, and aggregate windows
+- `ORDER BY` on selected output aliases (including window output aliases)
 - `toSqlDDL(...)` with SQLite-oriented output (`TEXT`/`INTEGER`) and timestamp metadata comments
 
 Not yet supported:
@@ -228,16 +280,35 @@ Not yet supported:
 
 ## Playground
 
-The playground is a Vite + React app for interactive exploration:
+The playground is a Vite + React app for interactive exploration with three top-level tabs:
 
-- edit schema/data/query in Monaco
-- run queries and inspect results
-- view plan dependencies as a graph
+- `Schema`:
+  - JSON schema editor
+  - relation diagram (React Flow) from declared foreign keys
+  - generated DDL viewer (syntax-highlighted SQL)
+  - preset selector (`Custom` is selected automatically after edits)
+- `Data`:
+  - table list from current schema
+  - per-table `JSON` editor and `Table` grid editor
+  - enum/type-aware editing and schema-driven validation
+- `Query`:
+  - global preset-query catalog (queries from all packs)
+  - compatibility-aware query picker (incompatible queries are disabled with reasons)
+  - compact one-line SQL preview that expands into Monaco on focus
+  - auto-run on valid schema/data/query (no manual run button)
+  - `Result` tab for rows and `Explain` tab for plan graph + step overlay details
 
 Run:
 
 ```bash
 pnpm example:playground:dev
+```
+
+Build / preview:
+
+```bash
+pnpm example:playground:build
+pnpm example:playground:start
 ```
 
 ## Facade example (Drizzle)

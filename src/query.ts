@@ -1,6 +1,7 @@
 import {
   getTable,
   resolveColumnType,
+  resolveTableColumnDefinition,
   resolveTableQueryBehavior,
   type AggregateFunction,
   type QueryRow,
@@ -9,6 +10,7 @@ import {
   type SchemaDefinition,
   type TableAggregateMetric,
   type TableAggregateRequest,
+  type TableLookupRequest,
   type TableMethods,
   type TableMethodsMap,
   type TableScanRequest,
@@ -252,6 +254,16 @@ interface OutputOrderColumn {
 }
 
 type OrderColumn = SourceOrderColumn | OutputOrderColumn;
+type SelectOrderResolution =
+  | {
+      kind: "source";
+      alias: string;
+      column: string;
+    }
+  | {
+      kind: "output";
+      output: string;
+    };
 
 interface LiteralFilter {
   alias: string;
@@ -1213,7 +1225,7 @@ function compileStaticNonAggregateSelect<TContext>(
   builder: StaticPlanBuilder,
   currentScopeId: string,
 ): { terminalStepIds: string[] } {
-  const parentCteNames = new Set<string>([...cteRows.keys()]);
+  const parentCteNames = new Set<string>(cteRows.keys());
   const { orderedScanStepIds } = compileStaticScanSteps(
     parsed,
     input,
@@ -1336,6 +1348,8 @@ function compileStaticNonAggregateSelect<TContext>(
   );
   builder.appendStepDependencies(projectionStepId, selectSubqueryTerminalStepIds);
 
+  const requiresProjectedOrderLimit = parsed.orderBy.some((column) => column.kind === "output");
+
   if (parsed.distinct) {
     const distinctStepId = builder.addStep("distinct", "Apply DISTINCT", [projectionStepId], {
       phase: "transform",
@@ -1349,6 +1363,33 @@ function compileStaticNonAggregateSelect<TContext>(
       "order",
       "Apply ORDER/LIMIT/OFFSET on projected rows",
       [distinctStepId],
+      {
+        phase: "output",
+        operation: {
+          name: "order_limit_offset",
+        },
+        request: {
+          orderBy: parsed.orderBy.map((column) => {
+            if (column.kind === "source") {
+              return `${column.alias}.${column.column}:${column.direction}`;
+            }
+            return `${column.output}:${column.direction}`;
+          }),
+          ...(parsed.limit != null ? { limit: parsed.limit } : {}),
+          ...(parsed.offset != null ? { offset: parsed.offset } : {}),
+        },
+        sqlOrigin: "ORDER BY",
+        scopeId: currentScopeId,
+      },
+    );
+    return { terminalStepIds: [orderStepId] };
+  }
+
+  if (requiresProjectedOrderLimit) {
+    const orderStepId = builder.addStep(
+      "order",
+      "Apply ORDER/LIMIT/OFFSET on projected rows",
+      [projectionStepId],
       {
         phase: "output",
         operation: {
@@ -1387,7 +1428,7 @@ function compileStaticAggregateSelect<TContext>(
   builder: StaticPlanBuilder,
   currentScopeId: string,
 ): { terminalStepIds: string[] } {
-  const parentCteNames = new Set<string>([...cteRows.keys()]);
+  const parentCteNames = new Set<string>(cteRows.keys());
   const { orderedScanStepIds } = compileStaticScanSteps(
     parsed,
     input,
@@ -1405,6 +1446,10 @@ function compileStaticAggregateSelect<TContext>(
     !!rootBinding &&
     !rootBinding.isCte &&
     !!input.methods[rootBinding.table]?.aggregate;
+  const aggregateTablePolicy =
+    rootBinding && !rootBinding.isCte
+      ? resolveTableQueryBehavior(input.schema, rootBinding.table)
+      : null;
 
   let previousStepId = builder.addStep(
     "aggregate",
@@ -1431,6 +1476,14 @@ function compileStaticAggregateSelect<TContext>(
       pushdown: {
         routeCandidates: aggregateRoutePossible ? ["aggregate", "local"] : ["local"],
         aggregateRoutePossible,
+        ...(aggregateTablePolicy
+          ? {
+              schemaPolicy: {
+                reject: aggregateTablePolicy.reject,
+                fallback: aggregateTablePolicy.fallback,
+              },
+            }
+          : {}),
       },
       outputs: [
         ...parsed.aggregateOutputColumns.map((column) => column.output),
@@ -1648,6 +1701,7 @@ function compileStaticScanSteps<TContext>(
     }
 
     const tableMethods = input.methods[binding.table];
+    const tablePolicy = !binding.isCte ? resolveTableQueryBehavior(input.schema, binding.table) : null;
     const lookupCandidate =
       !binding.isCte &&
       !!tableMethods?.lookup &&
@@ -1672,6 +1726,14 @@ function compileStaticScanSteps<TContext>(
         orderBy: canPushFinalSortAndLimit ? "pushed" : "local",
         limit: canPushFinalSortAndLimit ? "pushed" : "local",
         routeCandidates: lookupCandidate ? ["lookup", "scan"] : ["scan"],
+        ...(tablePolicy
+          ? {
+              schemaPolicy: {
+                reject: tablePolicy.reject,
+                fallback: tablePolicy.fallback,
+              },
+            }
+          : {}),
       },
       outputs: [...projection],
       sqlOrigin: "FROM",
@@ -1943,9 +2005,12 @@ async function executeParsedSelect<TContext>(
     return executeAggregateSelect(parsed, input, cteRows, options);
   }
 
+  const requiresProjectedSortLimit =
+    parsed.distinct || parsed.orderBy.some((term) => term.kind === "output");
+
   const joinedRows = await runStepWithController(options, "join", "Join source bindings", [], () =>
     executeJoinedRows(parsed, input, cteRows, options, {
-      applyFinalSortAndLimit: !parsed.distinct,
+      applyFinalSortAndLimit: !requiresProjectedSortLimit,
     }),
   );
   const whereFiltered = await runStepWithController(
@@ -1974,6 +2039,9 @@ async function executeParsedSelect<TContext>(
     projected = await runStepWithController(options, "distinct", "Apply DISTINCT", [], async () =>
       dedupeRows(projected),
     );
+  }
+
+  if (requiresProjectedSortLimit) {
     projected = await runStepWithController(
       options,
       "order",
@@ -2003,15 +2071,25 @@ async function executeAggregateSelect<TContext>(
     [],
     async () => {
       const routed = await tryRunAggregateRoute(parsed, input);
-      if (routed) {
+      if (routed.rows) {
         return {
-          value: routed,
+          value: routed.rows,
           metadata: {
             routeUsed: "aggregate",
-            outputRowCount: routed.length,
-            notes: ["Aggregate handler route was used."],
+            outputRowCount: routed.rows.length,
+            notes: ["Aggregate handler route was used.", ...(routed.notes ?? [])],
           },
         };
+      }
+
+      const rootBinding = parsed.bindings[0];
+      if (rootBinding && !rootBinding.isCte) {
+        const tableBehavior = resolveTableQueryBehavior(input.schema, rootBinding.table);
+        if (tableBehavior.fallback.aggregates === "require_pushdown") {
+          throw new Error(
+            `Query rejected by fallback policy for table ${rootBinding.table}: aggregate route is required.`,
+          );
+        }
       }
 
       const local = await runLocalAggregate(parsed, input, cteRows, options);
@@ -2020,7 +2098,7 @@ async function executeAggregateSelect<TContext>(
         metadata: {
           routeUsed: "local",
           outputRowCount: local.length,
-          notes: ["Fell back to local aggregate execution."],
+          notes: ["Fell back to local aggregate execution.", ...(routed.notes ?? [])],
         },
       };
     },
@@ -2076,71 +2154,178 @@ async function executeAggregateSelect<TContext>(
 async function tryRunAggregateRoute<TContext>(
   parsed: ParsedSelectQuery,
   input: QueryInput<TContext>,
-): Promise<QueryRow[] | null> {
-  if (parsed.bindings.length !== 1 || parsed.joins.length > 0) {
-    return null;
-  }
-
-  if (parsed.having) {
-    return null;
-  }
-
-  if (!parsed.wherePushdownSafe) {
-    return null;
+): Promise<{ rows: QueryRow[] | null; notes?: string[] }> {
+  if (!canUseAggregateRoute(parsed, input)) {
+    return { rows: null };
   }
 
   const binding = parsed.bindings[0];
   if (!binding || binding.isCte) {
-    return null;
+    return { rows: null };
   }
 
   const method = input.methods[binding.table];
   if (!method?.aggregate) {
-    return null;
+    return { rows: null };
   }
 
+  const tableBehavior = resolveTableQueryBehavior(input.schema, binding.table);
   const filtersByAlias = groupFiltersByAlias(parsed.filters);
   const where = filtersByAlias.get(binding.alias) ?? [];
+  const whereTerms = withFilterTermIds(where, "aggregate_where");
+  const metricTerms = parsed.aggregateMetrics.map((metric, index) => ({
+    id: `aggregate_metric_${index + 1}`,
+    metric: {
+      fn: metric.fn,
+      as: metric.output,
+      ...(metric.column ? { column: metric.column.column } : {}),
+      ...(metric.distinct ? { distinct: true } : {}),
+    } satisfies TableAggregateMetric,
+  }));
+
+  const groupBy = parsed.groupBy.map((column) => column.column);
+  const baseRequest = {
+    table: binding.table,
+    alias: binding.alias,
+    ...(whereTerms.length > 0 ? { where: whereTerms.map((term) => term.clause) } : {}),
+    ...(groupBy.length > 0 ? { groupBy } : {}),
+    metrics: metricTerms.map((term) => term.metric),
+    ...(parsed.orderBy.length === 0 && parsed.offset == null && parsed.limit != null
+      ? { limit: parsed.limit }
+      : {}),
+  } satisfies TableAggregateRequest;
+
+  const planningRequest = {
+    table: binding.table,
+    alias: binding.alias,
+    ...(whereTerms.length > 0 ? { where: whereTerms } : {}),
+    ...(groupBy.length > 0 ? { groupBy } : {}),
+    metrics: metricTerms,
+    ...(baseRequest.limit != null ? { limit: baseRequest.limit } : {}),
+  } as const;
+
+  const decision = method.planAggregate?.(planningRequest, input.context);
+  if (decision?.reject) {
+    throw new Error(decision.reject.message);
+  }
+
+  if (decision?.mode === "remote_residual") {
+    const hasResidual =
+      (decision.residual?.where?.length ?? 0) > 0 ||
+      (decision.residual?.groupBy?.length ?? 0) > 0 ||
+      (decision.residual?.metrics?.length ?? 0) > 0 ||
+      decision.residual?.limit != null;
+    if (hasResidual) {
+      if (tableBehavior.fallback.aggregates === "require_pushdown") {
+        throw new Error(
+          `Query rejected by fallback policy for table ${binding.table}: aggregate residuals require local execution.`,
+        );
+      }
+      return {
+        rows: null,
+        ...(decision.notes ? { notes: decision.notes } : {}),
+      };
+    }
+
+    const remoteRequest: TableAggregateRequest = {
+      table: binding.table,
+      alias: binding.alias,
+      metrics: decision.remote?.metrics ?? baseRequest.metrics,
+      ...(decision.remote?.where ? { where: decision.remote.where } : {}),
+      ...(decision.remote?.groupBy ? { groupBy: decision.remote.groupBy } : {}),
+      ...(decision.remote?.limit != null ? { limit: decision.remote.limit } : {}),
+    };
+
+    const rows = await method.aggregate(remoteRequest, input.context);
+    const normalizedRows = normalizeRowsForBinding(binding.table, rows, input.schema);
+    validateRowsForBinding(binding.table, normalizedRows, input);
+    return {
+      rows: normalizedRows.map((row) => normalizeAggregateRowFromRoute(row, parsed)),
+      ...(decision.notes ? { notes: decision.notes } : {}),
+    };
+  }
+
+  const whereIds =
+    decision?.whereIds != null ? new Set(decision.whereIds) : new Set(whereTerms.map((term) => term.id));
+  const metricIds =
+    decision?.metricIds != null
+      ? new Set(decision.metricIds)
+      : new Set(metricTerms.map((term) => term.id));
+  const pushGroupBy = decision?.groupBy !== "residual";
+  const pushLimit = decision?.limit !== "residual";
+
+  const residualNeeded =
+    whereTerms.some((term) => !whereIds.has(term.id)) ||
+    metricTerms.some((term) => !metricIds.has(term.id)) ||
+    (!pushGroupBy && groupBy.length > 0) ||
+    (!pushLimit && baseRequest.limit != null);
+
+  if (residualNeeded) {
+    if (tableBehavior.fallback.aggregates === "require_pushdown") {
+      throw new Error(
+        `Query rejected by fallback policy for table ${binding.table}: aggregate residuals require local execution.`,
+      );
+    }
+    return { rows: null, ...(decision?.notes ? { notes: decision.notes } : {}) };
+  }
+
+  const request: TableAggregateRequest = {
+    table: binding.table,
+    alias: binding.alias,
+    metrics: metricTerms.filter((term) => metricIds.has(term.id)).map((term) => term.metric),
+    ...(whereTerms.length > 0
+      ? { where: whereTerms.filter((term) => whereIds.has(term.id)).map((term) => term.clause) }
+      : {}),
+    ...(pushGroupBy && groupBy.length > 0 ? { groupBy } : {}),
+    ...(pushLimit && baseRequest.limit != null ? { limit: baseRequest.limit } : {}),
+  };
+
+  const rows = await method.aggregate(request, input.context);
+  const normalizedRows = normalizeRowsForBinding(binding.table, rows, input.schema);
+  validateRowsForBinding(binding.table, normalizedRows, input);
+  return {
+    rows: normalizedRows.map((row) => normalizeAggregateRowFromRoute(row, parsed)),
+    ...(decision?.notes ? { notes: decision.notes } : {}),
+  };
+}
+
+function canUseAggregateRoute<TContext>(
+  parsed: ParsedSelectQuery,
+  input: QueryInput<TContext>,
+): boolean {
+  if (parsed.bindings.length !== 1 || parsed.joins.length > 0) {
+    return false;
+  }
+
+  if (parsed.having) {
+    return false;
+  }
+
+  if (!parsed.wherePushdownSafe) {
+    return false;
+  }
+
+  const binding = parsed.bindings[0];
+  if (!binding || binding.isCte) {
+    return false;
+  }
+
+  const method = input.methods[binding.table];
+  if (!method?.aggregate) {
+    return false;
+  }
 
   if (parsed.groupBy.some((column) => column.alias !== binding.alias)) {
-    return null;
+    return false;
   }
 
   if (
     parsed.aggregateMetrics.some((metric) => metric.column && metric.column.alias !== binding.alias)
   ) {
-    return null;
+    return false;
   }
 
-  const metrics: TableAggregateMetric[] = parsed.aggregateMetrics.map((metric) => ({
-    fn: metric.fn,
-    as: metric.output,
-    ...(metric.column ? { column: metric.column.column } : {}),
-    ...(metric.distinct ? { distinct: true } : {}),
-  }));
-
-  const request: TableAggregateRequest = {
-    table: binding.table,
-    alias: binding.alias,
-    metrics,
-  };
-
-  if (where.length > 0) {
-    request.where = where;
-  }
-
-  if (parsed.groupBy.length > 0) {
-    request.groupBy = parsed.groupBy.map((column) => column.column);
-  }
-
-  if (parsed.orderBy.length === 0 && parsed.offset == null && parsed.limit != null) {
-    request.limit = parsed.limit;
-  }
-
-  const rows = await method.aggregate(request, input.context);
-  const normalizedRows = normalizeRowsForBinding(binding.table, rows, input.schema);
-  validateRowsForBinding(binding.table, normalizedRows, input);
-  return normalizedRows.map((row) => normalizeAggregateRowFromRoute(row, parsed));
+  return true;
 }
 
 function normalizeAggregateRowFromRoute(row: QueryRow, parsed: ParsedSelectQuery): QueryRow {
@@ -2436,6 +2621,31 @@ async function executeJoinedRows<TContext>(
 
           const canPushFinalSortAndLimit =
             canPushFinalSortAndLimitAll && alias === rootBinding.alias;
+          const tableBehavior = !binding.isCte
+            ? resolveTableQueryBehavior(input.schema, binding.table)
+            : undefined;
+
+          if (
+            tableBehavior &&
+            tableBehavior.fallback.sorting === "require_pushdown" &&
+            !canPushFinalSortAndLimit &&
+            parsed.orderBy.some((term) => term.kind === "source" && term.alias === alias)
+          ) {
+            throw new Error(
+              `Query rejected by fallback policy for table ${binding.table}: sorting must be fully pushed down.`,
+            );
+          }
+          if (
+            tableBehavior &&
+            tableBehavior.fallback.limitOffset === "require_pushdown" &&
+            !canPushFinalSortAndLimit &&
+            (parsed.limit != null || parsed.offset != null) &&
+            alias === rootBinding.alias
+          ) {
+            throw new Error(
+              `Query rejected by fallback policy for table ${binding.table}: LIMIT/OFFSET must be fully pushed down.`,
+            );
+          }
 
           const requestOrderBy: ScanOrderBy[] | undefined = canPushFinalSortAndLimit
             ? parsed.orderBy
@@ -2449,8 +2659,7 @@ async function executeJoinedRows<TContext>(
           let requestLimit = canPushFinalSortAndLimit ? parsed.limit : undefined;
           const requestOffset = canPushFinalSortAndLimit ? parsed.offset : undefined;
 
-          if (!binding.isCte) {
-            const tableBehavior = resolveTableQueryBehavior(input.schema, binding.table);
+          if (tableBehavior) {
             const defaultMaxRows = tableBehavior.maxRows;
 
             if (requestLimit == null && defaultMaxRows != null) {
@@ -2496,7 +2705,7 @@ async function executeJoinedRows<TContext>(
             "scan",
             `Scan ${alias} (${binding.table})`,
             aliasDependencies.get(alias) ?? [],
-            async () => runSourceScan(binding, request, cteRows, input),
+            async () => runSourceScan(binding, request, cteRows, input, tableBehavior),
           );
 
           const normalizedRows = !binding.isCte
@@ -2561,6 +2770,7 @@ async function runSourceScan<TContext>(
   request: TableScanRequest,
   cteRows: Map<string, QueryRow[]>,
   input: QueryInput<TContext>,
+  tableBehavior?: ReturnType<typeof resolveTableQueryBehavior>,
 ): Promise<StepRunWithMetadata<QueryRow[]>> {
   if (binding.isCte) {
     const rows = cteRows.get(binding.table) ?? [];
@@ -2580,7 +2790,12 @@ async function runSourceScan<TContext>(
     throw new Error(`No table methods registered for table: ${binding.table}`);
   }
 
-  return runScan(method, request, input.context);
+  return runScan(
+    method,
+    request,
+    input.context,
+    tableBehavior ?? resolveTableQueryBehavior(input.schema, binding.table),
+  );
 }
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
@@ -2684,10 +2899,10 @@ function applyScanFilters(rows: QueryRow[], clauses: ScanFilterClause[]): QueryR
         });
         break;
       case "in": {
-        const set = new Set(clause.values.filter((value) => value != null));
+        const set = new Set<unknown>(clause.values.filter((value) => value != null));
         out = out.filter((row) => {
           const value = row[clause.column];
-          return value != null && set.has(value);
+          return value != null && set.has(value as unknown);
         });
         break;
       }
@@ -2707,67 +2922,276 @@ async function runScan<TContext>(
   method: TableMethods<TContext>,
   request: TableScanRequest,
   context: TContext,
+  tableBehavior: ReturnType<typeof resolveTableQueryBehavior>,
 ): Promise<StepRunWithMetadata<QueryRow[]>> {
-  const dependencyFilters = request.where?.filter((clause) => clause.op === "in") ?? [];
-
-  if (
+  const whereClauses = request.where ?? [];
+  const dependencyFilters = whereClauses.filter((clause) => clause.op === "in");
+  const lookupCandidate =
     dependencyFilters.length === 1 &&
     method.lookup &&
     dependencyFilters[0] &&
     dependencyFilters[0].values.length > 0 &&
     request.orderBy == null &&
     request.limit == null &&
-    request.offset == null
-  ) {
+    request.offset == null;
+
+  if (lookupCandidate) {
     const lookup = dependencyFilters[0];
-    if (!lookup) {
-      const scanned = await method.scan(request, context);
-      return {
-        value: scanned,
-        metadata: {
-          routeUsed: "scan",
-          outputRowCount: scanned.length,
-        },
-      };
+    if (lookup) {
+      return runLookupRoute(method, request, lookup, context, tableBehavior);
     }
+  }
 
-    const nonDependencyFilters = request.where?.filter((clause) => clause !== lookup);
-    const lookupRequest = {
-      table: request.table,
-      key: lookup.column,
-      values: lookup.values,
-      select: request.select,
-    } as const;
-    const fullLookupRequest: Parameters<NonNullable<typeof method.lookup>>[0] = {
-      ...lookupRequest,
-    };
+  const plannedWhere = withFilterTermIds(request.where ?? [], "where");
+  const plannedOrderBy = withOrderTermIds(request.orderBy ?? [], "order");
+  const plannedRequest = {
+    table: request.table,
+    ...(request.alias ? { alias: request.alias } : {}),
+    select: request.select,
+    ...(plannedWhere.length > 0 ? { where: plannedWhere } : {}),
+    ...(plannedOrderBy.length > 0 ? { orderBy: plannedOrderBy } : {}),
+    ...(request.limit != null ? { limit: request.limit } : {}),
+    ...(request.offset != null ? { offset: request.offset } : {}),
+  } as const;
 
-    if (request.alias) {
-      fullLookupRequest.alias = request.alias;
-    }
+  const decision = method.planScan?.(plannedRequest, context);
+  if (decision?.reject) {
+    throw new Error(decision.reject.message);
+  }
 
-    if (nonDependencyFilters && nonDependencyFilters.length > 0) {
-      fullLookupRequest.where = nonDependencyFilters;
-    }
+  const partitioned = partitionScanPlanDecision(decision, request, plannedWhere, plannedOrderBy);
+  if (partitioned.residual.where.length > 0 && tableBehavior.fallback.filters === "require_pushdown") {
+    throw new Error(
+      `Query rejected by fallback policy for table ${request.table}: filter residuals require local execution.`,
+    );
+  }
+  if (
+    partitioned.residual.orderBy.length > 0 &&
+    tableBehavior.fallback.sorting === "require_pushdown"
+  ) {
+    throw new Error(
+      `Query rejected by fallback policy for table ${request.table}: sorting residuals require local execution.`,
+    );
+  }
+  if (
+    (partitioned.residual.limit != null || partitioned.residual.offset != null) &&
+    tableBehavior.fallback.limitOffset === "require_pushdown"
+  ) {
+    throw new Error(
+      `Query rejected by fallback policy for table ${request.table}: limit/offset residuals require local execution.`,
+    );
+  }
 
-    const lookedUp = await method.lookup(fullLookupRequest, context);
+  const remoteRequest: TableScanRequest = {
+    table: request.table,
+    ...(request.alias ? { alias: request.alias } : {}),
+    select: request.select,
+    ...(partitioned.remote.where.length > 0 ? { where: partitioned.remote.where } : {}),
+    ...(partitioned.remote.orderBy.length > 0 ? { orderBy: partitioned.remote.orderBy } : {}),
+    ...(partitioned.remote.limit != null ? { limit: partitioned.remote.limit } : {}),
+    ...(partitioned.remote.offset != null ? { offset: partitioned.remote.offset } : {}),
+  };
+
+  const scanned = await method.scan(remoteRequest, context);
+  const hasResidualWork =
+    partitioned.residual.where.length > 0 ||
+    partitioned.residual.orderBy.length > 0 ||
+    partitioned.residual.limit != null ||
+    partitioned.residual.offset != null;
+
+  if (!hasResidualWork) {
     return {
-      value: lookedUp,
+      value: scanned,
       metadata: {
-        routeUsed: "lookup",
-        outputRowCount: lookedUp.length,
-        notes: ["Lookup route selected due a single IN dependency filter."],
+        routeUsed: "scan",
+        outputRowCount: scanned.length,
+        ...(decision?.notes && decision.notes.length > 0 ? { notes: decision.notes } : {}),
       },
     };
   }
 
-  const scanned = await method.scan(request, context);
+  const local = scanRows(scanned, {
+    table: request.table,
+    ...(request.alias ? { alias: request.alias } : {}),
+    select: request.select,
+    ...(partitioned.residual.where.length > 0 ? { where: partitioned.residual.where } : {}),
+    ...(partitioned.residual.orderBy.length > 0 ? { orderBy: partitioned.residual.orderBy } : {}),
+    ...(partitioned.residual.limit != null ? { limit: partitioned.residual.limit } : {}),
+    ...(partitioned.residual.offset != null ? { offset: partitioned.residual.offset } : {}),
+  });
+
+  const notes = [
+    "Applied residual scan operations locally.",
+    ...(decision?.notes ?? []),
+  ];
+
   return {
-    value: scanned,
+    value: local,
     metadata: {
       routeUsed: "scan",
-      outputRowCount: scanned.length,
+      outputRowCount: local.length,
+      notes,
     },
+  };
+}
+
+async function runLookupRoute<TContext>(
+  method: TableMethods<TContext>,
+  request: TableScanRequest,
+  lookup: Extract<ScanFilterClause, { op: "in" }>,
+  context: TContext,
+  tableBehavior: ReturnType<typeof resolveTableQueryBehavior>,
+): Promise<StepRunWithMetadata<QueryRow[]>> {
+  const remainingWhere = (request.where ?? []).filter((clause) => clause !== lookup);
+  const plannedRequest = {
+    table: request.table,
+    ...(request.alias ? { alias: request.alias } : {}),
+    key: lookup.column,
+    values: lookup.values,
+    select: request.select,
+    ...(remainingWhere.length > 0 ? { where: withFilterTermIds(remainingWhere, "lookup_where") } : {}),
+  } as const;
+
+  const decision = method.planLookup?.(plannedRequest, context);
+  if (decision?.reject) {
+    throw new Error(decision.reject.message);
+  }
+
+  const partitioned = partitionLookupPlanDecision(decision, remainingWhere);
+  if (partitioned.residual.length > 0 && tableBehavior.fallback.filters === "require_pushdown") {
+    throw new Error(
+      `Query rejected by fallback policy for table ${request.table}: lookup residual filters require local execution.`,
+    );
+  }
+
+  const lookupRequest: TableLookupRequest = {
+    table: request.table,
+    ...(request.alias ? { alias: request.alias } : {}),
+    key: lookup.column,
+    values: lookup.values,
+    select: request.select,
+    ...(partitioned.remote.length > 0 ? { where: partitioned.remote } : {}),
+  };
+  const lookedUp = await method.lookup!(lookupRequest, context);
+
+  const local =
+    partitioned.residual.length > 0
+      ? applyScanFilters(lookedUp, partitioned.residual)
+      : lookedUp;
+
+  const notes = [
+    "Lookup route selected due a single IN dependency filter.",
+    ...(partitioned.residual.length > 0 ? ["Applied residual lookup filters locally."] : []),
+    ...(decision?.notes ?? []),
+  ];
+
+  return {
+    value: local,
+    metadata: {
+      routeUsed: "lookup",
+      outputRowCount: local.length,
+      notes,
+    },
+  };
+}
+
+function withFilterTermIds(clauses: ScanFilterClause[], prefix: string): Array<{
+  id: string;
+  clause: ScanFilterClause;
+}> {
+  return clauses.map((clause, index) => ({
+    id: clause.id ?? `${prefix}_${index + 1}`,
+    clause,
+  }));
+}
+
+function withOrderTermIds(terms: ScanOrderBy[], prefix: string): Array<{
+  id: string;
+  term: ScanOrderBy;
+}> {
+  return terms.map((term, index) => ({
+    id: term.id ?? `${prefix}_${index + 1}`,
+    term,
+  }));
+}
+
+function partitionScanPlanDecision(
+  decision: ReturnType<NonNullable<TableMethods["planScan"]>> | undefined,
+  request: TableScanRequest,
+  whereTerms: Array<{ id: string; clause: ScanFilterClause }>,
+  orderTerms: Array<{ id: string; term: ScanOrderBy }>,
+): {
+  remote: {
+    where: ScanFilterClause[];
+    orderBy: ScanOrderBy[];
+    limit?: number;
+    offset?: number;
+  };
+  residual: {
+    where: ScanFilterClause[];
+    orderBy: ScanOrderBy[];
+    limit?: number;
+    offset?: number;
+  };
+} {
+  if (decision?.mode === "remote_residual") {
+    return {
+      remote: {
+        where: [...(decision.remote?.where ?? [])],
+        orderBy: [...(decision.remote?.orderBy ?? [])],
+        ...(decision.remote?.limit != null ? { limit: decision.remote.limit } : {}),
+        ...(decision.remote?.offset != null ? { offset: decision.remote.offset } : {}),
+      },
+      residual: {
+        where: [...(decision.residual?.where ?? [])],
+        orderBy: [...(decision.residual?.orderBy ?? [])],
+        ...(decision.residual?.limit != null ? { limit: decision.residual.limit } : {}),
+        ...(decision.residual?.offset != null ? { offset: decision.residual.offset } : {}),
+      },
+    };
+  }
+
+  const whereIds =
+    decision?.whereIds != null ? new Set(decision.whereIds) : new Set(whereTerms.map((term) => term.id));
+  const orderIds =
+    decision?.orderByIds != null
+      ? new Set(decision.orderByIds)
+      : new Set(orderTerms.map((term) => term.id));
+  const pushLimitOffset = decision?.limitOffset !== "residual";
+
+  return {
+    remote: {
+      where: whereTerms.filter((term) => whereIds.has(term.id)).map((term) => term.clause),
+      orderBy: orderTerms.filter((term) => orderIds.has(term.id)).map((term) => term.term),
+      ...(pushLimitOffset && request.limit != null ? { limit: request.limit } : {}),
+      ...(pushLimitOffset && request.offset != null ? { offset: request.offset } : {}),
+    },
+    residual: {
+      where: whereTerms.filter((term) => !whereIds.has(term.id)).map((term) => term.clause),
+      orderBy: orderTerms.filter((term) => !orderIds.has(term.id)).map((term) => term.term),
+      ...(!pushLimitOffset && request.limit != null ? { limit: request.limit } : {}),
+      ...(!pushLimitOffset && request.offset != null ? { offset: request.offset } : {}),
+    },
+  };
+}
+
+function partitionLookupPlanDecision(
+  decision: ReturnType<NonNullable<TableMethods["planLookup"]>> | undefined,
+  where: ScanFilterClause[],
+): { remote: ScanFilterClause[]; residual: ScanFilterClause[] } {
+  if (decision?.mode === "remote_residual") {
+    return {
+      remote: [...(decision.remote?.where ?? [])],
+      residual: [...(decision.residual?.where ?? [])],
+    };
+  }
+
+  const whereTerms = withFilterTermIds(where, "lookup_where");
+  const whereIds =
+    decision?.whereIds != null ? new Set(decision.whereIds) : new Set(whereTerms.map((term) => term.id));
+  return {
+    remote: whereTerms.filter((term) => whereIds.has(term.id)).map((term) => term.clause),
+    residual: whereTerms.filter((term) => !whereIds.has(term.id)).map((term) => term.clause),
   };
 }
 
@@ -2996,9 +3420,25 @@ function parseSelectAst(
     }
   }
 
-  const selectableOutputByName = new Map<string, SelectColumn>();
+  const selectOrderByOutputByName = new Map<string, SelectOrderResolution>();
   for (const column of selectColumns) {
-    selectableOutputByName.set(column.output, column);
+    selectOrderByOutputByName.set(column.output, {
+      kind: "source",
+      alias: column.alias,
+      column: column.column,
+    });
+  }
+  for (const item of scalarSelectItems) {
+    selectOrderByOutputByName.set(item.output, {
+      kind: "output",
+      output: item.output,
+    });
+  }
+  for (const windowFunction of windowFunctions) {
+    selectOrderByOutputByName.set(windowFunction.output, {
+      kind: "output",
+      output: windowFunction.output,
+    });
   }
 
   const aggregateOutputNames = new Set<string>();
@@ -3022,7 +3462,7 @@ function parseSelectAst(
     bindings,
     aliasToBinding,
     isAggregate,
-    selectableOutputByName,
+    selectOrderByOutputByName,
     aggregateOutputNames,
     groupOutputBySource,
   );
@@ -3052,7 +3492,202 @@ function parseSelectAst(
     ...(offset != null ? { offset } : {}),
   };
 
+  validateParsedSelectPolicy(parsedQuery, schema, aliasToBinding);
+  validateEnumLiteralFilters(parsedQuery.where, bindings, aliasToBinding, schema);
+
   return parsedQuery;
+}
+
+function validateParsedSelectPolicy(
+  parsed: ParsedSelectQuery,
+  schema: SchemaDefinition,
+  aliasToBinding: Map<string, TableBinding>,
+): void {
+  for (const whereColumn of parsed.whereColumns) {
+    const binding = aliasToBinding.get(whereColumn.alias);
+    if (!binding || binding.isCte || !schema.tables[binding.table]) {
+      continue;
+    }
+
+    const column = resolveTableColumnDefinition(schema, binding.table, whereColumn.column);
+    if (!column.filterable) {
+      throw new Error(
+        `Filtering on ${binding.table}.${whereColumn.column} is not supported by schema policy.`,
+      );
+    }
+  }
+
+  for (const orderBy of parsed.orderBy) {
+    if (orderBy.kind !== "source") {
+      continue;
+    }
+
+    const binding = aliasToBinding.get(orderBy.alias);
+    if (!binding || binding.isCte || !schema.tables[binding.table]) {
+      continue;
+    }
+
+    const column = resolveTableColumnDefinition(schema, binding.table, orderBy.column);
+    if (!column.sortable) {
+      throw new Error(
+        `Sorting by ${binding.table}.${orderBy.column} is not supported by schema policy.`,
+      );
+    }
+  }
+
+  for (const binding of parsed.bindings) {
+    if (binding.isCte) {
+      continue;
+    }
+    if (!schema.tables[binding.table]) {
+      continue;
+    }
+
+    const tableBehavior = resolveTableQueryBehavior(schema, binding.table);
+    if (tableBehavior.reject.requiresLimit && parsed.limit == null) {
+      throw new Error(
+        `Query rejected by schema policy for table ${binding.table}: LIMIT is required.`,
+      );
+    }
+
+    const whereColumnsForAlias = parsed.whereColumns.filter((column) => column.alias === binding.alias);
+    if (tableBehavior.reject.forbidFullScan && whereColumnsForAlias.length === 0) {
+      throw new Error(
+        `Query rejected by schema policy for table ${binding.table}: full scans are forbidden.`,
+      );
+    }
+
+    if (tableBehavior.reject.requireAnyFilterOn.length > 0) {
+      const hasRequiredFilter = whereColumnsForAlias.some((column) =>
+        tableBehavior.reject.requireAnyFilterOn.includes(column.column),
+      );
+      if (!hasRequiredFilter) {
+        throw new Error(
+          `Query rejected by schema policy for table ${binding.table}: expected a WHERE filter on one of [${tableBehavior.reject.requireAnyFilterOn.join(", ")}].`,
+        );
+      }
+    }
+
+    if (
+      tableBehavior.fallback.filters === "require_pushdown" &&
+      parsed.where &&
+      !parsed.wherePushdownSafe &&
+      whereColumnsForAlias.length > 0
+    ) {
+      throw new Error(
+        `Query rejected by fallback policy for table ${binding.table}: non-pushdown WHERE predicates are not allowed.`,
+      );
+    }
+  }
+}
+
+function validateEnumLiteralFilters(
+  expr: unknown,
+  bindings: TableBinding[],
+  aliasToBinding: Map<string, TableBinding>,
+  schema: SchemaDefinition,
+): void {
+  if (!expr || typeof expr !== "object") {
+    return;
+  }
+
+  if (toSubqueryAst(expr)) {
+    return;
+  }
+
+  const node = expr as {
+    type?: unknown;
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+    args?: { value?: unknown };
+  };
+
+  if (node.type === "binary_expr") {
+    const operator = typeof node.operator === "string" ? node.operator.toUpperCase() : "";
+    if (operator === "=") {
+      const leftColumn = tryResolveColumnRef(node.left, bindings, aliasToBinding);
+      const rightColumn = tryResolveColumnRef(node.right, bindings, aliasToBinding);
+      const leftLiteral = parseLiteral(node.left);
+      const rightLiteral = parseLiteral(node.right);
+
+      if (leftColumn && !rightColumn && rightLiteral !== undefined) {
+        validateEnumLiteralValue(schema, aliasToBinding, leftColumn, rightLiteral);
+      } else if (rightColumn && !leftColumn && leftLiteral !== undefined) {
+        validateEnumLiteralValue(schema, aliasToBinding, rightColumn, leftLiteral);
+      }
+    } else if (operator === "IN") {
+      const leftColumn = tryResolveColumnRef(node.left, bindings, aliasToBinding);
+      const rightColumn = tryResolveColumnRef(node.right, bindings, aliasToBinding);
+      if (leftColumn && !rightColumn) {
+        const values = tryParseLiteralExpressionList(node.right);
+        if (values) {
+          for (const value of values) {
+            validateEnumLiteralValue(schema, aliasToBinding, leftColumn, value);
+          }
+        }
+      } else if (rightColumn && !leftColumn) {
+        const values = tryParseLiteralExpressionList(node.left);
+        if (values) {
+          for (const value of values) {
+            validateEnumLiteralValue(schema, aliasToBinding, rightColumn, value);
+          }
+        }
+      }
+    }
+
+    validateEnumLiteralFilters(node.left, bindings, aliasToBinding, schema);
+    validateEnumLiteralFilters(node.right, bindings, aliasToBinding, schema);
+    return;
+  }
+
+  const args = node.args?.value;
+  if (Array.isArray(args)) {
+    for (const arg of args) {
+      validateEnumLiteralFilters(arg, bindings, aliasToBinding, schema);
+    }
+  } else if (args) {
+    validateEnumLiteralFilters(args, bindings, aliasToBinding, schema);
+  }
+}
+
+function validateEnumLiteralValue(
+  schema: SchemaDefinition,
+  aliasToBinding: Map<string, TableBinding>,
+  columnRef: { alias: string; column: string },
+  value: unknown,
+): void {
+  if (value == null) {
+    return;
+  }
+
+  const binding = aliasToBinding.get(columnRef.alias);
+  if (!binding || binding.isCte || !schema.tables[binding.table]) {
+    return;
+  }
+
+  const column = resolveTableColumnDefinition(schema, binding.table, columnRef.column);
+  if (!column.enum) {
+    return;
+  }
+
+  if (typeof value !== "string" || !column.enum.includes(value)) {
+    throw new Error(
+      `Invalid enum value for ${binding.table}.${columnRef.column}: ${JSON.stringify(value)}. Allowed values: ${column.enum.join(", ")}`,
+    );
+  }
+}
+
+function tryResolveColumnRef(
+  expr: unknown,
+  bindings: TableBinding[],
+  aliasToBinding: Map<string, TableBinding>,
+): { alias: string; column: string } | null {
+  try {
+    return resolveColumnRef(expr, bindings, aliasToBinding) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function parseGroupBy(
@@ -3500,7 +4135,7 @@ function parseOrderBy(
   bindings: TableBinding[],
   aliasToBinding: Map<string, TableBinding>,
   isAggregate: boolean,
-  selectByOutput: Map<string, SelectColumn>,
+  selectOrderByOutputByName: Map<string, SelectOrderResolution>,
   aggregateOutputNames: Set<string>,
   aggregateGroupOutputBySource: Map<string, string>,
 ): OrderColumn[] {
@@ -3553,14 +4188,22 @@ function parseOrderBy(
     }
 
     if (!rawColumnRef.table) {
-      const selectedColumn = selectByOutput.get(rawColumnRef.column);
-      if (selectedColumn) {
-        out.push({
-          kind: "source",
-          alias: selectedColumn.alias,
-          column: selectedColumn.column,
-          direction,
-        });
+      const selectOutput = selectOrderByOutputByName.get(rawColumnRef.column);
+      if (selectOutput) {
+        if (selectOutput.kind === "source") {
+          out.push({
+            kind: "source",
+            alias: selectOutput.alias,
+            column: selectOutput.column,
+            direction,
+          });
+        } else {
+          out.push({
+            kind: "output",
+            output: selectOutput.output,
+            direction,
+          });
+        }
         continue;
       }
     }
@@ -3709,8 +4352,8 @@ function tryParseConjunctivePushdownFilters(
         clause: {
           op: "in",
           column: colRef.column,
-          values,
-        },
+          values: values as unknown[],
+        } as ScanFilterClause,
       });
       continue;
     }
@@ -3763,7 +4406,7 @@ function tryParseConjunctivePushdownFilters(
           op: operator,
           column: leftCol.column,
           value: rightLiteral,
-        },
+        } as ScanFilterClause,
       });
       continue;
     }
@@ -3775,7 +4418,7 @@ function tryParseConjunctivePushdownFilters(
           op: invertOperator(operator),
           column: rightCol.column,
           value: leftLiteral,
-        },
+        } as ScanFilterClause,
       });
       continue;
     }
@@ -4123,8 +4766,8 @@ function buildDependencyFilters(
       clauses.push({
         op: "in",
         column: edge.leftColumn,
-        values: uniqueValues(rowsByAlias.get(edge.rightAlias) ?? [], edge.rightColumn),
-      });
+        values: uniqueValues(rowsByAlias.get(edge.rightAlias) ?? [], edge.rightColumn) as unknown[],
+      } as ScanFilterClause);
       continue;
     }
 
@@ -4135,8 +4778,8 @@ function buildDependencyFilters(
       clauses.push({
         op: "in",
         column: edge.rightColumn,
-        values: uniqueValues(rowsByAlias.get(edge.leftAlias) ?? [], edge.leftColumn),
-      });
+        values: uniqueValues(rowsByAlias.get(edge.leftAlias) ?? [], edge.leftColumn) as unknown[],
+      } as ScanFilterClause);
     }
   }
 
@@ -4547,6 +5190,7 @@ function applyProjectedSortLimit(rows: QueryRow[], parsed: ParsedSelectQuery): Q
   let out = rows;
 
   if (parsed.orderBy.length > 0) {
+    const rootBinding = parsed.bindings[0];
     const mapped = parsed.orderBy.map((term) => {
       if (term.kind === "output") {
         return {
@@ -4559,8 +5203,14 @@ function applyProjectedSortLimit(rows: QueryRow[], parsed: ParsedSelectQuery): Q
         (candidate) => candidate.alias === term.alias && candidate.column === term.column,
       );
       if (!selected) {
+        if (parsed.selectAll && rootBinding && term.alias === rootBinding.alias) {
+          return {
+            key: term.column,
+            direction: term.direction,
+          };
+        }
         throw new Error(
-          `ORDER BY ${term.alias}.${term.column} must reference a selected output when DISTINCT is used.`,
+          `ORDER BY ${term.alias}.${term.column} must reference a selected output when post-projection ordering is required.`,
         );
       }
 
