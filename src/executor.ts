@@ -28,6 +28,7 @@ interface RelExecutionContext<TContext> {
   context: TContext;
   guardrails: RelExecutionGuardrails;
   lookupBatches: number;
+  cteRows: Map<string, QueryRow[]>;
 }
 
 export async function executeRelWithProviders<TContext>(
@@ -43,6 +44,7 @@ export async function executeRelWithProviders<TContext>(
     context,
     guardrails,
     lookupBatches: 0,
+    cteRows: new Map<string, QueryRow[]>(),
   };
 
   const rows = await executeRelNode(rel, executionContext);
@@ -64,20 +66,20 @@ async function executeRelNode<TContext>(
       return executeScan(node, context);
     case "join":
       return executeJoin(node, context);
+    case "filter":
+      return executeFilter(node, context);
     case "project":
       return executeProject(node, context);
+    case "aggregate":
+      return executeAggregate(node, context);
     case "sort":
       return executeSort(node, context);
     case "limit_offset":
       return executeLimitOffset(node, context);
-    case "filter":
-      throw new UnsupportedRelExecutionError("Local filter node execution is not implemented yet.");
-    case "aggregate":
-      throw new UnsupportedRelExecutionError("Aggregate rel execution is not implemented yet.");
     case "set_op":
-      throw new UnsupportedRelExecutionError("Set operation rel execution is not implemented yet.");
+      return executeSetOp(node, context);
     case "with":
-      throw new UnsupportedRelExecutionError("WITH rel execution is not implemented yet.");
+      return executeWith(node, context);
     case "sql":
       throw new UnsupportedRelExecutionError("SQL fallback rel nodes require provider sql_query execution.");
   }
@@ -87,6 +89,22 @@ async function executeScan<TContext>(
   scan: RelScanNode,
   context: RelExecutionContext<TContext>,
 ): Promise<InternalRow[]> {
+  const cteRows = context.cteRows.get(scan.table);
+  if (cteRows) {
+    const scanned = scanLocalRows(cteRows, {
+      table: scan.table,
+      ...(scan.alias ? { alias: scan.alias } : {}),
+      select: scan.select,
+      ...(scan.where ? { where: scan.where } : {}),
+      ...(scan.orderBy ? { orderBy: scan.orderBy } : {}),
+      ...(scan.limit != null ? { limit: scan.limit } : {}),
+      ...(scan.offset != null ? { offset: scan.offset } : {}),
+    });
+
+    const alias = scan.alias ?? scan.table;
+    return scanned.map((row) => prefixRow(row, alias));
+  }
+
   const providerName = resolveTableProvider(context.schema, scan.table);
   const provider = context.providers[providerName];
   if (!provider) {
@@ -124,6 +142,20 @@ async function executeScan<TContext>(
 
   const alias = scan.alias ?? scan.table;
   return rows.map((row) => prefixRow(row, alias));
+}
+
+async function executeFilter<TContext>(
+  filter: Extract<RelNode, { kind: "filter" }>,
+  context: RelExecutionContext<TContext>,
+): Promise<InternalRow[]> {
+  const rows = (await executeRelNode(filter.input, context)) as InternalRow[];
+  let out = [...rows];
+
+  for (const clause of filter.where) {
+    out = out.filter((row) => matchesClause(row, clause));
+  }
+
+  return out;
 }
 
 async function executeJoin<TContext>(
@@ -281,6 +313,55 @@ async function executeProject<TContext>(
   });
 }
 
+async function executeAggregate<TContext>(
+  aggregate: Extract<RelNode, { kind: "aggregate" }>,
+  context: RelExecutionContext<TContext>,
+): Promise<QueryRow[]> {
+  const rows = (await executeRelNode(aggregate.input, context)) as InternalRow[];
+  const groups = new Map<string, InternalRow[]>();
+
+  for (const row of rows) {
+    const key = JSON.stringify(
+      aggregate.groupBy.map((ref) => readRowValue(row, toColumnKey(ref)) ?? null),
+    );
+    const bucket = groups.get(key) ?? [];
+    bucket.push(row);
+    groups.set(key, bucket);
+  }
+
+  if (groups.size === 0 && aggregate.groupBy.length === 0) {
+    groups.set("__all__", []);
+  }
+
+  const out: QueryRow[] = [];
+
+  for (const [groupKey, bucket] of groups.entries()) {
+    const row: QueryRow = {};
+
+    if (aggregate.groupBy.length > 0) {
+      const values = JSON.parse(groupKey) as unknown[];
+      aggregate.groupBy.forEach((ref, index) => {
+        row[ref.column] = values[index] ?? null;
+      });
+    }
+
+    for (const metric of aggregate.metrics) {
+      const values = metric.column
+        ? bucket.map((entry) => readRowValue(entry, toColumnKey(metric.column!)) ?? null)
+        : bucket.map(() => 1);
+      const metricValues = metric.distinct
+        ? [...new Map(values.map((value) => [JSON.stringify(value), value])).values()]
+        : values;
+
+      row[metric.as] = evaluateAggregateMetric(metric.fn, metricValues, bucket.length, metric.column != null);
+    }
+
+    out.push(row);
+  }
+
+  return out;
+}
+
 async function executeSort<TContext>(
   sort: Extract<RelNode, { kind: "sort" }>,
   context: RelExecutionContext<TContext>,
@@ -319,6 +400,47 @@ async function executeLimitOffset<TContext>(
   return rows;
 }
 
+async function executeSetOp<TContext>(
+  setOp: Extract<RelNode, { kind: "set_op" }>,
+  context: RelExecutionContext<TContext>,
+): Promise<QueryRow[]> {
+  const leftRows = await executeRelNode(setOp.left, context);
+  const rightRows = await executeRelNode(setOp.right, context);
+
+  switch (setOp.op) {
+    case "union_all":
+      return [...leftRows, ...rightRows];
+    case "union":
+      return dedupeRows([...leftRows, ...rightRows]);
+    case "intersect": {
+      const rightKeys = new Set(rightRows.map((row) => stableRowKey(row)));
+      return dedupeRows(leftRows.filter((row) => rightKeys.has(stableRowKey(row))));
+    }
+    case "except": {
+      const rightKeys = new Set(rightRows.map((row) => stableRowKey(row)));
+      return dedupeRows(leftRows.filter((row) => !rightKeys.has(stableRowKey(row))));
+    }
+  }
+}
+
+async function executeWith<TContext>(
+  withNode: Extract<RelNode, { kind: "with" }>,
+  context: RelExecutionContext<TContext>,
+): Promise<QueryRow[]> {
+  const cteRows = new Map(context.cteRows);
+  const nested: RelExecutionContext<TContext> = {
+    ...context,
+    cteRows,
+  };
+
+  for (const cte of withNode.ctes) {
+    const rows = await executeRelNode(cte.query, nested);
+    cteRows.set(cte.name, rows);
+  }
+
+  return executeRelNode(withNode.body, nested);
+}
+
 function findFirstScan(node: RelNode): RelScanNode | null {
   switch (node.kind) {
     case "scan":
@@ -347,6 +469,141 @@ function prefixRow(row: QueryRow, alias: string): InternalRow {
   return out;
 }
 
+function scanLocalRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
+  let out = [...rows];
+  for (const clause of request.where ?? []) {
+    out = out.filter((row) => matchesClause(row, clause));
+  }
+
+  if (request.orderBy && request.orderBy.length > 0) {
+    out = [...out].sort((left, right) => {
+      for (const term of request.orderBy ?? []) {
+        const comparison = compareNullableValues(left[term.column], right[term.column]);
+        if (comparison !== 0) {
+          return term.direction === "asc" ? comparison : -comparison;
+        }
+      }
+      return 0;
+    });
+  }
+
+  if (request.offset != null) {
+    out = out.slice(request.offset);
+  }
+
+  if (request.limit != null) {
+    out = out.slice(0, request.limit);
+  }
+
+  return out.map((row) => {
+    const projected: QueryRow = {};
+    for (const column of request.select) {
+      projected[column] = row[column] ?? null;
+    }
+    return projected;
+  });
+}
+
+function matchesClause(row: Record<string, unknown>, clause: { op: string; column: string; [key: string]: unknown }): boolean {
+  const value = readRowValue(row, clause.column);
+
+  switch (clause.op) {
+    case "eq":
+      return value != null && value === clause.value;
+    case "neq":
+      return value != null && value !== clause.value;
+    case "gt":
+      return value != null && clause.value != null && compareNonNull(value, clause.value) > 0;
+    case "gte":
+      return value != null && clause.value != null && compareNonNull(value, clause.value) >= 0;
+    case "lt":
+      return value != null && clause.value != null && compareNonNull(value, clause.value) < 0;
+    case "lte":
+      return value != null && clause.value != null && compareNonNull(value, clause.value) <= 0;
+    case "in": {
+      const values = Array.isArray(clause.values) ? clause.values : [];
+      const set = new Set(values.filter((entry) => entry != null));
+      return value != null && set.has(value);
+    }
+    case "is_null":
+      return value == null;
+    case "is_not_null":
+      return value != null;
+    default:
+      return false;
+  }
+}
+
+function evaluateAggregateMetric(
+  fn: "count" | "sum" | "avg" | "min" | "max",
+  values: unknown[],
+  bucketSize: number,
+  hasColumn: boolean,
+): unknown {
+  switch (fn) {
+    case "count":
+      return hasColumn ? values.filter((value) => value != null).length : bucketSize;
+    case "sum": {
+      const numeric = values.filter((value) => value != null).map((value) => toFiniteNumber(value, "SUM"));
+      return numeric.length > 0 ? numeric.reduce((sum, value) => sum + value, 0) : null;
+    }
+    case "avg": {
+      const numeric = values.filter((value) => value != null).map((value) => toFiniteNumber(value, "AVG"));
+      return numeric.length > 0
+        ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length
+        : null;
+    }
+    case "min": {
+      const candidates = values.filter((value) => value != null);
+      return candidates.length > 0
+        ? candidates.reduce((left, right) =>
+            compareNullableValues(left, right) <= 0 ? left : right,
+          )
+        : null;
+    }
+    case "max": {
+      const candidates = values.filter((value) => value != null);
+      return candidates.length > 0
+        ? candidates.reduce((left, right) =>
+            compareNullableValues(left, right) >= 0 ? left : right,
+          )
+        : null;
+    }
+  }
+}
+
+function dedupeRows(rows: QueryRow[]): QueryRow[] {
+  const byKey = new Map<string, QueryRow>();
+  for (const row of rows) {
+    byKey.set(stableRowKey(row), row);
+  }
+  return [...byKey.values()];
+}
+
+function stableRowKey(row: QueryRow): string {
+  const entries = Object.entries(row).sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify(entries);
+}
+
+function readRowValue(row: Record<string, unknown>, column: string): unknown {
+  if (column in row) {
+    return row[column];
+  }
+
+  const suffix = `.${column}`;
+  const candidates = Object.entries(row).filter(([key]) => key.endsWith(suffix));
+  if (candidates.length === 1) {
+    return candidates[0]?.[1];
+  }
+
+  return undefined;
+}
+
+function toColumnKey(ref: { alias?: string; table?: string; column: string }): string {
+  const prefix = ref.alias ?? ref.table;
+  return prefix ? `${prefix}.${ref.column}` : ref.column;
+}
+
 function compareNullableValues(left: unknown, right: unknown): number {
   if (left === right) {
     return 0;
@@ -369,4 +626,31 @@ function compareNullableValues(left: unknown, right: unknown): number {
   const leftString = String(left);
   const rightString = String(right);
   return leftString < rightString ? -1 : 1;
+}
+
+function compareNonNull(left: unknown, right: unknown): number {
+  if (typeof left === "number" && typeof right === "number") {
+    return left === right ? 0 : left < right ? -1 : 1;
+  }
+
+  if (typeof left === "boolean" && typeof right === "boolean") {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
+  }
+
+  const leftString = String(left);
+  const rightString = String(right);
+  if (leftString === rightString) {
+    return 0;
+  }
+  return leftString < rightString ? -1 : 1;
+}
+
+function toFiniteNumber(value: unknown, functionName: "SUM" | "AVG"): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${functionName} expects numeric values.`);
+  }
+  return parsed;
 }
