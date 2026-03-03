@@ -245,7 +245,7 @@ function compileRelToSql(node: RelNode): CompiledRel | null {
 
       if (node.where && node.where.length > 0) {
         const clauses = node.where.map((clause) =>
-          compileFilterClause(clause, selected.map((entry) => entry.output), relationAlias),
+          compileFilterClause(clause, node.select, relationAlias),
         );
         sqlText += ` WHERE ${clauses.join(" AND ")}`;
       }

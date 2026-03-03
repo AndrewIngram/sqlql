@@ -5,7 +5,7 @@ import {
   type ProvidersMap,
 } from "./provider";
 import type { RelJoinNode, RelNode, RelProjectNode, RelScanNode } from "./rel";
-import type { QueryRow, SchemaDefinition, TableScanRequest } from "./schema";
+import type { QueryRow, ScanFilterClause, SchemaDefinition, TableScanRequest } from "./schema";
 
 export interface RelExecutionGuardrails {
   maxExecutionRows: number;
@@ -504,7 +504,7 @@ function scanLocalRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] 
   });
 }
 
-function matchesClause(row: Record<string, unknown>, clause: { op: string; column: string; [key: string]: unknown }): boolean {
+function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): boolean {
   const value = readRowValue(row, clause.column);
 
   switch (clause.op) {
@@ -521,8 +521,7 @@ function matchesClause(row: Record<string, unknown>, clause: { op: string; colum
     case "lte":
       return value != null && clause.value != null && compareNonNull(value, clause.value) <= 0;
     case "in": {
-      const values = Array.isArray(clause.values) ? clause.values : [];
-      const set = new Set(values.filter((entry) => entry != null));
+      const set = new Set(clause.values.filter((entry) => entry != null));
       return value != null && set.has(value);
     }
     case "is_null":
