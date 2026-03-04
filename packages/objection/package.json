@@ -16,7 +16,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle",
+    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle --tsconfig tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

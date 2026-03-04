@@ -75,13 +75,6 @@ export interface ProviderLookupManyRequest {
   where?: ScanFilterClause[];
 }
 
-export interface SqlQueryProviderFragment {
-  kind: "sql_query";
-  provider: string;
-  sql: string;
-  rel: RelNode;
-}
-
 export interface RelProviderFragment {
   kind: "rel";
   provider: string;
@@ -103,7 +96,6 @@ export interface AggregateProviderFragment {
 }
 
 export type ProviderFragment =
-  | SqlQueryProviderFragment
   | RelProviderFragment
   | ScanProviderFragment
   | AggregateProviderFragment;
@@ -118,10 +110,6 @@ export interface ProviderAdapter<TContext = unknown> {
    * Optional source-neutral physical entity handles owned by this adapter.
    */
   entities?: Record<string, DataEntityHandle<string>>;
-  /**
-   * @deprecated Use `entities`.
-   */
-  tables?: Record<string, DataEntityHandle<string>>;
 }
 
 export type ProvidersMap<TContext = unknown> = Record<string, ProviderAdapter<TContext>>;
@@ -131,7 +119,7 @@ export function defineProviders<TContext, TProviders extends ProvidersMap<TConte
   providers: TProviders,
 ): TProviders {
   for (const [providerName, adapter] of Object.entries(providers)) {
-    const entities = adapter.entities ?? adapter.tables;
+    const entities = adapter.entities;
     if (!entities) {
       continue;
     }
@@ -145,12 +133,7 @@ export function defineProviders<TContext, TProviders extends ProvidersMap<TConte
       }
     }
 
-    if (!adapter.tables) {
-      adapter.tables = entities;
-    }
-    if (!adapter.entities) {
-      adapter.entities = entities;
-    }
+    adapter.entities = entities;
   }
 
   return providers;

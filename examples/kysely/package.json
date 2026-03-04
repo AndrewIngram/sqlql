@@ -1,0 +1,20 @@
+{
+  "name": "@sqlql/example-kysely",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@sqlql/example-shared": "workspace:*",
+    "@sqlql/kysely": "workspace:*",
+    "better-sqlite3": "^12.6.2",
+    "kysely": "^0.28.8",
+    "sqlql": "workspace:*"
+  }
+}

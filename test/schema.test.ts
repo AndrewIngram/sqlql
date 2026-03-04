@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   asIso8601Timestamp,
@@ -53,7 +53,7 @@ describe("defineSchema", () => {
       provider: "regional",
     });
 
-    const schema = defineSchema(({ table, view, rel, col, expr, agg }) => ({
+    const schema = defineSchema(({ table, view, rel, col, expr: _expr, agg }) => ({
       tables: {
         my_orders: table({
           from: ordersEntity,
@@ -690,34 +690,6 @@ describe("defineSchema", () => {
         },
       }),
     ).toThrow('referenced column "missing" does not exist');
-  });
-
-  it("accepts legacy query.filterable/sortable and maps them to column metadata", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    const schema = defineSchema({
-      tables: {
-        users: {
-          columns: {
-            id: "text",
-            email: "text",
-            admin_notes: { type: "text", filterable: false },
-          },
-          query: {
-            filterable: ["id", "email"],
-            sortable: ["id"],
-          },
-        },
-      },
-    });
-
-    expect(resolveTableColumnDefinition(schema, "users", "id").filterable).toBe(true);
-    expect(resolveTableColumnDefinition(schema, "users", "email").filterable).toBe(true);
-    expect(resolveTableColumnDefinition(schema, "users", "email").sortable).toBe(false);
-    expect(resolveTableColumnDefinition(schema, "users", "admin_notes").filterable).toBe(false);
-    expect(warn).toHaveBeenCalledTimes(1);
-
-    warn.mockRestore();
   });
 
   it("infers schema-typed request columns and enum values", () => {

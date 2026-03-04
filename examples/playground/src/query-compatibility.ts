@@ -1,5 +1,7 @@
 import {
   defaultSqlAstParser,
+  lowerSqlToRel,
+  type RelNode,
   type SchemaDefinition,
 } from "sqlql";
 
@@ -19,6 +21,27 @@ function normalizeSql(value: string): string {
 function asReason(error: unknown): string {
   const message = error instanceof Error ? error.message : "Unsupported query for this schema.";
   return message.replace(/\s+/gu, " ").trim();
+}
+
+function hasSqlNode(node: RelNode): boolean {
+  switch (node.kind) {
+    case "sql":
+      return true;
+    case "scan":
+      return false;
+    case "filter":
+    case "project":
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return hasSqlNode(node.input);
+    case "join":
+    case "set_op":
+      return hasSqlNode(node.left) || hasSqlNode(node.right);
+    case "with":
+      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
+  }
 }
 
 function collectCteNames(ast: unknown, names: Set<string>): void {
@@ -123,6 +146,15 @@ export function checkQueryCompatibility(
           reason: `Table not found in schema: ${tableName}`,
         };
       }
+    }
+
+    const lowered = lowerSqlToRel(normalizedSql, schema);
+    if (hasSqlNode(lowered.rel)) {
+      return {
+        compatible: false,
+        reason:
+          "This query shape is not executable in the current provider runtime yet (for example CTE/window, UNION, or subquery-heavy forms).",
+      };
     }
 
     return { compatible: true };

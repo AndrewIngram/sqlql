@@ -48,7 +48,7 @@ import {
   recordExecutedProviderOperation,
   reseedDownstreamDatabase,
 } from "./pglite-runtime";
-import type { DownstreamRows, ExecutedProviderOperation, ExecutedSqlQuery, PlaygroundContext } from "./types";
+import type { DownstreamRows, ExecutedProviderOperation, PlaygroundContext } from "./types";
 import {
   coerceSchemaEditorTextToCode,
   parseDownstreamRowsText,
@@ -80,10 +80,6 @@ export interface SessionSnapshot {
   result: QueryRow[] | null;
   done: boolean;
   executedOperations: ExecutedProviderOperation[];
-  /**
-   * @deprecated Use executedOperations.
-   */
-  executedQueries: ExecutedSqlQuery[];
 }
 
 export interface TranslationFragment {
@@ -437,7 +433,28 @@ function validateSelectReferences(
   return null;
 }
 
-function buildProvider(context: PlaygroundContext) {
+function hasSqlNode(node: RelNode): boolean {
+  switch (node.kind) {
+    case "sql":
+      return true;
+    case "scan":
+      return false;
+    case "filter":
+    case "project":
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return hasSqlNode(node.input);
+    case "join":
+    case "set_op":
+      return hasSqlNode(node.left) || hasSqlNode(node.right);
+    case "with":
+      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
+  }
+}
+
+function buildProvider() {
   const tableConfigs = {
     my_orders: {
       table: ordersTable,
@@ -612,6 +629,16 @@ export async function compilePlaygroundInput(
     };
   }
 
+  const lowered = lowerSqlToRel(normalizedSql, schema);
+  if (hasSqlNode(lowered.rel)) {
+    return {
+      ok: false,
+      issues: [
+        "This query shape is not executable in the current provider runtime yet (for example CTE/window, UNION, or subquery-heavy forms).",
+      ],
+    };
+  }
+
   return {
     ok: true,
     schema,
@@ -628,7 +655,7 @@ export async function createSession(
   await reseedDownstreamDatabase(compiled.downstreamRows);
   operationRecorder.clear();
 
-  const dbProvider = await buildProvider(context);
+  const dbProvider = await buildProvider();
   const kvProvider = buildKvProvider(compiled.downstreamRows);
   const providers = defineProviders({
     dbProvider,
@@ -681,7 +708,6 @@ export async function replaySession(
         result: next.result,
         done: true,
         executedOperations,
-        executedQueries: toLegacyExecutedSqlQueries(executedOperations),
       };
     }
 
@@ -696,7 +722,6 @@ export async function replaySession(
     result: null,
     done: false,
     executedOperations,
-    executedQueries: toLegacyExecutedSqlQueries(executedOperations),
   };
 }
 
@@ -717,21 +742,8 @@ export async function runSessionToCompletion(
         result: next.result,
         done: true,
         executedOperations,
-        executedQueries: toLegacyExecutedSqlQueries(executedOperations),
       };
     }
     events.push(next);
   }
-}
-
-function toLegacyExecutedSqlQueries(operations: ExecutedProviderOperation[]): ExecutedSqlQuery[] {
-  return operations
-    .filter((entry): entry is Extract<ExecutedProviderOperation, { kind: "sql_query" }> => entry.kind === "sql_query")
-    .map((entry) => ({
-      id: entry.id,
-      timestamp: entry.timestamp,
-      provider: entry.provider,
-      sql: entry.sql,
-      params: entry.variables,
-    }));
 }

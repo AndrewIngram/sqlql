@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@sqlql/drizzle": "workspace:*",
+    "@sqlql/example-shared": "workspace:*",
     "better-sqlite3": "^12.6.2",
     "drizzle-orm": "latest",
     "sqlql": "workspace:*"

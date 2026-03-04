@@ -399,4 +399,220 @@ describe("query/v1 local executor", () => {
       { id: "u3", email: "c@example.com" },
     ]);
   });
+
+  it("executes semi joins for IN-subquery style membership filtering", async () => {
+    const schema = defineSchema({
+      tables: {
+        my_orders: {
+          provider: "memory",
+          columns: {
+            id: "text",
+            vendor_id: "text",
+          },
+        },
+        preferred_vendors: {
+          provider: "memory",
+          columns: {
+            vendor_id: "text",
+          },
+        },
+      },
+    });
+
+    const tableRows: Record<string, QueryRow[]> = {
+      my_orders: [
+        { id: "o1", vendor_id: "v1" },
+        { id: "o2", vendor_id: "v2" },
+        { id: "o3", vendor_id: "v3" },
+      ],
+      preferred_vendors: [
+        { vendor_id: "v1" },
+        { vendor_id: "v3" },
+      ],
+    };
+
+    const providers = defineProviders({
+      memory: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return {
+            provider: "memory",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return [];
+          }
+          return scanRows(tableRows[fragment.table] ?? [], fragment.request);
+        },
+      } satisfies ProviderAdapter,
+    });
+
+    const rel: RelNode = {
+      id: "semi_project",
+      kind: "project",
+      convention: "local",
+      input: {
+        id: "semi_join",
+        kind: "join",
+        convention: "local",
+        joinType: "semi",
+        left: {
+          id: "orders_scan",
+          kind: "scan",
+          convention: "local",
+          table: "my_orders",
+          alias: "o",
+          select: ["id", "vendor_id"],
+          output: [{ name: "o.id" }, { name: "o.vendor_id" }],
+        },
+        right: {
+          id: "preferred_scan",
+          kind: "scan",
+          convention: "local",
+          table: "preferred_vendors",
+          alias: "pv",
+          select: ["vendor_id"],
+          output: [{ name: "pv.vendor_id" }],
+        },
+        leftKey: { alias: "o", column: "vendor_id" },
+        rightKey: { alias: "pv", column: "vendor_id" },
+        output: [{ name: "o.id" }, { name: "o.vendor_id" }],
+      },
+      columns: [{ source: { alias: "o", column: "id" }, output: "id" }],
+      output: [{ name: "id" }],
+    };
+
+    const result = await executeRelWithProviders(rel, schema, providers, {}, {
+      maxExecutionRows: 1000,
+      maxLookupKeysPerBatch: 1000,
+      maxLookupBatches: 10,
+    });
+
+    expect(result).toEqual([{ id: "o1" }, { id: "o3" }]);
+  });
+
+  it("executes rank window functions locally", async () => {
+    const schema = defineSchema({
+      tables: {
+        scores: {
+          provider: "memory",
+          columns: {
+            id: "text",
+            team: "text",
+            score: "integer",
+          },
+        },
+      },
+    });
+
+    const rows: QueryRow[] = [
+      { id: "a", team: "red", score: 100 },
+      { id: "b", team: "red", score: 90 },
+      { id: "c", team: "red", score: 90 },
+      { id: "d", team: "blue", score: 95 },
+      { id: "e", team: "blue", score: 80 },
+    ];
+
+    const providers = defineProviders({
+      memory: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return {
+            provider: "memory",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return [];
+          }
+          return scanRows(rows, fragment.request);
+        },
+      } satisfies ProviderAdapter,
+    });
+
+    const rel: RelNode = {
+      id: "rank_project",
+      kind: "project",
+      convention: "local",
+      input: {
+        id: "rank_window",
+        kind: "window",
+        convention: "local",
+        input: {
+          id: "scores_scan",
+          kind: "scan",
+          convention: "local",
+          table: "scores",
+          alias: "s",
+          select: ["id", "team", "score"],
+          output: [{ name: "s.id" }, { name: "s.team" }, { name: "s.score" }],
+        },
+        functions: [
+          {
+            fn: "dense_rank",
+            as: "dense_rank",
+            partitionBy: [{ alias: "s", column: "team" }],
+            orderBy: [{ source: { alias: "s", column: "score" }, direction: "desc" }],
+          },
+          {
+            fn: "rank",
+            as: "rank",
+            partitionBy: [{ alias: "s", column: "team" }],
+            orderBy: [{ source: { alias: "s", column: "score" }, direction: "desc" }],
+          },
+          {
+            fn: "row_number",
+            as: "row_number",
+            partitionBy: [{ alias: "s", column: "team" }],
+            orderBy: [{ source: { alias: "s", column: "score" }, direction: "desc" }],
+          },
+        ],
+        output: [
+          { name: "s.id" },
+          { name: "s.team" },
+          { name: "s.score" },
+          { name: "dense_rank" },
+          { name: "rank" },
+          { name: "row_number" },
+        ],
+      },
+      columns: [
+        { source: { alias: "s", column: "id" }, output: "id" },
+        { source: { alias: "s", column: "team" }, output: "team" },
+        { source: { column: "dense_rank" }, output: "dense_rank" },
+        { source: { column: "rank" }, output: "rank" },
+        { source: { column: "row_number" }, output: "row_number" },
+      ],
+      output: [
+        { name: "id" },
+        { name: "team" },
+        { name: "dense_rank" },
+        { name: "rank" },
+        { name: "row_number" },
+      ],
+    };
+
+    const result = await executeRelWithProviders(rel, schema, providers, {}, {
+      maxExecutionRows: 1000,
+      maxLookupKeysPerBatch: 1000,
+      maxLookupBatches: 10,
+    });
+
+    expect(result).toContainEqual({ id: "a", team: "red", dense_rank: 1, rank: 1, row_number: 1 });
+    expect(result).toContainEqual({ id: "b", team: "red", dense_rank: 2, rank: 2, row_number: 2 });
+    expect(result).toContainEqual({ id: "c", team: "red", dense_rank: 2, rank: 2, row_number: 3 });
+    expect(result).toContainEqual({ id: "d", team: "blue", dense_rank: 1, rank: 1, row_number: 1 });
+    expect(result).toContainEqual({ id: "e", team: "blue", dense_rank: 2, rank: 2, row_number: 2 });
+  });
 });

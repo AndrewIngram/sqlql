@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
+import { createArrayTableMethods, scanArrayRows } from "../../src/array-methods";
 
 import {
-  createArrayTableMethods,
   defineSchema,
   defineTableMethods,
   query,
-  scanArrayRows,
   type TableMethodsForSchema,
   type TableScanRequest,
 } from "../../src";
@@ -62,7 +62,7 @@ describe("query/parallel", () => {
 
     const rows = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: `
         SELECT id FROM a
@@ -118,7 +118,7 @@ describe("query/parallel", () => {
 
     const rows = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: `
         WITH a_cte AS (SELECT id FROM a),
@@ -235,13 +235,13 @@ describe("query/parallel", () => {
 
     const first = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
     const second = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });

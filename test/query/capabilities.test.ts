@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
+import { createArrayTableMethods } from "../../src/array-methods";
 
-import { createArrayTableMethods, defineSchema, defineTableMethods, query } from "../../src";
+import { defineSchema, defineTableMethods, query } from "../../src";
 
 const EMPTY_CONTEXT = {} as const;
 
@@ -24,7 +26,7 @@ describe("query/capabilities", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM users WHERE email = 'a@example.com'",
       }),
@@ -50,7 +52,7 @@ describe("query/capabilities", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM users ORDER BY email ASC",
       }),
@@ -81,7 +83,7 @@ describe("query/capabilities", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM events WHERE org_id = 'o1'",
       }),
@@ -112,7 +114,7 @@ describe("query/capabilities", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM events LIMIT 10",
       }),
@@ -144,7 +146,7 @@ describe("query/capabilities", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM events WHERE id = 'e1'",
       }),
@@ -178,7 +180,7 @@ describe("query/capabilities", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM users WHERE id = 'u1' OR email = 'b@example.com'",
       }),

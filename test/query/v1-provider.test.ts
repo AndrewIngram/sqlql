@@ -690,7 +690,7 @@ describe("query/v1 provider runtime", () => {
     ]);
   });
 
-  it("maps session plan scan stages to remote_fragment kind", () => {
+  it("exposes scan stages in session plans", () => {
     const schema = defineSchema({
       tables: {
         orders: {
@@ -733,6 +733,6 @@ describe("query/v1 provider runtime", () => {
 
     const plan = session.getPlan();
     expect(plan.steps.length).toBeGreaterThan(0);
-    expect(plan.steps.some((step) => step.kind === "remote_fragment")).toBe(true);
+    expect(plan.steps.some((step) => step.kind === "scan")).toBe(true);
   });
 });

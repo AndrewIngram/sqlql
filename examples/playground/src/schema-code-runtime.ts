@@ -165,7 +165,7 @@ export function evaluateSchemaCodeInProcess(
   options: SchemaCodeEvaluationOptions = {},
 ): SchemaCodeEvaluationResult {
   const sourceModules = {
-    ...(options.modules ?? {}),
+    ...options.modules,
     [(options.entryModuleId ?? ENTRY_MODULE_ID)]: code,
   };
   const staticModules = createStaticModuleMap();

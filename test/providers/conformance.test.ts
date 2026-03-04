@@ -1,32 +1,9 @@
-import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import type { ProviderAdapter, ProviderFragment, QueryRow, RelNode } from "../../src";
 import { createDrizzleProvider, type DrizzleQueryExecutor } from "../../packages/drizzle/src";
 import { createKyselyProvider } from "../../packages/kysely/src";
-
-function seedDatabase(): Database.Database {
-  const sqlite = new Database(":memory:");
-  sqlite.exec(`
-    CREATE TABLE users (
-      id TEXT PRIMARY KEY NOT NULL,
-      email TEXT NOT NULL
-    );
-    CREATE TABLE orders (
-      id TEXT PRIMARY KEY NOT NULL,
-      user_id TEXT NOT NULL,
-      total_cents INTEGER NOT NULL
-    );
-    INSERT INTO users (id, email) VALUES
-      ('u1', 'ada@example.com'),
-      ('u2', 'ben@example.com');
-    INSERT INTO orders (id, user_id, total_cents) VALUES
-      ('o1', 'u1', 1500),
-      ('o2', 'u1', 3000),
-      ('o3', 'u2', 700);
-  `);
-  return sqlite;
-}
+import { createObjectionProvider, type KnexLike, type KnexLikeQueryBuilder } from "../../packages/objection/src";
 
 function buildRel(): RelNode {
   return {
@@ -88,15 +65,144 @@ function buildRel(): RelNode {
   };
 }
 
-function createMockDrizzleDb(rowsByTable: Map<object, QueryRow[]>): DrizzleQueryExecutor {
+function createMockKyselyDb(
+  rowsByTable: Map<string, QueryRow[]>,
+  rowsByJoin: Map<string, QueryRow[]>,
+): {
+  selectFrom: (from: string) => any;
+} {
+  return {
+    selectFrom(from: string) {
+      const root = from;
+      let rows = [...(rowsByTable.get(root) ?? [])];
+      let projections: Array<{ source: string; output: string }> = [];
+
+      const builder: any = {
+        innerJoin(right: string) {
+          rows = [...(rowsByJoin.get(`${root}->${right}`) ?? rows)];
+          return builder;
+        },
+        leftJoin(right: string) {
+          return builder.innerJoin(right);
+        },
+        rightJoin(right: string) {
+          return builder.innerJoin(right);
+        },
+        fullJoin(right: string) {
+          return builder.innerJoin(right);
+        },
+        where() {
+          return builder;
+        },
+        groupBy() {
+          return builder;
+        },
+        orderBy() {
+          return builder;
+        },
+        limit(value: number) {
+          rows = rows.slice(0, value);
+          return builder;
+        },
+        offset(value: number) {
+          rows = rows.slice(value);
+          return builder;
+        },
+        select(selectArg: unknown) {
+          if (typeof selectArg === "function") {
+            const eb = {
+              ref(ref: string) {
+                return {
+                  as(output: string) {
+                    return {
+                      kind: "ref",
+                      source: ref,
+                      output,
+                    };
+                  },
+                };
+              },
+              fn: {
+                countAll() {
+                  return {
+                    as(output: string) {
+                      return { kind: "count_all", output };
+                    },
+                  };
+                },
+              },
+            };
+
+            const expressions = selectArg(eb) as Array<Record<string, unknown>>;
+            projections = expressions
+              .filter((entry) => entry.kind === "ref")
+              .map((entry) => ({
+                source: entry.source as string,
+                output: entry.output as string,
+              }));
+            return builder;
+          }
+
+          return builder;
+        },
+        async execute() {
+          return rows.map((row) => {
+            const out: QueryRow = {};
+            for (const projection of projections) {
+              out[projection.output] = row[projection.source] ?? null;
+            }
+            return out;
+          });
+        },
+      };
+
+      return builder;
+    },
+  };
+}
+
+function createMockDrizzleDb(
+  rowsByTable: Map<object, QueryRow[]>,
+  rowsByJoin: Map<string, QueryRow[]>,
+): DrizzleQueryExecutor {
+  const keyForTable = (table: unknown): string => {
+    if (typeof table === "string") {
+      return table;
+    }
+    if (table && typeof table === "object") {
+      const named = (table as { name?: unknown }).name;
+      if (typeof named === "string" && named.length > 0) {
+        return named;
+      }
+    }
+    return String(table);
+  };
+
   return {
     select(...args: unknown[]) {
       const selection = (args[0] ?? {}) as Record<string, { name?: string }>;
       let rows: QueryRow[] = [];
+      let sourceKey = "";
       const builder = {
         from(table: object) {
           rows = [...(rowsByTable.get(table) ?? [])];
+          sourceKey = keyForTable(table);
           return builder;
+        },
+        innerJoin(table: unknown) {
+          const rightKey = keyForTable(table);
+          sourceKey = sourceKey ? `${sourceKey}->${rightKey}` : rightKey;
+          rows = [...(rowsByJoin.get(sourceKey) ?? rows)];
+          return builder;
+        },
+        leftJoin(table: unknown) {
+          return builder.innerJoin(table);
+        },
+        rightJoin(table: unknown) {
+          return builder.innerJoin(table);
+        },
+        fullJoin(table: unknown) {
+          return builder.innerJoin(table);
         },
         where() {
           return builder;
@@ -128,6 +234,146 @@ function createMockDrizzleDb(rowsByTable: Map<object, QueryRow[]>): DrizzleQuery
   };
 }
 
+function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike {
+  const createBuilder = (sourceKey: string): KnexLikeQueryBuilder => {
+    const keyParts = sourceKey.split(" as ");
+    const tableName = keyParts[0] ?? sourceKey;
+
+    let rows = [...(rowsByJoin.get(sourceKey) ?? [])];
+    const projections: Array<{ output: string; source: string }> = [];
+    let currentSourceKey = sourceKey;
+
+    const executeRows = async (): Promise<QueryRow[]> => {
+      if (projections.length === 0) {
+        return rows;
+      }
+
+      return rows.map((row) => {
+        const out: QueryRow = {};
+        for (const projection of projections) {
+          out[projection.output] = row[projection.source] ?? null;
+        }
+        return out;
+      });
+    };
+
+    const builder: KnexLikeQueryBuilder & {
+      __sourceKey?: string;
+    } = {
+      __sourceKey: currentSourceKey,
+      clone() {
+        return builder;
+      },
+      as(nextAlias: string) {
+        currentSourceKey = `${tableName} as ${nextAlias}`;
+        builder.__sourceKey = currentSourceKey;
+        rows = [...(rowsByJoin.get(currentSourceKey) ?? rows)];
+        return builder;
+      },
+      from(source: unknown) {
+        if (source && typeof source === "object" && "__sourceKey" in (source as Record<string, unknown>)) {
+          currentSourceKey = String((source as { __sourceKey?: unknown }).__sourceKey ?? currentSourceKey);
+        } else if (typeof source === "string") {
+          currentSourceKey = source;
+        }
+        builder.__sourceKey = currentSourceKey;
+        rows = [...(rowsByJoin.get(currentSourceKey) ?? rows)];
+        return builder;
+      },
+      innerJoin(table: unknown) {
+        const rightKey =
+          table && typeof table === "object" && "__sourceKey" in (table as Record<string, unknown>)
+            ? String((table as { __sourceKey?: unknown }).__sourceKey ?? "right")
+            : String(table ?? "right");
+        rows = [...(rowsByJoin.get(`${currentSourceKey}->${rightKey}`) ?? rows)];
+        return builder;
+      },
+      leftJoin(table: unknown) {
+        return builder.innerJoin?.(table, "", "") as KnexLikeQueryBuilder;
+      },
+      rightJoin(table: unknown) {
+        return builder.innerJoin?.(table, "", "") as KnexLikeQueryBuilder;
+      },
+      fullJoin(table: unknown) {
+        return builder.innerJoin?.(table, "", "") as KnexLikeQueryBuilder;
+      },
+      where() {
+        return builder;
+      },
+      whereIn() {
+        return builder;
+      },
+      whereNull() {
+        return builder;
+      },
+      whereNotNull() {
+        return builder;
+      },
+      clearSelect() {
+        projections.length = 0;
+        return builder;
+      },
+      select(columnMap: unknown) {
+        if (columnMap && typeof columnMap === "object" && !Array.isArray(columnMap)) {
+          for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
+            projections.push({
+              output,
+              source: String(source ?? output),
+            });
+          }
+        }
+        return builder;
+      },
+      groupBy() {
+        return builder;
+      },
+      orderBy() {
+        return builder;
+      },
+      limit(value: number) {
+        rows = rows.slice(0, value);
+        return builder;
+      },
+      offset(value: number) {
+        rows = rows.slice(value);
+        return builder;
+      },
+      count() {
+        return builder;
+      },
+      countDistinct() {
+        return builder;
+      },
+      sum() {
+        return builder;
+      },
+      avg() {
+        return builder;
+      },
+      min() {
+        return builder;
+      },
+      max() {
+        return builder;
+      },
+      execute: executeRows,
+    } as KnexLikeQueryBuilder & {
+      __sourceKey?: string;
+    };
+
+    return builder;
+  };
+
+  return {
+    table(name: string) {
+      return createBuilder(name);
+    },
+    queryBuilder() {
+      return createBuilder("query");
+    },
+  } as KnexLike;
+}
+
 async function runRelFragment(
   providerName: string,
   provider: ProviderAdapter<object>,
@@ -147,7 +393,7 @@ async function runRelFragment(
 }
 
 describe("provider conformance (rel fragments)", () => {
-  it("returns equivalent rows for drizzle and kysely providers", async () => {
+  it("returns equivalent rows for drizzle, kysely and objection providers", async () => {
     const expected = [
       { id: "o2", email: "ada@example.com", total_cents: 3000 },
       { id: "o1", email: "ada@example.com", total_cents: 1500 },
@@ -172,6 +418,16 @@ describe("provider conformance (rel fragments)", () => {
               { id: "o1", user_id: "u1", total_cents: 1500 },
               { id: "o2", user_id: "u1", total_cents: 3000 },
               { id: "o3", user_id: "u2", total_cents: 700 },
+            ],
+          ],
+        ]),
+        new Map<string, QueryRow[]>([
+          [
+            "orders->users",
+            [
+              { id: "o2", user_id: "u1", total_cents: 3000, email: "ada@example.com" },
+              { id: "o1", user_id: "u1", total_cents: 1500, email: "ada@example.com" },
+              { id: "o3", user_id: "u2", total_cents: 700, email: "ben@example.com" },
             ],
           ],
         ]),
@@ -203,21 +459,107 @@ describe("provider conformance (rel fragments)", () => {
     }
 
     {
-      const sqlite = seedDatabase();
-      try {
-        const kyselyProvider = createKyselyProvider({
-          executor: {
-            async executeSql(args) {
-              return sqlite.prepare(args.sql).all() as Array<Record<string, unknown>>;
-            },
-          },
-        });
+      const db = createMockKyselyDb(
+        new Map<string, QueryRow[]>([
+          [
+            "orders as o",
+            [
+              { "o.id": "o1", "o.user_id": "u1", "o.total_cents": 1500 },
+              { "o.id": "o2", "o.user_id": "u1", "o.total_cents": 3000 },
+              { "o.id": "o3", "o.user_id": "u2", "o.total_cents": 700 },
+            ],
+          ],
+        ]),
+        new Map<string, QueryRow[]>([
+          [
+            "orders as o->users as u",
+            [
+              {
+                "o.id": "o2",
+                "o.user_id": "u1",
+                "o.total_cents": 3000,
+                "u.id": "u1",
+                "u.email": "ada@example.com",
+              },
+              {
+                "o.id": "o1",
+                "o.user_id": "u1",
+                "o.total_cents": 1500,
+                "u.id": "u1",
+                "u.email": "ada@example.com",
+              },
+              {
+                "o.id": "o3",
+                "o.user_id": "u2",
+                "o.total_cents": 700,
+                "u.id": "u2",
+                "u.email": "ben@example.com",
+              },
+            ],
+          ],
+        ]),
+      );
 
-        const rows = await runRelFragment("kysely", kyselyProvider);
-        expect(rows).toEqual(expected);
-      } finally {
-        sqlite.close();
-      }
+      const kyselyProvider = createKyselyProvider({
+        db,
+        entities: {
+          orders: { table: "orders" },
+          users: { table: "users" },
+        },
+      });
+
+      const rows = await runRelFragment("kysely", kyselyProvider);
+      expect(rows).toEqual(expected);
+    }
+
+    {
+      const knex = createMockObjectionKnex(
+        new Map<string, QueryRow[]>([
+          [
+            "orders as o->users as u",
+            [
+              {
+                "o.id": "o2",
+                "o.user_id": "u1",
+                "o.total_cents": 3000,
+                "u.id": "u1",
+                "u.email": "ada@example.com",
+              },
+              {
+                "o.id": "o1",
+                "o.user_id": "u1",
+                "o.total_cents": 1500,
+                "u.id": "u1",
+                "u.email": "ada@example.com",
+              },
+              {
+                "o.id": "o3",
+                "o.user_id": "u2",
+                "o.total_cents": 700,
+                "u.id": "u2",
+                "u.email": "ben@example.com",
+              },
+            ],
+          ],
+        ]),
+      );
+
+      const objectionProvider = createObjectionProvider({
+        knex,
+        entities: {
+          orders: {
+            table: "orders",
+            base: () => knex.table("orders"),
+          },
+          users: {
+            table: "users",
+            base: () => knex.table("users"),
+          },
+        },
+      });
+
+      const rows = await runRelFragment("objection", objectionProvider);
+      expect(rows).toEqual(expected);
     }
   });
 });

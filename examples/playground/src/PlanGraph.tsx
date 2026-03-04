@@ -64,7 +64,7 @@ function classifyStepExecution(
   }
 
   if (state?.routeUsed === "local") {
-    if (step.kind === "scan" || step.kind === "aggregate" || step.phase === "fetch") {
+    if (step.kind === "scan" || step.phase === "fetch") {
       return "local_over_fetched_rows";
     }
     return "internal_op";
@@ -89,7 +89,6 @@ function classifyStepExecution(
   if (
     step.phase === "fetch" ||
     step.kind === "scan" ||
-    step.kind === "aggregate" ||
     step.kind === "remote_fragment" ||
     step.kind === "lookup_join"
   ) {

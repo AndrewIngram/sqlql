@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
+import { createArrayTableMethods } from "../../src/array-methods";
 
 import {
-  createArrayTableMethods,
   createQuerySession,
   defineSchema,
   defineTableMethods,
@@ -68,7 +69,7 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -113,7 +114,7 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
       options: {
@@ -155,7 +156,7 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -189,7 +190,7 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: `
         SELECT
@@ -229,7 +230,7 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
       options: {
@@ -259,7 +260,7 @@ describe("query/session", () => {
 
     const directRows = await query({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -283,7 +284,7 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -291,7 +292,7 @@ describe("query/session", () => {
     const sessionRows = await session.runToCompletion();
     const directRows = await query({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -312,9 +313,9 @@ describe("query/session", () => {
 
     const session = createQuerySession({
       schema,
-      methods: defineTableMethods(schema, {
+      providers: providersFromMethods(defineTableMethods(schema, {
         users: createArrayTableMethods([{ id: "u1" }]),
-      }),
+      })),
       context: EMPTY_CONTEXT,
       sql: "SELECT * FROM missing_table",
     });

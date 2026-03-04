@@ -1,10 +1,11 @@
 import { defaultSqlAstParser } from "./parser";
 import type {
-  ExpressionAst,
   FromEntryAst,
   OrderByTermAst,
   SelectAst,
   SelectColumnAst,
+  WindowClauseEntryAst,
+  WindowSpecificationAst,
 } from "./sqlite-parser/ast";
 import type { PhysicalPlan, PhysicalStep } from "./physical";
 import {
@@ -23,7 +24,7 @@ import {
   type ProviderFragment,
   type ProvidersMap,
 } from "./provider";
-import type { ScanFilterClause, SchemaDefinition } from "./schema";
+import type { ScanFilterClause, SchemaDefinition, SchemaViewRelNode } from "./schema";
 import {
   getNormalizedColumnSourceMap,
   getNormalizedTableBinding,
@@ -51,13 +52,22 @@ interface ParsedJoin {
   rightColumn: string;
 }
 
-interface SelectProjection {
+interface SelectColumnProjection {
+  kind: "column";
   source: {
     alias: string;
     column: string;
   };
   output: string;
 }
+
+interface SelectWindowProjection {
+  kind: "window";
+  output: string;
+  function: Extract<RelNode, { kind: "window" }>["functions"][number];
+}
+
+type SelectProjection = SelectColumnProjection | SelectWindowProjection;
 
 interface ParsedOrderTerm {
   source: {
@@ -87,8 +97,26 @@ interface LiteralFilter {
   clause: ScanFilterClause;
 }
 
+interface InSubqueryFilter {
+  alias: string;
+  column: string;
+  subquery: SelectAst;
+}
+
+interface ParsedWhereFilters {
+  literals: LiteralFilter[];
+  inSubqueries: InSubqueryFilter[];
+}
+
 let physicalStepIdCounter = 0;
 let relIdCounter = 0;
+
+type ViewAliasColumnMap = Record<string, RelColumnRef>;
+
+interface ViewExpansionResult {
+  node: RelNode;
+  aliases: Map<string, ViewAliasColumnMap>;
+}
 
 function nextPhysicalStepId(prefix: string): string {
   physicalStepIdCounter += 1;
@@ -103,12 +131,12 @@ function nextRelId(prefix: string): string {
 export function lowerSqlToRel(sql: string, schema: SchemaDefinition): RelLoweringResult {
   const ast = defaultSqlAstParser.astify(sql) as SelectAst;
 
-  const simple = tryLowerSimpleSelect(ast, schema);
-  if (simple) {
-    validateRelAgainstSchema(simple, schema);
+  const structured = tryLowerStructuredSelect(ast, schema, new Set<string>());
+  if (structured) {
+    validateRelAgainstSchema(structured, schema);
     return {
-      rel: simple,
-      tables: collectRelTables(simple),
+      rel: structured,
+      tables: collectRelTables(structured),
     };
   }
 
@@ -121,14 +149,23 @@ export function lowerSqlToRel(sql: string, schema: SchemaDefinition): RelLowerin
   };
 }
 
+export function expandRelViews<TContext>(
+  rel: RelNode,
+  schema: SchemaDefinition,
+  context?: TContext,
+): RelNode {
+  return expandRelViewsInternal(rel, schema, context).node;
+}
+
 export async function planPhysicalQuery<TContext>(
   rel: RelNode,
   schema: SchemaDefinition,
   providers: ProvidersMap<TContext>,
   context: TContext,
-  sql: string,
+  _sql: string,
 ): Promise<PhysicalPlan> {
-  const plannedRel = assignConventions(rel, schema);
+  const expandedRel = expandRelViews(rel, schema, context);
+  const plannedRel = assignConventions(expandedRel, schema);
   const state: { steps: PhysicalStep[] } = { steps: [] };
 
   const rootStepId = await planPhysicalNode(
@@ -136,7 +173,6 @@ export async function planPhysicalQuery<TContext>(
     schema,
     providers,
     context,
-    sql,
     state,
   );
 
@@ -152,7 +188,6 @@ async function planPhysicalNode<TContext>(
   schema: SchemaDefinition,
   providers: ProvidersMap<TContext>,
   context: TContext,
-  sql: string,
   state: { steps: PhysicalStep[] },
 ): Promise<string> {
   const remoteStepId = await tryPlanRemoteFragment(node, schema, providers, context, state);
@@ -176,7 +211,7 @@ async function planPhysicalNode<TContext>(
     case "aggregate":
     case "sort":
     case "limit_offset": {
-      const input = await planPhysicalNode(node.input, schema, providers, context, sql, state);
+      const input = await planPhysicalNode(node.input, schema, providers, context, state);
       const kind =
         node.kind === "filter"
           ? "local_filter"
@@ -200,7 +235,7 @@ async function planPhysicalNode<TContext>(
     case "join": {
       const lookup = resolveLookupJoinCandidate(node, schema, providers);
       if (lookup) {
-        const left = await planPhysicalNode(node.left, schema, providers, context, sql, state);
+        const left = await planPhysicalNode(node.left, schema, providers, context, state);
         const step: PhysicalStep = {
           id: nextPhysicalStepId("lookup_join"),
           kind: "lookup_join",
@@ -218,8 +253,8 @@ async function planPhysicalNode<TContext>(
         return step.id;
       }
 
-      const left = await planPhysicalNode(node.left, schema, providers, context, sql, state);
-      const right = await planPhysicalNode(node.right, schema, providers, context, sql, state);
+      const left = await planPhysicalNode(node.left, schema, providers, context, state);
+      const right = await planPhysicalNode(node.right, schema, providers, context, state);
       const step: PhysicalStep = {
         id: nextPhysicalStepId("local_hash_join"),
         kind: "local_hash_join",
@@ -229,9 +264,20 @@ async function planPhysicalNode<TContext>(
       state.steps.push(step);
       return step.id;
     }
+    case "window": {
+      const input = await planPhysicalNode(node.input, schema, providers, context, state);
+      const step: PhysicalStep = {
+        id: nextPhysicalStepId("local_window"),
+        kind: "local_window",
+        dependsOn: [input],
+        summary: "Local window execution",
+      };
+      state.steps.push(step);
+      return step.id;
+    }
     case "set_op": {
-      const left = await planPhysicalNode(node.left, schema, providers, context, sql, state);
-      const right = await planPhysicalNode(node.right, schema, providers, context, sql, state);
+      const left = await planPhysicalNode(node.left, schema, providers, context, state);
+      const right = await planPhysicalNode(node.right, schema, providers, context, state);
       const step: PhysicalStep = {
         id: nextPhysicalStepId("local_set_op"),
         kind: "local_set_op",
@@ -245,11 +291,11 @@ async function planPhysicalNode<TContext>(
       const dependencies: string[] = [];
       for (const cte of node.ctes) {
         dependencies.push(
-          await planPhysicalNode(cte.query, schema, providers, context, sql, state),
+          await planPhysicalNode(cte.query, schema, providers, context, state),
         );
       }
       dependencies.push(
-        await planPhysicalNode(node.body, schema, providers, context, sql, state),
+        await planPhysicalNode(node.body, schema, providers, context, state),
       );
 
       const step: PhysicalStep = {
@@ -272,6 +318,429 @@ async function planPhysicalNode<TContext>(
       return step.id;
     }
   }
+}
+
+function expandRelViewsInternal<TContext>(
+  node: RelNode,
+  schema: SchemaDefinition,
+  context?: TContext,
+): ViewExpansionResult {
+  switch (node.kind) {
+    case "scan": {
+      const binding = getNormalizedTableBinding(schema, node.table);
+      if (!binding || binding.kind !== "view") {
+        return {
+          node,
+          aliases: new Map(),
+        };
+      }
+
+      const alias = node.alias ?? node.table;
+      let current = compileViewRelForPlanner(
+        node.table,
+        binding.rel(context as unknown),
+        schema,
+      );
+      const expandedView = expandRelViewsInternal(current, schema, context);
+      current = expandedView.node;
+
+      const viewAliasMapping: ViewAliasColumnMap = {};
+      for (const [logicalColumn, source] of Object.entries(
+        getNormalizedColumnSourceMap(binding),
+      )) {
+        const resolved = resolveMappedColumnRef(
+          parseRelColumnRef(source),
+          expandedView.aliases,
+        );
+        viewAliasMapping[logicalColumn] = resolved;
+      }
+
+      if (node.where && node.where.length > 0) {
+        current = {
+          id: nextRelId("filter"),
+          kind: "filter",
+          convention: "local",
+          input: current,
+          where: node.where.map((clause) => ({
+            ...clause,
+            column: mapViewColumnName(clause.column, viewAliasMapping, expandedView.aliases),
+          })),
+          output: current.output,
+        };
+      }
+
+      if (node.orderBy && node.orderBy.length > 0) {
+        current = {
+          id: nextRelId("sort"),
+          kind: "sort",
+          convention: "local",
+          input: current,
+          orderBy: node.orderBy.map((term) => ({
+            source: parseRelColumnRef(
+              mapViewColumnName(term.column, viewAliasMapping, expandedView.aliases),
+            ),
+            direction: term.direction,
+          })),
+          output: current.output,
+        };
+      }
+
+      if (node.limit != null || node.offset != null) {
+        current = {
+          id: nextRelId("limit_offset"),
+          kind: "limit_offset",
+          convention: "local",
+          input: current,
+          ...(node.limit != null ? { limit: node.limit } : {}),
+          ...(node.offset != null ? { offset: node.offset } : {}),
+          output: current.output,
+        };
+      }
+
+      const aliases = mergeAliasMaps(
+        expandedView.aliases,
+        new Map([[alias, viewAliasMapping]]),
+      );
+      return {
+        node: current,
+        aliases,
+      };
+    }
+    case "filter": {
+      const input = expandRelViewsInternal(node.input, schema, context);
+      return {
+        node: {
+          ...node,
+          input: input.node,
+          where: node.where.map((clause) => ({
+            ...clause,
+            column: rewriteColumnNameWithAliases(clause.column, input.aliases),
+          })),
+        },
+        aliases: input.aliases,
+      };
+    }
+    case "project": {
+      const input = expandRelViewsInternal(node.input, schema, context);
+      return {
+        node: {
+          ...node,
+          input: input.node,
+          columns: node.columns.map((column) => ({
+            ...column,
+            source: resolveMappedColumnRef(column.source, input.aliases),
+          })),
+        },
+        aliases: input.aliases,
+      };
+    }
+    case "aggregate": {
+      const input = expandRelViewsInternal(node.input, schema, context);
+      return {
+        node: {
+          ...node,
+          input: input.node,
+          groupBy: node.groupBy.map((column) => resolveMappedColumnRef(column, input.aliases)),
+          metrics: node.metrics.map((metric) => ({
+            ...metric,
+            ...(metric.column
+              ? { column: resolveMappedColumnRef(metric.column, input.aliases) }
+              : {}),
+          })),
+        },
+        aliases: input.aliases,
+      };
+    }
+    case "window": {
+      const input = expandRelViewsInternal(node.input, schema, context);
+      return {
+        node: {
+          ...node,
+          input: input.node,
+          functions: node.functions.map((fn) => ({
+            ...fn,
+            partitionBy: fn.partitionBy.map((column) => resolveMappedColumnRef(column, input.aliases)),
+            orderBy: fn.orderBy.map((term) => ({
+              ...term,
+              source: resolveMappedColumnRef(term.source, input.aliases),
+            })),
+          })),
+        },
+        aliases: input.aliases,
+      };
+    }
+    case "sort": {
+      const input = expandRelViewsInternal(node.input, schema, context);
+      return {
+        node: {
+          ...node,
+          input: input.node,
+          orderBy: node.orderBy.map((term) => ({
+            ...term,
+            source: resolveMappedColumnRef(term.source, input.aliases),
+          })),
+        },
+        aliases: input.aliases,
+      };
+    }
+    case "limit_offset": {
+      const input = expandRelViewsInternal(node.input, schema, context);
+      return {
+        node: {
+          ...node,
+          input: input.node,
+        },
+        aliases: input.aliases,
+      };
+    }
+    case "join": {
+      const left = expandRelViewsInternal(node.left, schema, context);
+      const right = expandRelViewsInternal(node.right, schema, context);
+      const aliases = mergeAliasMaps(left.aliases, right.aliases);
+      return {
+        node: {
+          ...node,
+          left: left.node,
+          right: right.node,
+          leftKey: resolveMappedColumnRef(node.leftKey, aliases),
+          rightKey: resolveMappedColumnRef(node.rightKey, aliases),
+        },
+        aliases,
+      };
+    }
+    case "set_op": {
+      const left = expandRelViewsInternal(node.left, schema, context);
+      const right = expandRelViewsInternal(node.right, schema, context);
+      return {
+        node: {
+          ...node,
+          left: left.node,
+          right: right.node,
+        },
+        aliases: mergeAliasMaps(left.aliases, right.aliases),
+      };
+    }
+    case "with": {
+      const cteAliases: Array<Map<string, ViewAliasColumnMap>> = [];
+      const ctes = node.ctes.map((cte) => {
+        const expanded = expandRelViewsInternal(cte.query, schema, context);
+        cteAliases.push(expanded.aliases);
+        return {
+          ...cte,
+          query: expanded.node,
+        };
+      });
+      const body = expandRelViewsInternal(node.body, schema, context);
+      return {
+        node: {
+          ...node,
+          ctes,
+          body: body.node,
+        },
+        aliases: mergeAliasMaps(...cteAliases, body.aliases),
+      };
+    }
+    case "sql":
+      return {
+        node,
+        aliases: new Map(),
+      };
+  }
+}
+
+function mergeAliasMaps(...maps: Array<Map<string, ViewAliasColumnMap>>): Map<string, ViewAliasColumnMap> {
+  const out = new Map<string, ViewAliasColumnMap>();
+  for (const aliases of maps) {
+    for (const [alias, mapping] of aliases.entries()) {
+      out.set(alias, mapping);
+    }
+  }
+  return out;
+}
+
+function mapViewColumnName(
+  column: string,
+  viewAliasMapping: ViewAliasColumnMap,
+  aliases: Map<string, ViewAliasColumnMap>,
+): string {
+  const idx = column.lastIndexOf(".");
+  if (idx > 0) {
+    const name = column.slice(idx + 1);
+    if (name in viewAliasMapping) {
+      return toColumnName(resolveMappedColumnRef(viewAliasMapping[name] ?? parseRelColumnRef(name), aliases));
+    }
+    return rewriteColumnNameWithAliases(column, aliases);
+  }
+
+  const mapped = viewAliasMapping[column];
+  if (mapped) {
+    return toColumnName(resolveMappedColumnRef(mapped, aliases));
+  }
+  return rewriteColumnNameWithAliases(column, aliases);
+}
+
+function rewriteColumnNameWithAliases(
+  column: string,
+  aliases: Map<string, ViewAliasColumnMap>,
+): string {
+  const ref = parseRelColumnRef(column);
+  return toColumnName(resolveMappedColumnRef(ref, aliases));
+}
+
+function resolveMappedColumnRef(
+  ref: RelColumnRef,
+  aliases: Map<string, ViewAliasColumnMap>,
+): RelColumnRef {
+  const seen = new Set<string>();
+  let current = ref;
+
+  while (true) {
+    const alias = current.alias ?? current.table;
+    if (!alias) {
+      let candidate: RelColumnRef | null = null;
+      for (const mapping of aliases.values()) {
+        const mapped = mapping[current.column];
+        if (!mapped) {
+          continue;
+        }
+        const resolved = mapped.alias || mapped.table
+          ? resolveMappedColumnRef(mapped, aliases)
+          : mapped;
+        const key = toColumnName(resolved);
+        if (!candidate) {
+          candidate = resolved;
+          continue;
+        }
+        if (toColumnName(candidate) !== key) {
+          return current;
+        }
+      }
+      return candidate ?? current;
+    }
+
+    const key = `${alias}.${current.column}`;
+    if (seen.has(key)) {
+      return current;
+    }
+    seen.add(key);
+
+    const mapping = aliases.get(alias);
+    if (!mapping) {
+      return current;
+    }
+    const next = mapping[current.column];
+    if (!next) {
+      return {
+        column: current.column,
+      };
+    }
+    current = next;
+  }
+}
+
+function toColumnName(ref: RelColumnRef): string {
+  const alias = ref.alias ?? ref.table;
+  return alias ? `${alias}.${ref.column}` : ref.column;
+}
+
+function parseRelColumnRef(ref: string): RelColumnRef {
+  const idx = ref.lastIndexOf(".");
+  if (idx < 0) {
+    return {
+      column: ref,
+    };
+  }
+  return {
+    alias: ref.slice(0, idx),
+    column: ref.slice(idx + 1),
+  };
+}
+
+function compileViewRelForPlanner(
+  _viewName: string,
+  definition: SchemaViewRelNode | unknown,
+  schema: SchemaDefinition,
+): RelNode {
+  if (
+    definition &&
+    typeof definition === "object" &&
+    typeof (definition as { kind?: unknown }).kind === "string" &&
+    typeof (definition as { convention?: unknown }).convention === "string"
+  ) {
+    return definition as RelNode;
+  }
+
+  if (!definition || typeof definition !== "object" || typeof (definition as { kind?: unknown }).kind !== "string") {
+    throw new Error("View returned an unsupported rel definition.");
+  }
+
+  return compileSchemaViewRelForPlanner(definition as SchemaViewRelNode, schema);
+}
+
+function compileSchemaViewRelForPlanner(node: SchemaViewRelNode, schema: SchemaDefinition): RelNode {
+  switch (node.kind) {
+    case "scan": {
+      const table = schema.tables[node.table];
+      if (!table) {
+        throw new Error(`Unknown table in view rel scan: ${node.table}`);
+      }
+      const select = Object.keys(table.columns);
+      return {
+        id: nextRelId("view_scan"),
+        kind: "scan",
+        convention: "local",
+        table: node.table,
+        alias: node.table,
+        select,
+        output: select.map((column) => ({
+          name: `${node.table}.${column}`,
+        })),
+      };
+    }
+    case "join": {
+      const left = compileSchemaViewRelForPlanner(node.left, schema);
+      const right = compileSchemaViewRelForPlanner(node.right, schema);
+      return {
+        id: nextRelId("view_join"),
+        kind: "join",
+        convention: "local",
+        joinType: node.type,
+        left,
+        right,
+        leftKey: parseRelColumnRef(resolveViewRelRef(node.on.left)),
+        rightKey: parseRelColumnRef(resolveViewRelRef(node.on.right)),
+        output: [...left.output, ...right.output],
+      };
+    }
+    case "aggregate": {
+      const input = compileSchemaViewRelForPlanner(node.from, schema);
+      const groupBy = node.groupBy.map((column) => parseRelColumnRef(resolveViewRelRef(column)));
+      const metrics = Object.entries(node.measures).map(([output, metric]) => ({
+        fn: metric.fn,
+        as: output,
+        ...(metric.column ? { column: parseRelColumnRef(resolveViewRelRef(metric.column)) } : {}),
+      }));
+      return {
+        id: nextRelId("view_aggregate"),
+        kind: "aggregate",
+        convention: "local",
+        input,
+        groupBy,
+        metrics,
+        output: [
+          ...groupBy.map((column) => ({ name: column.column })),
+          ...metrics.map((metric) => ({ name: metric.as })),
+        ],
+      };
+    }
+  }
+}
+
+function resolveViewRelRef(ref: { ref?: string }): string {
+  if (!ref.ref) {
+    throw new Error("View rel column reference was not normalized to a string reference.");
+  }
+  return ref.ref;
 }
 
 async function tryPlanRemoteFragment<TContext>(
@@ -310,16 +779,18 @@ async function tryPlanRemoteFragment<TContext>(
   return step.id;
 }
 
-export function buildProviderFragmentForRel(
+export function buildProviderFragmentForRel<TContext = unknown>(
   node: RelNode,
   schema: SchemaDefinition,
+  context?: TContext,
 ): ProviderFragment | null {
-  const provider = resolveSingleProvider(node, schema);
+  const expanded = expandRelViews(node, schema, context);
+  const provider = resolveSingleProvider(expanded, schema);
   if (!provider) {
     return null;
   }
 
-  return buildProviderFragmentForNode(node, schema, provider);
+  return buildProviderFragmentForNode(expanded, schema, provider);
 }
 
 function buildProviderFragmentForNode(
@@ -397,6 +868,19 @@ function normalizeRelForProvider(node: RelNode, schema: SchemaDefinition): RelNo
             ...(metric.column
               ? { column: mapColumnRefForAlias(metric.column, aliasToSource) }
               : {}),
+          })),
+        };
+      case "window":
+        return {
+          ...current,
+          input: visit(current.input),
+          functions: current.functions.map((fn) => ({
+            ...fn,
+            partitionBy: fn.partitionBy.map((column) => mapColumnRefForAlias(column, aliasToSource)),
+            orderBy: fn.orderBy.map((term) => ({
+              ...term,
+              source: mapColumnRefForAlias(term.source, aliasToSource),
+            })),
           })),
         };
       case "sort":
@@ -551,6 +1035,7 @@ function collectAliasToSourceMappings(node: RelNode, schema: SchemaDefinition): 
       case "filter":
       case "project":
       case "aggregate":
+      case "window":
       case "sort":
       case "limit_offset":
         visit(current.input);
@@ -622,30 +1107,87 @@ function mapColumnNameForAlias(column: string, aliasToSource: AliasToSourceMap):
   return mappedColumn ?? column;
 }
 
-function resolveSingleProvider(node: RelNode, schema: SchemaDefinition): string | null {
-  const tables = collectRelTables(node);
-  if (tables.length === 0) {
+function resolveSingleProvider(
+  node: RelNode,
+  schema: SchemaDefinition,
+  cteNames: Set<string> = new Set<string>(),
+): string | null {
+  const providers = new Set<string>();
+
+  const visit = (current: RelNode, scopedCteNames: Set<string>): boolean => {
+    switch (current.kind) {
+      case "scan": {
+        if (scopedCteNames.has(current.table) || !schema.tables[current.table]) {
+          return true;
+        }
+        const normalized = getNormalizedTableBinding(schema, current.table);
+        if (normalized?.kind === "view") {
+          return false;
+        }
+        providers.add(resolveTableProvider(schema, current.table));
+        return true;
+      }
+      case "sql": {
+        for (const table of current.tables) {
+          if (scopedCteNames.has(table) || !schema.tables[table]) {
+            continue;
+          }
+          const normalized = getNormalizedTableBinding(schema, table);
+          if (normalized?.kind === "view") {
+            return false;
+          }
+          providers.add(resolveTableProvider(schema, table));
+        }
+        return true;
+      }
+      case "filter":
+      case "project":
+      case "aggregate":
+      case "window":
+      case "sort":
+      case "limit_offset":
+        return visit(current.input, scopedCteNames);
+      case "join":
+      case "set_op":
+        return visit(current.left, scopedCteNames) && visit(current.right, scopedCteNames);
+      case "with": {
+        const nextScopedCteNames = new Set(scopedCteNames);
+        for (const cte of current.ctes) {
+          nextScopedCteNames.add(cte.name);
+        }
+        for (const cte of current.ctes) {
+          if (!visit(cte.query, nextScopedCteNames)) {
+            return false;
+          }
+        }
+        return visit(current.body, nextScopedCteNames);
+      }
+    }
+  };
+
+  if (!visit(node, cteNames)) {
     return null;
   }
 
-  const providers = new Set<string>();
-  for (const table of tables) {
-    const normalized = getNormalizedTableBinding(schema, table);
-    if (normalized?.kind === "view") {
-      return null;
-    }
-    providers.add(resolveTableProvider(schema, table));
-  }
   if (providers.size !== 1) {
     return null;
   }
-
   return [...providers][0] ?? null;
 }
 
-function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
+function assignConventions(
+  node: RelNode,
+  schema: SchemaDefinition,
+  cteNames: Set<string> = new Set<string>(),
+): RelNode {
   switch (node.kind) {
     case "scan": {
+      if (cteNames.has(node.table) || !schema.tables[node.table]) {
+        return {
+          ...node,
+          convention: "local",
+        };
+      }
       const normalized = getNormalizedTableBinding(schema, node.table);
       if (normalized?.kind === "view") {
         return {
@@ -662,10 +1204,11 @@ function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
     case "filter":
     case "project":
     case "aggregate":
+    case "window":
     case "sort":
     case "limit_offset": {
-      const input = assignConventions(node.input, schema);
-      const provider = resolveSingleProvider(input, schema);
+      const input = assignConventions(node.input, schema, cteNames);
+      const provider = resolveSingleProvider(input, schema, cteNames);
       return {
         ...node,
         input,
@@ -674,8 +1217,8 @@ function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
     }
     case "join":
     case "set_op": {
-      const left = assignConventions(node.left, schema);
-      const right = assignConventions(node.right, schema);
+      const left = assignConventions(node.left, schema, cteNames);
+      const right = assignConventions(node.right, schema, cteNames);
       const provider = resolveSingleProvider(
         {
           ...node,
@@ -683,6 +1226,7 @@ function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
           right,
         } as RelNode,
         schema,
+        cteNames,
       );
       return {
         ...node,
@@ -692,12 +1236,16 @@ function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
       };
     }
     case "with": {
+      const nextCteNames = new Set(cteNames);
+      for (const cte of node.ctes) {
+        nextCteNames.add(cte.name);
+      }
       const ctes = node.ctes.map((cte) => ({
         ...cte,
-        query: assignConventions(cte.query, schema),
+        query: assignConventions(cte.query, schema, nextCteNames),
       }));
-      const body = assignConventions(node.body, schema);
-      const provider = resolveSingleProvider(body, schema);
+      const body = assignConventions(node.body, schema, nextCteNames);
+      const provider = resolveSingleProvider(body, schema, nextCteNames);
       return {
         ...node,
         ctes,
@@ -706,7 +1254,7 @@ function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
       };
     }
     case "sql": {
-      const provider = resolveSingleProvider(node, schema);
+      const provider = resolveSingleProvider(node, schema, cteNames);
       return {
         ...node,
         convention: provider ? (`provider:${provider}` as const) : "local",
@@ -715,12 +1263,160 @@ function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
   }
 }
 
-function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode | null {
+function tryLowerStructuredSelect(
+  ast: SelectAst,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
+): RelNode | null {
+  const scopedCteNames = new Set(cteNames);
+  const loweredCtes: Array<{ name: string; query: RelNode }> = [];
+  const withClauses = Array.isArray(ast.with) ? ast.with : [];
+
+  for (const clause of withClauses) {
+    const rawName = (clause as { name?: unknown }).name;
+    const cteName = typeof rawName === "string"
+      ? rawName
+      : (
+        rawName &&
+          typeof rawName === "object" &&
+          typeof (rawName as { value?: unknown }).value === "string"
+      )
+      ? (rawName as { value: string }).value
+      : null;
+    if (!cteName) {
+      return null;
+    }
+    scopedCteNames.add(cteName);
+  }
+
+  for (const clause of withClauses) {
+    const rawName = (clause as { name?: unknown }).name;
+    const cteName = typeof rawName === "string"
+      ? rawName
+      : (
+        rawName &&
+          typeof rawName === "object" &&
+          typeof (rawName as { value?: unknown }).value === "string"
+      )
+      ? (rawName as { value: string }).value
+      : null;
+    const cteAst = (clause as { stmt?: { ast?: unknown } }).stmt?.ast;
+    if (!cteName || !cteAst || typeof cteAst !== "object") {
+      return null;
+    }
+    const loweredCte = tryLowerStructuredSelect(cteAst as SelectAst, schema, scopedCteNames);
+    if (!loweredCte) {
+      return null;
+    }
+    loweredCtes.push({
+      name: cteName,
+      query: loweredCte,
+    });
+  }
+
+  const hasSetOp = typeof ast.set_op === "string" && !!ast._next;
+  if (!hasSetOp) {
+    const { with: _ignoredWith, ...withoutWith } = ast;
+    const simple = tryLowerSimpleSelect(
+      withoutWith as SelectAst,
+      schema,
+      scopedCteNames,
+    );
+    if (!simple) {
+      return null;
+    }
+
+    if (loweredCtes.length === 0) {
+      return simple;
+    }
+
+    return {
+      id: nextRelId("with"),
+      kind: "with",
+      convention: "local",
+      ctes: loweredCtes,
+      body: simple,
+      output: simple.output,
+    };
+  }
+
+  const { with: _ignoredWith, ...withoutWith } = ast;
+  let currentAst: SelectAst = withoutWith as SelectAst;
+  const { set_op: _ignoredSetOp, _next: _ignoredNext, ...currentBaseAst } = currentAst;
+  let currentNode = tryLowerSimpleSelect(
+    currentBaseAst as SelectAst,
+    schema,
+    scopedCteNames,
+  );
+  if (!currentNode) {
+    return null;
+  }
+
+  while (typeof currentAst.set_op === "string" && currentAst._next) {
+    const op = parseSetOp(currentAst.set_op);
+    if (!op) {
+      return null;
+    }
+
+    const { with: _ignoredRightWith, set_op: _ignoredRightSetOp, _next: _ignoredRightNext, ...rightBaseAst } = currentAst._next;
+    const rightBase = tryLowerSimpleSelect(rightBaseAst as SelectAst, schema, scopedCteNames);
+    if (!rightBase) {
+      return null;
+    }
+
+    currentNode = {
+      id: nextRelId("set_op"),
+      kind: "set_op",
+      convention: "local",
+      op,
+      left: currentNode,
+      right: rightBase,
+      output: currentNode.output,
+    };
+
+    currentAst = currentAst._next;
+  }
+
+  if (loweredCtes.length === 0) {
+    return currentNode;
+  }
+
+  return {
+    id: nextRelId("with"),
+    kind: "with",
+    convention: "local",
+    ctes: loweredCtes,
+    body: currentNode,
+    output: currentNode.output,
+  };
+}
+
+function parseSetOp(raw: string): Extract<RelNode, { kind: "set_op" }>["op"] | null {
+  const normalized = raw.trim().toUpperCase();
+  switch (normalized) {
+    case "UNION ALL":
+      return "union_all";
+    case "UNION":
+      return "union";
+    case "INTERSECT":
+      return "intersect";
+    case "EXCEPT":
+      return "except";
+    default:
+      return null;
+  }
+}
+
+function tryLowerSimpleSelect(
+  ast: SelectAst,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
+): RelNode | null {
   if (ast.type !== "select") {
     return null;
   }
 
-  if (ast.with || ast.set_op || ast._next || ast.having || ast.window) {
+  if (ast.with || ast.set_op || ast._next || ast.having) {
     return null;
   }
 
@@ -735,7 +1431,7 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
 
   const bindings: Binding[] = from.map((entry, index) => {
     const table = (entry as FromEntryAst).table;
-    if (typeof table !== "string" || !schema.tables[table]) {
+    if (typeof table !== "string" || (!schema.tables[table] && !cteNames.has(table))) {
       throw new Error(`Unknown table: ${String(table)}`);
     }
 
@@ -759,7 +1455,7 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
   }
 
   const whereFilters = parseWhereFilters(ast.where, bindings, aliasToBinding);
-  if (whereFilters == null) {
+  if (!whereFilters) {
     return null;
   }
 
@@ -773,7 +1469,12 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
 
   const projections = aggregateMode
     ? null
-    : parseProjection(ast.columns, bindings, aliasToBinding);
+    : parseProjection(
+      ast.columns,
+      bindings,
+      aliasToBinding,
+      parseNamedWindowSpecifications(ast.window),
+    );
   if (!aggregateMode && projections == null) {
     return null;
   }
@@ -787,6 +1488,9 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
 
   const safeAggregateProjections = aggregateMode ? (aggregateProjections ?? []) : [];
   const safeProjections = aggregateMode ? [] : (projections ?? []);
+  const windowFunctions = safeProjections
+    .filter((projection): projection is SelectWindowProjection => projection.kind === "window")
+    .map((projection) => projection.function);
   let effectiveGroupBy = groupBy;
 
   if (distinctMode && effectiveGroupBy.length === 0) {
@@ -852,7 +1556,20 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
     }
   } else {
     for (const projection of safeProjections) {
-      columnsByAlias.get(projection.source.alias)?.add(projection.source.column);
+      if (projection.kind === "column") {
+        columnsByAlias.get(projection.source.alias)?.add(projection.source.column);
+        continue;
+      }
+      for (const partition of projection.function.partitionBy) {
+        if (partition.alias) {
+          columnsByAlias.get(partition.alias)?.add(partition.column);
+        }
+      }
+      for (const orderTerm of projection.function.orderBy) {
+        if (orderTerm.source.alias) {
+          columnsByAlias.get(orderTerm.source.alias)?.add(orderTerm.source.column);
+        }
+      }
     }
   }
 
@@ -861,8 +1578,11 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
     columnsByAlias.get(join.rightAlias)?.add(join.rightColumn);
   }
 
-  for (const filter of whereFilters) {
+  for (const filter of whereFilters.literals) {
     columnsByAlias.get(filter.alias)?.add(filter.clause.column);
+  }
+  for (const filter of whereFilters.inSubqueries) {
+    columnsByAlias.get(filter.alias)?.add(filter.column);
   }
 
   for (const term of orderBy) {
@@ -877,15 +1597,17 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
       continue;
     }
 
-    const schemaColumns = Object.keys(schema.tables[binding.table]?.columns ?? {});
-    const first = schemaColumns[0];
-    if (first) {
-      columns.add(first);
+    if (schema.tables[binding.table]) {
+      const schemaColumns = Object.keys(schema.tables[binding.table]?.columns ?? {});
+      const first = schemaColumns[0];
+      if (first) {
+        columns.add(first);
+      }
     }
   }
 
   const filtersByAlias = new Map<string, ScanFilterClause[]>();
-  for (const filter of whereFilters) {
+  for (const filter of whereFilters.literals) {
     const current = filtersByAlias.get(filter.alias) ?? [];
     current.push(filter.clause);
     filtersByAlias.set(filter.alias, current);
@@ -957,6 +1679,37 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
     };
   }
 
+  for (const inFilter of whereFilters.inSubqueries) {
+    const outerAliases = new Set(bindings.map((binding) => binding.alias));
+    if (isCorrelatedSubquery(inFilter.subquery, outerAliases)) {
+      return null;
+    }
+
+    const subqueryRel = tryLowerStructuredSelect(inFilter.subquery, schema, cteNames);
+    if (!subqueryRel || subqueryRel.output.length !== 1) {
+      return null;
+    }
+    const rightOutput = subqueryRel.output[0]?.name;
+    if (!rightOutput) {
+      return null;
+    }
+
+    current = {
+      id: nextRelId("join"),
+      kind: "join",
+      convention: "local",
+      joinType: "semi",
+      left: current,
+      right: subqueryRel,
+      leftKey: {
+        alias: inFilter.alias,
+        column: inFilter.column,
+      },
+      rightKey: parseRelColumnRef(rightOutput),
+      output: current.output,
+    };
+  }
+
   if (aggregateMode) {
     current = {
       id: nextRelId("aggregate"),
@@ -980,6 +1733,20 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
           .map((projection) => ({
             name: projection.metric.as,
           })),
+      ],
+    };
+  }
+
+  if (!aggregateMode && windowFunctions.length > 0) {
+    current = {
+      id: nextRelId("window"),
+      kind: "window",
+      convention: "local",
+      input: current,
+      functions: windowFunctions,
+      output: [
+        ...current.output,
+        ...windowFunctions.map((fn) => ({ name: fn.as })),
       ],
     };
   }
@@ -1038,10 +1805,15 @@ function tryLowerSimpleSelect(ast: SelectAst, schema: SchemaDefinition): RelNode
                 output: projection.output,
               })
       : safeProjections.map((projection) => ({
-          source: {
-            alias: projection.source.alias,
-            column: projection.source.column,
-          },
+          source:
+            projection.kind === "column"
+              ? {
+                  alias: projection.source.alias,
+                  column: projection.source.column,
+                }
+              : {
+                  column: projection.function.as,
+                },
           output: projection.output,
         })),
     output: (aggregateMode ? safeAggregateProjections : safeProjections).map((projection) => ({
@@ -1143,6 +1915,7 @@ function parseProjection(
   rawColumns: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  windowDefinitions: Map<string, WindowSpecificationAst>,
 ): SelectProjection[] | null {
   if (rawColumns === "*") {
     return null;
@@ -1157,20 +1930,189 @@ function parseProjection(
 
   for (const entry of columns) {
     const column = resolveColumnRef(entry.expr, bindings, aliasToBinding);
-    if (!column) {
-      return null;
+    if (column) {
+      out.push({
+        kind: "column",
+        source: {
+          alias: column.alias,
+          column: column.column,
+        },
+        output: typeof entry.as === "string" && entry.as.length > 0 ? entry.as : column.column,
+      });
+      continue;
     }
 
-    out.push({
-      source: {
-        alias: column.alias,
-        column: column.column,
-      },
-      output: typeof entry.as === "string" && entry.as.length > 0 ? entry.as : column.column,
-    });
+    const windowProjection = parseWindowProjection(
+      entry,
+      bindings,
+      aliasToBinding,
+      windowDefinitions,
+    );
+    if (!windowProjection) {
+      return null;
+    }
+    out.push(windowProjection);
   }
 
   return out;
+}
+
+function parseWindowProjection(
+  entry: SelectColumnAst,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  windowDefinitions: Map<string, WindowSpecificationAst>,
+): SelectWindowProjection | null {
+  const expr = entry.expr as {
+    type?: unknown;
+    name?: unknown;
+    over?: unknown;
+    args?: unknown;
+  };
+  if (expr.type !== "function" && expr.type !== "aggr_func") {
+    return null;
+  }
+
+  const over = parseWindowOver(expr.over, windowDefinitions);
+  if (!over) {
+    return null;
+  }
+
+  const name = readWindowFunctionName(expr);
+  if (!name) {
+    return null;
+  }
+  if (name !== "dense_rank" && name !== "rank" && name !== "row_number") {
+    return null;
+  }
+
+  if (!supportsRankWindowArgs(expr.args)) {
+    return null;
+  }
+
+  const partitionBy: RelColumnRef[] = [];
+  for (const term of over.partitionby ?? []) {
+    const resolved = resolveColumnRef(term.expr, bindings, aliasToBinding);
+    if (!resolved) {
+      return null;
+    }
+    partitionBy.push({
+      alias: resolved.alias,
+      column: resolved.column,
+    });
+  }
+
+  const orderBy: Array<{ source: RelColumnRef; direction: "asc" | "desc" }> = [];
+  for (const term of over.orderby ?? []) {
+    const resolved = resolveColumnRef(term.expr, bindings, aliasToBinding);
+    if (!resolved) {
+      return null;
+    }
+    orderBy.push({
+      source: {
+        alias: resolved.alias,
+        column: resolved.column,
+      },
+      direction: term.type === "DESC" ? "desc" : "asc",
+    });
+  }
+
+  const output = typeof entry.as === "string" && entry.as.length > 0
+    ? entry.as
+    : name;
+
+  return {
+    kind: "window",
+    output,
+    function: {
+      fn: name,
+      as: output,
+      partitionBy,
+      orderBy,
+    },
+  };
+}
+
+function readWindowFunctionName(
+  expr: { type?: unknown; name?: unknown },
+): "dense_rank" | "rank" | "row_number" | null {
+  if (expr.type === "aggr_func" && typeof expr.name === "string") {
+    return expr.name.toLowerCase() as "dense_rank" | "rank" | "row_number";
+  }
+  if (expr.type !== "function") {
+    return null;
+  }
+
+  const raw = expr.name as { name?: Array<{ value?: unknown }> } | undefined;
+  const head = raw?.name?.[0]?.value;
+  if (typeof head !== "string") {
+    return null;
+  }
+  return head.toLowerCase() as "dense_rank" | "rank" | "row_number";
+}
+
+function supportsRankWindowArgs(args: unknown): boolean {
+  if (!args || typeof args !== "object") {
+    return true;
+  }
+  const value = (args as { value?: unknown }).value;
+  if (!Array.isArray(value)) {
+    return true;
+  }
+  return value.length === 0;
+}
+
+function parseNamedWindowSpecifications(
+  entries: WindowClauseEntryAst[] | undefined,
+): Map<string, WindowSpecificationAst> {
+  const out = new Map<string, WindowSpecificationAst>();
+  for (const entry of entries ?? []) {
+    const spec = entry.as_window_specification?.window_specification;
+    if (!spec) {
+      continue;
+    }
+    out.set(entry.name, spec);
+  }
+  return out;
+}
+
+function parseWindowOver(
+  over: unknown,
+  windowDefinitions: Map<string, WindowSpecificationAst>,
+): WindowSpecificationAst | null {
+  if (!over || typeof over !== "object") {
+    return null;
+  }
+
+  const rawSpec = (over as { as_window_specification?: unknown }).as_window_specification;
+  if (!rawSpec) {
+    return null;
+  }
+
+  if (typeof rawSpec === "string") {
+    const resolved = windowDefinitions.get(rawSpec);
+    if (!resolved) {
+      return null;
+    }
+    if (resolved.window_frame_clause) {
+      return null;
+    }
+    return resolved;
+  }
+
+  if (typeof rawSpec !== "object") {
+    return null;
+  }
+
+  const spec = (rawSpec as { window_specification?: unknown }).window_specification;
+  if (!spec || typeof spec !== "object") {
+    return null;
+  }
+  const typed = spec as WindowSpecificationAst;
+  if (typed.window_frame_clause) {
+    return null;
+  }
+  return typed;
 }
 
 function hasAggregateProjection(rawColumns: unknown): boolean {
@@ -1383,9 +2325,19 @@ function parseOrderBy(
   const out: ParsedOrderTerm[] = [];
 
   for (const term of orderBy) {
+    const rawRef = toRawColumnRef(term.expr);
+    if (rawRef && !rawRef.table && outputAliases.has(rawRef.column)) {
+      out.push({
+        source: {
+          column: rawRef.column,
+        },
+        direction: term.type === "DESC" ? "desc" : "asc",
+      });
+      continue;
+    }
+
     const resolved = resolveColumnRef(term.expr, bindings, aliasToBinding);
     if (!resolved) {
-      const rawRef = toRawColumnRef(term.expr);
       if (!rawRef || rawRef.table || !outputAliases.has(rawRef.column)) {
         return null;
       }
@@ -1419,29 +2371,37 @@ function parseWhereFilters(
   where: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
-): LiteralFilter[] | null {
+): ParsedWhereFilters | null {
   const parts = flattenConjunctiveWhere(where);
   if (parts == null) {
     return null;
   }
 
-  const out: LiteralFilter[] = [];
+  const literals: LiteralFilter[] = [];
+  const inSubqueries: InSubqueryFilter[] = [];
   for (const part of parts) {
     const parsed = parseLiteralFilter(part, bindings, aliasToBinding);
     if (!parsed) {
       return null;
     }
-    out.push(parsed);
+    if ("subquery" in parsed) {
+      inSubqueries.push(parsed);
+      continue;
+    }
+    literals.push(parsed);
   }
 
-  return out;
+  return {
+    literals,
+    inSubqueries,
+  };
 }
 
 function parseLiteralFilter(
   raw: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
-): LiteralFilter | null {
+): LiteralFilter | InSubqueryFilter | null {
   const expr = raw as {
     type?: unknown;
     operator?: unknown;
@@ -1460,6 +2420,15 @@ function parseLiteralFilter(
 
   if (operator === "in") {
     const col = resolveColumnRef(expr.left, bindings, aliasToBinding);
+    const subquery = parseSubqueryAst(expr.right);
+    if (col && subquery) {
+      return {
+        alias: col.alias,
+        column: col.column,
+        subquery,
+      };
+    }
+
     const values = tryParseLiteralExpressionList(expr.right);
     if (!col || !values) {
       return null;
@@ -1532,6 +2501,58 @@ function parseLiteralFilter(
   }
 
   return null;
+}
+
+function parseSubqueryAst(raw: unknown): SelectAst | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const ast = (raw as { ast?: unknown }).ast;
+  if (!ast || typeof ast !== "object") {
+    return null;
+  }
+  if ((ast as { type?: unknown }).type !== "select") {
+    return null;
+  }
+  return ast as SelectAst;
+}
+
+function isCorrelatedSubquery(ast: SelectAst, outerAliases: Set<string>): boolean {
+  let correlated = false;
+
+  const visit = (value: unknown): void => {
+    if (correlated || !value || typeof value !== "object") {
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        visit(item);
+        if (correlated) {
+          return;
+        }
+      }
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (record.type === "column_ref") {
+      const table = typeof record.table === "string" ? record.table : null;
+      if (table && outerAliases.has(table)) {
+        correlated = true;
+        return;
+      }
+    }
+
+    for (const nested of Object.values(record)) {
+      visit(nested);
+      if (correlated) {
+        return;
+      }
+    }
+  };
+
+  visit(ast);
+  return correlated;
 }
 
 function flattenConjunctiveWhere(where: unknown): unknown[] | null {
@@ -1763,6 +2784,7 @@ function appearsInRel(node: RelNode, alias: string): boolean {
     case "filter":
     case "project":
     case "aggregate":
+    case "window":
     case "sort":
     case "limit_offset":
       return appearsInRel(node.input, alias);
@@ -1834,6 +2856,7 @@ function findFirstScanNode(node: RelNode): RelScanNode | null {
     case "filter":
     case "project":
     case "aggregate":
+    case "window":
     case "sort":
     case "limit_offset":
       return findFirstScanNode(node.input);

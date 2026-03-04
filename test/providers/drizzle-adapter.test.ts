@@ -219,7 +219,6 @@ describe("drizzle adapter", () => {
       entity: "users",
       provider: "warehouse",
     });
-    expect(provider.tables.users).toEqual(provider.entities.users);
 
     const scanFragment: ProviderFragment = {
       kind: "scan",
@@ -263,19 +262,6 @@ describe("drizzle adapter", () => {
       "Unsupported relational fragment for drizzle provider.",
     );
 
-    const sqlQueryFragment: ProviderFragment = {
-      kind: "sql_query",
-      provider: "warehouse",
-      sql: "SELECT 1",
-      rel: sqlRel,
-    };
-    expect(provider.canExecute(sqlQueryFragment, {})).toEqual({
-      supported: false,
-      reason: "Drizzle adapter does not support sql_query fragments.",
-    });
-    await expect(provider.compile(sqlQueryFragment, {})).rejects.toThrow(
-      "Drizzle adapter does not support sql_query fragments.",
-    );
   });
 
   it("derives columns from the table object when columns are omitted", async () => {

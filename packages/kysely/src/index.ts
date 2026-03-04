@@ -1,95 +1,233 @@
-import type {
-  ProviderAdapter,
-  ProviderCapabilityReport,
-  ProviderCompiledPlan,
-  ProviderFragment,
-  ProviderLookupManyRequest,
-  QueryRow,
-  RelNode,
-  ScanFilterClause,
-  TableScanRequest,
+import {
+  createDataEntityHandle,
+  type DataEntityHandle,
+  type MaybePromise,
+  type ProviderAdapter,
+  type ProviderCapabilityReport,
+  type ProviderCompiledPlan,
+  type ProviderFragment,
+  type QueryRow,
+  type RelNode,
+  type ScanFilterClause,
+  type TableScanRequest,
 } from "sqlql";
 
-export interface KyselySqlExecutor<TContext> {
-  executeSql(args: {
-    sql: string;
-    params: unknown[];
-    context: TContext;
-  }): Promise<QueryRow[]>;
-}
+export type KyselyQueryBuilderLike = {
+  select: (...args: any[]) => KyselyQueryBuilderLike;
+  innerJoin?: (...args: any[]) => KyselyQueryBuilderLike;
+  leftJoin?: (...args: any[]) => KyselyQueryBuilderLike;
+  rightJoin?: (...args: any[]) => KyselyQueryBuilderLike;
+  fullJoin?: (...args: any[]) => KyselyQueryBuilderLike;
+  union?: (...args: any[]) => KyselyQueryBuilderLike;
+  unionAll?: (...args: any[]) => KyselyQueryBuilderLike;
+  intersect?: (...args: any[]) => KyselyQueryBuilderLike;
+  except?: (...args: any[]) => KyselyQueryBuilderLike;
+  where: (...args: any[]) => KyselyQueryBuilderLike;
+  groupBy?: (...args: any[]) => KyselyQueryBuilderLike;
+  orderBy: (...args: any[]) => KyselyQueryBuilderLike;
+  limit: (...args: any[]) => KyselyQueryBuilderLike;
+  offset: (...args: any[]) => KyselyQueryBuilderLike;
+  execute: (...args: any[]) => Promise<QueryRow[]>;
+};
 
-export interface KyselyProviderTableConfig<TContext> {
-  scopeSql?: (context: TContext, table: string) =>
-    | { sql: string; params?: unknown[] }
-    | undefined
-    | Promise<{ sql: string; params?: unknown[] } | undefined>;
+export type KyselyDatabaseLike = {
+  selectFrom: (...args: any[]) => KyselyQueryBuilderLike;
+  with?: (name: string, expression: (db: KyselyDatabaseLike) => unknown) => KyselyDatabaseLike;
+};
+
+export interface KyselyProviderEntityConfig<TContext> {
+  table?: string;
+  /**
+   * Applies mandatory scoped constraints to a query rooted at this entity alias.
+   */
+  base?: (args: {
+    db: KyselyDatabaseLike;
+    query: KyselyQueryBuilderLike;
+    context: TContext;
+    entity: string;
+    alias: string;
+  }) => MaybePromise<KyselyQueryBuilderLike>;
 }
 
 export interface CreateKyselyProviderOptions<TContext> {
-  executor: KyselySqlExecutor<TContext>;
-  tables?: Record<string, KyselyProviderTableConfig<TContext>>;
+  name?: string;
+  db: unknown;
+  entities?: Record<string, KyselyProviderEntityConfig<TContext>>;
+}
+
+interface KyselyRelCompiledPlan {
+  strategy: KyselyRelCompileStrategy;
+  rel: RelNode;
+}
+
+type KyselyRelCompileStrategy = "basic" | "set_op" | "with";
+
+interface ResolvedEntityConfig<TContext> {
+  entity: string;
+  table: string;
+  config: KyselyProviderEntityConfig<TContext>;
+}
+
+class UnsupportedSingleQueryPlanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedSingleQueryPlanError";
+  }
+}
+
+interface RelPipeline {
+  base: RelNode;
+  project?: Extract<RelNode, { kind: "project" }>;
+  aggregate?: Extract<RelNode, { kind: "aggregate" }>;
+  sort?: Extract<RelNode, { kind: "sort" }>;
+  limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
+  filters: Extract<RelNode, { kind: "filter" }>[];
+}
+
+interface SetOpWrapper {
+  setOp: Extract<RelNode, { kind: "set_op" }>;
+  project?: Extract<RelNode, { kind: "project" }>;
+  sort?: Extract<RelNode, { kind: "sort" }>;
+  limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
+}
+
+interface WithBodyWrapper {
+  cteScan: Extract<RelNode, { kind: "scan" }>;
+  project?: Extract<RelNode, { kind: "project" }>;
+  sort?: Extract<RelNode, { kind: "sort" }>;
+  limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
+  window?: Extract<RelNode, { kind: "window" }>;
+  filters: Extract<RelNode, { kind: "filter" }>[];
+}
+
+interface ScanBinding<TContext> {
+  alias: string;
+  entity: string;
+  table: string;
+  scan: Extract<RelNode, { kind: "scan" }>;
+  config: KyselyProviderEntityConfig<TContext>;
+}
+
+interface RegularJoinStep<TContext> {
+  joinType: Exclude<Extract<RelNode, { kind: "join" }>["joinType"], "semi">;
+  right: ScanBinding<TContext>;
+  leftKey: { alias: string; column: string };
+  rightKey: { alias: string; column: string };
+}
+
+interface SemiJoinStep {
+  joinType: "semi";
+  right: RelNode;
+  leftKey: { alias: string; column: string };
+  rightKey: { alias?: string; column: string };
+}
+
+type JoinStep<TContext> = RegularJoinStep<TContext> | SemiJoinStep;
+
+interface JoinPlan<TContext> {
+  root: ScanBinding<TContext>;
+  joins: JoinStep<TContext>[];
+  aliases: Map<string, ScanBinding<TContext>>;
+}
+
+interface SingleQueryPlan<TContext> {
+  pipeline: RelPipeline;
+  joinPlan: JoinPlan<TContext>;
+}
+
+interface BaseBinding<TContext> {
+  entity: string;
+  config: KyselyProviderEntityConfig<TContext>;
+}
+
+function toRef(alias: string | undefined, column: string): { alias?: string; column: string } {
+  if (alias) {
+    return { alias, column };
+  }
+  return { column };
 }
 
 export function createKyselyProvider<TContext>(
   options: CreateKyselyProviderOptions<TContext>,
-): ProviderAdapter<TContext> {
+): ProviderAdapter<TContext> & {
+  entities: Record<string, DataEntityHandle>;
+} {
+  const providerName = options.name ?? "kysely";
+  const db = options.db as KyselyDatabaseLike;
+  const entityConfigs = resolveEntityConfigs(options);
+
+  const handles: Record<string, DataEntityHandle> = Object.fromEntries(
+    Object.keys(entityConfigs).map((entityName) => [
+      entityName,
+      createDataEntityHandle({
+        entity: entityName,
+        provider: providerName,
+      }),
+    ]),
+  );
+
   return {
+    entities: handles,
     canExecute(fragment): boolean | ProviderCapabilityReport {
-      return fragment.kind === "scan" ||
-        fragment.kind === "sql_query" ||
-        (fragment.kind === "rel" && canCompileRel(fragment.rel));
+      switch (fragment.kind) {
+        case "scan":
+          return !!entityConfigs[fragment.table];
+        case "rel": {
+          const strategy = resolveKyselyRelCompileStrategy(fragment.rel, entityConfigs);
+          return strategy
+            ? true
+            : {
+                supported: false,
+                reason: hasSqlNode(fragment.rel)
+                  ? "rel fragment must not contain sql nodes."
+                  : "Rel fragment is not supported for single-query Kysely pushdown.",
+              };
+        }
+        default:
+          return false;
+      }
     },
     async compile(fragment): Promise<ProviderCompiledPlan> {
-      if (fragment.kind === "rel") {
-        const compiled = compileRelToSql(fragment.rel);
-        if (!compiled) {
-          throw new Error("Unsupported relational fragment for kysely provider.");
+      switch (fragment.kind) {
+        case "scan":
+          if (!entityConfigs[fragment.table]) {
+            throw new Error(`Unknown Kysely entity config: ${fragment.table}`);
+          }
+          return {
+            provider: providerName,
+            kind: "scan",
+            payload: fragment,
+          };
+        case "rel": {
+          const strategy = resolveKyselyRelCompileStrategy(fragment.rel, entityConfigs);
+          if (!strategy) {
+            throw new Error("Unsupported relational fragment for Kysely provider.");
+          }
+          return {
+            provider: providerName,
+            kind: "rel",
+            payload: {
+              strategy,
+              rel: fragment.rel,
+            } satisfies KyselyRelCompiledPlan,
+          };
         }
-        return {
-          provider: "kysely",
-          kind: "rel",
-          payload: {
-            sql: compiled.sql,
-            params: [],
-          },
-        };
+        default:
+          throw new Error(`Unsupported Kysely fragment kind: ${(fragment as { kind?: unknown }).kind}`);
       }
-
-      return {
-        provider: "kysely",
-        kind: fragment.kind,
-        payload: fragment,
-      };
     },
     async execute(plan, context): Promise<QueryRow[]> {
       switch (plan.kind) {
-        case "sql_query": {
-          const fragment = plan.payload as Extract<ProviderFragment, { kind: "sql_query" }>;
-          return options.executor.executeSql({
-            sql: fragment.sql,
-            params: [],
-            context,
-          });
-        }
-        case "rel": {
-          const compiled = plan.payload as { sql: string; params?: unknown[] };
-          return options.executor.executeSql({
-            sql: compiled.sql,
-            params: compiled.params ?? [],
-            context,
-          });
-        }
         case "scan": {
           const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
-          const compiled = await compileScanSql(options, fragment.request, context);
-          return options.executor.executeSql({
-            sql: compiled.sql,
-            params: compiled.params,
-            context,
-          });
+          return executeScan(db, entityConfigs, fragment.request, context);
+        }
+        case "rel": {
+          const compiled = plan.payload as KyselyRelCompiledPlan;
+          return executeRelSingleQuery(db, entityConfigs, compiled.rel, compiled.strategy, context);
         }
         default:
-          throw new Error(`Unsupported kysely compiled plan kind: ${plan.kind}`);
+          throw new Error(`Unsupported Kysely compiled plan kind: ${plan.kind}`);
       }
     },
     async lookupMany(request, context): Promise<QueryRow[]> {
@@ -106,466 +244,1092 @@ export function createKyselyProvider<TContext>(
         ],
       };
 
-      const compiled = await compileScanSql(options, scanRequest, context);
-      return options.executor.executeSql({
-        sql: compiled.sql,
-        params: compiled.params,
-        context,
-      });
+      return executeScan(db, entityConfigs, scanRequest, context);
     },
   };
 }
 
-async function compileScanSql<TContext>(
+function resolveEntityConfigs<TContext>(
   options: CreateKyselyProviderOptions<TContext>,
+): Record<string, ResolvedEntityConfig<TContext>> {
+  const raw = options.entities ?? {};
+  const out: Record<string, ResolvedEntityConfig<TContext>> = {};
+
+  for (const [entity, config] of Object.entries(raw)) {
+    out[entity] = {
+      entity,
+      table: config.table ?? entity,
+      config,
+    };
+  }
+
+  return out;
+}
+
+async function executeScan<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
   request: TableScanRequest,
   context: TContext,
-): Promise<{ sql: string; params: unknown[] }> {
-  const params: unknown[] = [];
-  const whereParts: string[] = [];
+): Promise<QueryRow[]> {
+  const binding = entityConfigs[request.table];
+  if (!binding) {
+    throw new Error(`Unknown Kysely entity config: ${request.table}`);
+  }
+
+  const alias = request.alias ?? binding.table;
+  const from = `${binding.table} as ${alias}`;
+
+  let query = db.selectFrom(from);
+  query = await applyBase(query, db, binding, context, alias);
+
+  const aliases = new Map<string, ScanBinding<TContext>>([
+    [
+      alias,
+      {
+        alias,
+        entity: binding.entity,
+        table: binding.table,
+        scan: {
+          id: "scan",
+          kind: "scan",
+          convention: "local",
+          table: binding.entity,
+          ...(request.alias ? { alias: request.alias } : {}),
+          select: request.select,
+          ...(request.where ? { where: request.where } : {}),
+          output: [],
+        },
+        config: binding.config,
+      },
+    ],
+  ]);
 
   for (const clause of request.where ?? []) {
-    switch (clause.op) {
-      case "eq":
-      case "neq":
-      case "gt":
-      case "gte":
-      case "lt":
-      case "lte": {
-        const operator =
-          clause.op === "eq"
-            ? "="
-            : clause.op === "neq"
-              ? "!="
-              : clause.op === "gt"
-                ? ">"
-                : clause.op === "gte"
-                  ? ">="
-                  : clause.op === "lt"
-                    ? "<"
-                    : "<=";
-        whereParts.push(`${escapeIdentifier(clause.column)} ${operator} ?`);
-        params.push(clause.value);
-        break;
-      }
-      case "in": {
-        if (clause.values.length === 0) {
-          whereParts.push("1 = 0");
-          break;
-        }
-
-        const placeholders = clause.values.map(() => "?").join(", ");
-        whereParts.push(`${escapeIdentifier(clause.column)} IN (${placeholders})`);
-        params.push(...clause.values);
-        break;
-      }
-      case "is_null":
-        whereParts.push(`${escapeIdentifier(clause.column)} IS NULL`);
-        break;
-      case "is_not_null":
-        whereParts.push(`${escapeIdentifier(clause.column)} IS NOT NULL`);
-        break;
-    }
+    query = applyWhereClause(query, clause, aliases);
   }
 
-  const scope = await options.tables?.[request.table]?.scopeSql?.(context, request.table);
-  if (scope?.sql) {
-    whereParts.push(`(${scope.sql})`);
-    params.push(...(scope.params ?? []));
-  }
-
-  const selectSql = request.select.map(escapeIdentifier).join(", ");
-  let sql = `SELECT ${selectSql} FROM ${escapeIdentifier(request.table)}`;
-
-  if (whereParts.length > 0) {
-    sql += ` WHERE ${whereParts.join(" AND ")}`;
-  }
-
-  if (request.orderBy && request.orderBy.length > 0) {
-    sql += ` ORDER BY ${request.orderBy
-      .map((term) => `${escapeIdentifier(term.column)} ${term.direction.toUpperCase()}`)
-      .join(", ")}`;
+  for (const term of request.orderBy ?? []) {
+    query = query.orderBy(`${alias}.${term.column}`, term.direction);
   }
 
   if (request.limit != null) {
-    sql += ` LIMIT ${request.limit}`;
+    query = query.limit(request.limit);
   }
-
   if (request.offset != null) {
-    sql += ` OFFSET ${request.offset}`;
+    query = query.offset(request.offset);
   }
 
-  return {
-    sql,
-    params,
-  };
+  query = query.select((eb: any) =>
+    request.select.map((column) => eb.ref(`${alias}.${column}`).as(column)));
+
+  return query.execute();
 }
 
-function escapeIdentifier(identifier: string): string {
-  return `"${identifier.replaceAll('"', '""')}"`;
+function resolveKyselyRelCompileStrategy<TContext>(
+  node: RelNode,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): KyselyRelCompileStrategy | null {
+  if (canCompileBasicRel(node, entityConfigs)) {
+    return "basic";
+  }
+  if (canCompileSetOpRel(node, entityConfigs)) {
+    return "set_op";
+  }
+  if (canCompileWithRel(node, entityConfigs)) {
+    return "with";
+  }
+  return null;
 }
 
-interface CompiledRel {
-  sql: string;
-  output: string[];
-}
-
-function canCompileRel(node: RelNode): boolean {
+function canCompileBasicRel<TContext>(
+  node: RelNode,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): boolean {
   switch (node.kind) {
     case "scan":
-      return true;
+      return !!entityConfigs[node.table];
     case "filter":
     case "project":
     case "aggregate":
     case "sort":
     case "limit_offset":
-      return canCompileRel(node.input);
+      return canCompileBasicRel(node.input, entityConfigs);
     case "join":
+      return canCompileBasicRel(node.left, entityConfigs) && canCompileBasicRel(node.right, entityConfigs);
+    case "window":
     case "set_op":
-      return canCompileRel(node.left) && canCompileRel(node.right);
     case "with":
-      return node.ctes.every((cte) => canCompileRel(cte.query)) && canCompileRel(node.body);
     case "sql":
       return false;
   }
 }
 
-function compileRelToSql(node: RelNode): CompiledRel | null {
+function canCompileSetOpRel<TContext>(
+  node: RelNode,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): boolean {
+  const wrapper = unwrapSetOpRel(node);
+  if (!wrapper) {
+    return false;
+  }
+
+  if (!resolveKyselyRelCompileStrategy(wrapper.setOp.left, entityConfigs)) {
+    return false;
+  }
+  if (!resolveKyselyRelCompileStrategy(wrapper.setOp.right, entityConfigs)) {
+    return false;
+  }
+
+  const topProject = wrapper.project;
+  if (topProject) {
+    for (const column of topProject.columns) {
+      if (column.source.alias || column.source.table) {
+        return false;
+      }
+      if (column.source.column !== column.output) {
+        return false;
+      }
+    }
+  }
+
+  for (const term of wrapper.sort?.orderBy ?? []) {
+    if (term.source.alias || term.source.table) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function canCompileWithRel<TContext>(
+  node: RelNode,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): boolean {
+  if (node.kind !== "with") {
+    return false;
+  }
+
+  if (node.ctes.length === 0) {
+    return false;
+  }
+
+  for (const cte of node.ctes) {
+    if (!resolveKyselyRelCompileStrategy(cte.query, entityConfigs)) {
+      return false;
+    }
+  }
+
+  const body = unwrapWithBodyRel(node.body);
+  if (!body) {
+    return false;
+  }
+  if (!body.cteScan.table || !node.ctes.some((cte) => cte.name === body.cteScan.table)) {
+    return false;
+  }
+
+  for (const fn of body.window?.functions ?? []) {
+    if (fn.fn !== "dense_rank" && fn.fn !== "rank" && fn.fn !== "row_number") {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function hasSqlNode(node: RelNode): boolean {
   switch (node.kind) {
-    case "scan": {
-      const relationAlias = node.alias ?? node.table;
-      const selected = node.select.map((column) => ({
-        source: `"${relationAlias}"."${escapeIdentifierRaw(column)}"`,
-        output: `${relationAlias}.${column}`,
-      }));
-
-      let sqlText = `SELECT ${selected
-        .map((entry) => `${entry.source} AS "${escapeIdentifierRaw(entry.output)}"`)
-        .join(", ")} FROM "${escapeIdentifierRaw(node.table)}" AS "${escapeIdentifierRaw(relationAlias)}"`;
-
-      if (node.where && node.where.length > 0) {
-        const clauses = node.where.map((clause) =>
-          compileFilterClause(clause, node.select, relationAlias),
-        );
-        sqlText += ` WHERE ${clauses.join(" AND ")}`;
-      }
-
-      if (node.orderBy && node.orderBy.length > 0) {
-        sqlText += ` ORDER BY ${node.orderBy
-          .map((term) => `"${escapeIdentifierRaw(relationAlias)}"."${escapeIdentifierRaw(term.column)}" ${term.direction.toUpperCase()}`)
-          .join(", ")}`;
-      }
-
-      if (node.limit != null) {
-        sqlText += ` LIMIT ${node.limit}`;
-      }
-
-      if (node.offset != null) {
-        sqlText += ` OFFSET ${node.offset}`;
-      }
-
-      return {
-        sql: sqlText,
-        output: selected.map((entry) => entry.output),
-      };
-    }
-    case "filter": {
-      const input = compileRelToSql(node.input);
-      if (!input) {
-        return null;
-      }
-      const alias = "__f";
-      const where = node.where
-        .map((clause) => compileFilterClause(clause, input.output, alias))
-        .join(" AND ");
-
-      return {
-        sql: `SELECT * FROM (${input.sql}) AS "${alias}"${where ? ` WHERE ${where}` : ""}`,
-        output: [...input.output],
-      };
-    }
-    case "project": {
-      const input = compileRelToSql(node.input);
-      if (!input) {
-        return null;
-      }
-      const alias = "__p";
-
-      const selectSql = node.columns
-        .map((column) => {
-          const inputName = resolveOutputColumn(
-            `${column.source.alias ?? column.source.table ?? ""}.${column.source.column}`.replace(
-              /^\./,
-              "",
-            ),
-            input.output,
-          );
-          if (!inputName) {
-            return null;
-          }
-          return `"${alias}"."${escapeIdentifierRaw(inputName)}" AS "${escapeIdentifierRaw(column.output)}"`;
-        })
-        .filter((entry): entry is string => !!entry);
-
-      if (selectSql.length !== node.columns.length) {
-        return null;
-      }
-
-      return {
-        sql: `SELECT ${selectSql.join(", ")} FROM (${input.sql}) AS "${alias}"`,
-        output: node.columns.map((column) => column.output),
-      };
-    }
-    case "join": {
-      const left = compileRelToSql(node.left);
-      const right = compileRelToSql(node.right);
-      if (!left || !right) {
-        return null;
-      }
-
-      const leftAlias = "__l";
-      const rightAlias = "__r";
-      const leftJoinKey = resolveOutputColumn(
-        `${node.leftKey.alias ?? node.leftKey.table ?? ""}.${node.leftKey.column}`.replace(/^\./, ""),
-        left.output,
-      );
-      const rightJoinKey = resolveOutputColumn(
-        `${node.rightKey.alias ?? node.rightKey.table ?? ""}.${node.rightKey.column}`.replace(/^\./, ""),
-        right.output,
-      );
-      if (!leftJoinKey || !rightJoinKey) {
-        return null;
-      }
-
-      const outputColumns = [...left.output, ...right.output];
-      const selectSql = [
-        ...left.output.map(
-          (column) =>
-            `"${leftAlias}"."${escapeIdentifierRaw(column)}" AS "${escapeIdentifierRaw(column)}"`,
-        ),
-        ...right.output.map(
-          (column) =>
-            `"${rightAlias}"."${escapeIdentifierRaw(column)}" AS "${escapeIdentifierRaw(column)}"`,
-        ),
-      ];
-
-      const joinKeyword =
-        node.joinType === "inner"
-          ? "INNER JOIN"
-          : node.joinType === "left"
-            ? "LEFT JOIN"
-            : node.joinType === "right"
-              ? "RIGHT JOIN"
-              : "FULL JOIN";
-
-      return {
-        sql: `SELECT ${selectSql.join(", ")} FROM (${left.sql}) AS "${leftAlias}" ${joinKeyword} (${right.sql}) AS "${rightAlias}" ON "${leftAlias}"."${escapeIdentifierRaw(leftJoinKey)}" = "${rightAlias}"."${escapeIdentifierRaw(rightJoinKey)}"`,
-        output: outputColumns,
-      };
-    }
-    case "aggregate": {
-      const input = compileRelToSql(node.input);
-      if (!input) {
-        return null;
-      }
-      const alias = "__a";
-      const selectSql: string[] = [];
-      const groupBySql: string[] = [];
-      const output: string[] = [];
-
-      for (const groupRef of node.groupBy) {
-        const inputName = resolveOutputColumn(
-          `${groupRef.alias ?? groupRef.table ?? ""}.${groupRef.column}`.replace(/^\./, ""),
-          input.output,
-        );
-        if (!inputName) {
-          return null;
-        }
-        selectSql.push(
-          `"${alias}"."${escapeIdentifierRaw(inputName)}" AS "${escapeIdentifierRaw(groupRef.column)}"`,
-        );
-        groupBySql.push(`"${alias}"."${escapeIdentifierRaw(inputName)}"`);
-        output.push(groupRef.column);
-      }
-
-      for (const metric of node.metrics) {
-        const fn = metric.fn.toUpperCase();
-        if (metric.column) {
-          const inputName = resolveOutputColumn(
-            `${metric.column.alias ?? metric.column.table ?? ""}.${metric.column.column}`.replace(
-              /^\./,
-              "",
-            ),
-            input.output,
-          );
-          if (!inputName) {
-            return null;
-          }
-          const distinct = metric.distinct ? "DISTINCT " : "";
-          selectSql.push(
-            `${fn}(${distinct}"${alias}"."${escapeIdentifierRaw(inputName)}") AS "${escapeIdentifierRaw(metric.as)}"`,
-          );
-        } else {
-          selectSql.push(`${fn}(*) AS "${escapeIdentifierRaw(metric.as)}"`);
-        }
-        output.push(metric.as);
-      }
-
-      let sqlText = `SELECT ${selectSql.join(", ")} FROM (${input.sql}) AS "${alias}"`;
-      if (groupBySql.length > 0) {
-        sqlText += ` GROUP BY ${groupBySql.join(", ")}`;
-      }
-      return { sql: sqlText, output };
-    }
-    case "sort": {
-      const input = compileRelToSql(node.input);
-      if (!input) {
-        return null;
-      }
-      const alias = "__s";
-      const orderBySql = node.orderBy
-        .map((term) =>
-          resolveOutputColumn(
-            `${term.source.alias ?? term.source.table ?? ""}.${term.source.column}`.replace(/^\./, ""),
-            input.output,
-          ),
-        )
-        .map((column, index) =>
-          column
-            ? `"${alias}"."${escapeIdentifierRaw(column)}" ${node.orderBy[index]?.direction.toUpperCase()}`
-            : null,
-        )
-        .filter((entry): entry is string => !!entry);
-
-      if (orderBySql.length !== node.orderBy.length) {
-        return null;
-      }
-
-      return {
-        sql: `SELECT * FROM (${input.sql}) AS "${alias}" ORDER BY ${orderBySql.join(", ")}`,
-        output: [...input.output],
-      };
-    }
-    case "limit_offset": {
-      const input = compileRelToSql(node.input);
-      if (!input) {
-        return null;
-      }
-      let sqlText = `SELECT * FROM (${input.sql}) AS "__lo"`;
-      if (node.limit != null) {
-        sqlText += ` LIMIT ${node.limit}`;
-      }
-      if (node.offset != null) {
-        sqlText += ` OFFSET ${node.offset}`;
-      }
-      return {
-        sql: sqlText,
-        output: [...input.output],
-      };
-    }
-    case "set_op": {
-      const left = compileRelToSql(node.left);
-      const right = compileRelToSql(node.right);
-      if (!left || !right) {
-        return null;
-      }
-      const op =
-        node.op === "union_all"
-          ? "UNION ALL"
-          : node.op === "union"
-            ? "UNION"
-            : node.op === "intersect"
-              ? "INTERSECT"
-              : "EXCEPT";
-      return {
-        sql: `(${left.sql}) ${op} (${right.sql})`,
-        output: [...node.output.map((column) => column.name)],
-      };
-    }
-    case "with": {
-      const ctes = node.ctes
-        .map((cte) => {
-          const query = compileRelToSql(cte.query);
-          if (!query) {
-            return null;
-          }
-          return `"${escapeIdentifierRaw(cte.name)}" AS (${query.sql})`;
-        })
-        .filter((entry): entry is string => !!entry);
-      if (ctes.length !== node.ctes.length) {
-        return null;
-      }
-
-      const body = compileRelToSql(node.body);
-      if (!body) {
-        return null;
-      }
-
-      return {
-        sql: `WITH ${ctes.join(", ")} ${body.sql}`,
-        output: [...body.output],
-      };
-    }
     case "sql":
-      return null;
+      return true;
+    case "scan":
+      return false;
+    case "filter":
+    case "project":
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return hasSqlNode(node.input);
+    case "join":
+    case "set_op":
+      return hasSqlNode(node.left) || hasSqlNode(node.right);
+    case "with":
+      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
   }
 }
 
-function compileFilterClause(
-  clause: ScanFilterClause,
-  outputs: string[],
-  sourceAlias: string,
+async function executeRelSingleQuery<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  rel: RelNode,
+  strategy: KyselyRelCompileStrategy,
+  context: TContext,
+): Promise<QueryRow[]> {
+  const query = await buildKyselyRelBuilderForStrategy(db, entityConfigs, rel, strategy, context);
+  return query.execute();
+}
+
+async function buildKyselyRelBuilderForStrategy<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  rel: RelNode,
+  strategy: KyselyRelCompileStrategy,
+  context: TContext,
+): Promise<KyselyQueryBuilderLike> {
+  switch (strategy) {
+    case "basic":
+      return buildKyselyBasicRelSingleQueryBuilder(db, entityConfigs, rel, context);
+    case "set_op":
+      return buildKyselySetOpRelSingleQueryBuilder(db, entityConfigs, rel, context);
+    case "with":
+      return buildKyselyWithRelSingleQueryBuilder(db, entityConfigs, rel, context);
+  }
+}
+
+async function buildKyselyBasicRelSingleQueryBuilder<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  rel: RelNode,
+  context: TContext,
+): Promise<KyselyQueryBuilderLike> {
+  const plan = await buildSingleQueryPlan(rel, entityConfigs);
+
+  const rootFrom = `${plan.joinPlan.root.table} as ${plan.joinPlan.root.alias}`;
+  let query = db.selectFrom(rootFrom);
+  query = await applyBase(query, db, plan.joinPlan.root, context, plan.joinPlan.root.alias);
+
+  for (const joinStep of plan.joinPlan.joins) {
+    if (joinStep.joinType === "semi") {
+      const leftRef = `${joinStep.leftKey.alias}.${joinStep.leftKey.column}`;
+      const subquery = await buildKyselySemiJoinSubquery(
+        db,
+        entityConfigs,
+        joinStep,
+        context,
+      );
+      query = query.where(leftRef, "in", subquery);
+      continue;
+    }
+
+    const joinMethod =
+      joinStep.joinType === "inner"
+        ? "innerJoin"
+        : joinStep.joinType === "left"
+          ? "leftJoin"
+          : joinStep.joinType === "right"
+            ? "rightJoin"
+            : "fullJoin";
+
+    const fn = (query as unknown as Record<string, unknown>)[joinMethod];
+    if (typeof fn !== "function") {
+      throw new UnsupportedSingleQueryPlanError(
+        `Kysely query builder does not support ${joinMethod} in this dialect.`,
+      );
+    }
+
+    query = (fn as (...args: unknown[]) => KyselyQueryBuilderLike).call(
+      query,
+      `${joinStep.right.table} as ${joinStep.right.alias}`,
+      `${joinStep.leftKey.alias}.${joinStep.leftKey.column}`,
+      `${joinStep.rightKey.alias}.${joinStep.rightKey.column}`,
+    );
+
+    query = await applyBase(query, db, joinStep.right, context, joinStep.right.alias);
+  }
+
+  for (const binding of plan.joinPlan.aliases.values()) {
+    for (const clause of binding.scan.where ?? []) {
+      query = applyWhereClause(query, clause, plan.joinPlan.aliases);
+    }
+  }
+  for (const filter of plan.pipeline.filters) {
+    for (const clause of filter.where) {
+      query = applyWhereClause(query, clause, plan.joinPlan.aliases);
+    }
+  }
+
+  const selection = buildSelection(plan);
+  query = query.select((eb: any) => selection.map((entry) => entry.toExpression(eb)));
+
+  if (plan.pipeline.aggregate && plan.pipeline.aggregate.groupBy.length > 0) {
+    query = query.groupBy?.(
+      plan.pipeline.aggregate.groupBy.map((ref) =>
+        resolveColumnRef(plan.joinPlan.aliases, {
+          ...toRef(ref.alias ?? ref.table, ref.column),
+        })),
+    ) ?? query;
+  }
+
+  if (plan.pipeline.sort) {
+    for (const term of plan.pipeline.sort.orderBy) {
+      query = query.orderBy(resolveSortRef(plan, term), term.direction);
+    }
+  }
+
+  if (plan.pipeline.limitOffset?.limit != null) {
+    query = query.limit(plan.pipeline.limitOffset.limit);
+  }
+  if (plan.pipeline.limitOffset?.offset != null) {
+    query = query.offset(plan.pipeline.limitOffset.offset);
+  }
+
+  return query;
+}
+
+async function buildKyselySemiJoinSubquery<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  joinStep: SemiJoinStep,
+  context: TContext,
+): Promise<KyselyQueryBuilderLike> {
+  if (joinStep.right.output.length !== 1) {
+    throw new UnsupportedSingleQueryPlanError(
+      "SEMI join subquery must project exactly one output column.",
+    );
+  }
+
+  const strategy = resolveKyselyRelCompileStrategy(joinStep.right, entityConfigs);
+  if (!strategy) {
+    throw new UnsupportedSingleQueryPlanError(
+      "SEMI join right-hand rel fragment is not supported for single-query pushdown.",
+    );
+  }
+
+  return buildKyselyRelBuilderForStrategy(db, entityConfigs, joinStep.right, strategy, context);
+}
+
+async function buildKyselySetOpRelSingleQueryBuilder<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  rel: RelNode,
+  context: TContext,
+): Promise<KyselyQueryBuilderLike> {
+  const wrapper = unwrapSetOpRel(rel);
+  if (!wrapper) {
+    throw new UnsupportedSingleQueryPlanError("Expected set-op relational shape.");
+  }
+
+  const leftStrategy = resolveKyselyRelCompileStrategy(wrapper.setOp.left, entityConfigs);
+  const rightStrategy = resolveKyselyRelCompileStrategy(wrapper.setOp.right, entityConfigs);
+  if (!leftStrategy || !rightStrategy) {
+    throw new UnsupportedSingleQueryPlanError(
+      "Set-op branches are not supported for single-query pushdown.",
+    );
+  }
+
+  const left = await buildKyselyRelBuilderForStrategy(
+    db,
+    entityConfigs,
+    wrapper.setOp.left,
+    leftStrategy,
+    context,
+  );
+  const right = await buildKyselyRelBuilderForStrategy(
+    db,
+    entityConfigs,
+    wrapper.setOp.right,
+    rightStrategy,
+    context,
+  );
+
+  const methodName =
+    wrapper.setOp.op === "union_all"
+      ? "unionAll"
+      : wrapper.setOp.op === "union"
+        ? "union"
+        : wrapper.setOp.op === "intersect"
+          ? "intersect"
+          : "except";
+
+  const applySetOp = (left as unknown as Record<string, unknown>)[methodName];
+  if (typeof applySetOp !== "function") {
+    throw new UnsupportedSingleQueryPlanError(
+      `Kysely query builder does not support ${methodName} for single-query pushdown.`,
+    );
+  }
+
+  let query = applySetOp.call(left, right) as KyselyQueryBuilderLike;
+
+  if (wrapper.project) {
+    for (const mapping of wrapper.project.columns) {
+      if ((mapping.source.alias || mapping.source.table) && mapping.source.column !== mapping.output) {
+        throw new UnsupportedSingleQueryPlanError(
+          "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
+        );
+      }
+    }
+  }
+
+  if (wrapper.sort) {
+    for (const term of wrapper.sort.orderBy) {
+      if (term.source.alias || term.source.table) {
+        throw new UnsupportedSingleQueryPlanError(
+          "Set-op ORDER BY columns must be unqualified output columns.",
+        );
+      }
+      query = query.orderBy(term.source.column, term.direction);
+    }
+  }
+
+  if (wrapper.limitOffset?.limit != null) {
+    query = query.limit(wrapper.limitOffset.limit);
+  }
+  if (wrapper.limitOffset?.offset != null) {
+    query = query.offset(wrapper.limitOffset.offset);
+  }
+
+  return query;
+}
+
+async function buildKyselyWithRelSingleQueryBuilder<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  rel: RelNode,
+  context: TContext,
+): Promise<KyselyQueryBuilderLike> {
+  if (rel.kind !== "with") {
+    throw new UnsupportedSingleQueryPlanError(`Expected with node, received "${rel.kind}".`);
+  }
+  if (typeof db.with !== "function") {
+    throw new UnsupportedSingleQueryPlanError(
+      "Kysely database instance does not support CTE builders required for WITH pushdown.",
+    );
+  }
+
+  let withDb = db;
+  for (const cte of rel.ctes) {
+    const strategy = resolveKyselyRelCompileStrategy(cte.query, entityConfigs);
+    if (!strategy) {
+      throw new UnsupportedSingleQueryPlanError(
+        `CTE "${cte.name}" is not supported for single-query pushdown.`,
+      );
+    }
+    const cteQuery = await buildKyselyRelBuilderForStrategy(
+      db,
+      entityConfigs,
+      cte.query,
+      strategy,
+      context,
+    );
+    withDb = withDb.with!(cte.name, () => cteQuery);
+  }
+
+  const body = unwrapWithBodyRel(rel.body);
+  if (!body) {
+    throw new UnsupportedSingleQueryPlanError("Unsupported WITH body shape for single-query pushdown.");
+  }
+
+  const scanAlias = body.cteScan.alias ?? body.cteScan.table;
+  const from = body.cteScan.alias ? `${body.cteScan.table} as ${body.cteScan.alias}` : body.cteScan.table;
+  let query = withDb.selectFrom(from);
+
+  const aliases = new Map<string, ScanBinding<TContext>>([
+    [
+      scanAlias,
+      {
+        alias: scanAlias,
+        entity: body.cteScan.table,
+        table: body.cteScan.table,
+        scan: body.cteScan,
+        config: {},
+      },
+    ],
+  ]);
+
+  for (const clause of body.cteScan.where ?? []) {
+    query = applyWhereClause(query, clause, aliases);
+  }
+  for (const filter of body.filters) {
+    for (const clause of filter.where) {
+      query = applyWhereClause(query, clause, aliases);
+    }
+  }
+
+  const windowByAlias = new Map(
+    (body.window?.functions ?? []).map((fn) => [fn.as, fn] as const),
+  );
+
+  const projection = body.project?.columns ?? [
+    ...body.cteScan.select.map((column) => ({
+      source: { column },
+      output: column,
+    })),
+    ...[...windowByAlias.values()].map((fn) => ({
+      source: { column: fn.as },
+      output: fn.as,
+    })),
+  ];
+
+  query = query.select((eb: any) =>
+    projection.map((mapping) => {
+      const windowFn = windowByAlias.get(mapping.source.column);
+      if (windowFn) {
+        return buildWindowExpression(eb, windowFn, scanAlias).as(mapping.output);
+      }
+
+      const source = resolveWithBodyColumnRef(mapping.source, scanAlias);
+      return eb.ref(source).as(mapping.output);
+    }),
+  );
+
+  if (body.sort) {
+    for (const term of body.sort.orderBy) {
+      query = query.orderBy(resolveWithBodySortRef(term, scanAlias, windowByAlias), term.direction);
+    }
+  }
+
+  if (body.limitOffset?.limit != null) {
+    query = query.limit(body.limitOffset.limit);
+  }
+  if (body.limitOffset?.offset != null) {
+    query = query.offset(body.limitOffset.offset);
+  }
+
+  return query;
+}
+
+function buildWindowExpression(
+  eb: any,
+  fn: Extract<RelNode, { kind: "window" }>["functions"][number],
+  scanAlias: string,
+): any {
+  const aggregate = eb.fn.agg(fn.fn, []);
+
+  return aggregate.over((ob: any) => {
+    let over = ob;
+
+    if (fn.partitionBy.length > 0) {
+      over = over.partitionBy(
+        fn.partitionBy.map((ref) => resolveWithBodyColumnRef(ref, scanAlias)),
+      );
+    }
+
+    for (const term of fn.orderBy) {
+      over = over.orderBy(resolveWithBodyColumnRef(term.source, scanAlias), term.direction);
+    }
+
+    return over;
+  });
+}
+
+function resolveWithBodySortRef(
+  term: Extract<RelNode, { kind: "sort" }>["orderBy"][number],
+  scanAlias: string,
+  windowByAlias: Map<string, Extract<RelNode, { kind: "window" }>["functions"][number]>,
 ): string {
-  const column = resolveOutputColumn(clause.column, outputs) ?? clause.column;
-  const ref = `"${sourceAlias}"."${escapeIdentifierRaw(column)}"`;
+  const refAlias = term.source.alias ?? term.source.table;
+  if (!refAlias && windowByAlias.has(term.source.column)) {
+    return term.source.column;
+  }
+  return resolveWithBodyColumnRef(term.source, scanAlias);
+}
+
+function resolveWithBodyColumnRef(
+  ref: { alias?: string; table?: string; column: string },
+  scanAlias: string,
+): string {
+  const refAlias = ref.alias ?? ref.table;
+  if (refAlias && refAlias !== scanAlias) {
+    throw new UnsupportedSingleQueryPlanError(
+      `WITH body column "${refAlias}.${ref.column}" must reference alias "${scanAlias}".`,
+    );
+  }
+  return `${scanAlias}.${ref.column}`;
+}
+
+async function buildSingleQueryPlan<TContext>(
+  rel: RelNode,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): Promise<SingleQueryPlan<TContext>> {
+  const pipeline = extractRelPipeline(rel);
+  const joinPlan = await buildJoinPlan(pipeline.base, entityConfigs);
+
+  return {
+    pipeline,
+    joinPlan,
+  };
+}
+
+function extractRelPipeline(node: RelNode): RelPipeline {
+  let current = node;
+  const filters: Extract<RelNode, { kind: "filter" }>[] = [];
+  let project: Extract<RelNode, { kind: "project" }> | undefined;
+  let aggregate: Extract<RelNode, { kind: "aggregate" }> | undefined;
+  let sort: Extract<RelNode, { kind: "sort" }> | undefined;
+  let limitOffset: Extract<RelNode, { kind: "limit_offset" }> | undefined;
+
+  while (true) {
+    switch (current.kind) {
+      case "filter":
+        filters.push(current);
+        current = current.input;
+        continue;
+      case "project":
+        if (project) {
+          throw new UnsupportedSingleQueryPlanError("Multiple project nodes are not supported.");
+        }
+        project = current;
+        current = current.input;
+        continue;
+      case "aggregate":
+        if (aggregate) {
+          throw new UnsupportedSingleQueryPlanError("Multiple aggregate nodes are not supported.");
+        }
+        aggregate = current;
+        current = current.input;
+        continue;
+      case "sort":
+        if (sort) {
+          throw new UnsupportedSingleQueryPlanError("Multiple sort nodes are not supported.");
+        }
+        sort = current;
+        current = current.input;
+        continue;
+      case "limit_offset":
+        if (limitOffset) {
+          throw new UnsupportedSingleQueryPlanError("Multiple limit/offset nodes are not supported.");
+        }
+        limitOffset = current;
+        current = current.input;
+        continue;
+      case "scan":
+      case "join":
+        return {
+          base: current,
+          ...(project ? { project } : {}),
+          ...(aggregate ? { aggregate } : {}),
+          ...(sort ? { sort } : {}),
+          ...(limitOffset ? { limitOffset } : {}),
+          filters,
+        };
+      case "set_op":
+      case "with":
+      case "window":
+      case "sql":
+        throw new UnsupportedSingleQueryPlanError(
+          `Rel node "${current.kind}" is not supported in single-query pushdown.`,
+        );
+    }
+  }
+}
+
+function unwrapSetOpRel(node: RelNode): SetOpWrapper | null {
+  let current = node;
+  let project: Extract<RelNode, { kind: "project" }> | undefined;
+  let sort: Extract<RelNode, { kind: "sort" }> | undefined;
+  let limitOffset: Extract<RelNode, { kind: "limit_offset" }> | undefined;
+
+  while (true) {
+    switch (current.kind) {
+      case "project":
+        if (project) {
+          return null;
+        }
+        project = current;
+        current = current.input;
+        continue;
+      case "sort":
+        if (sort) {
+          return null;
+        }
+        sort = current;
+        current = current.input;
+        continue;
+      case "limit_offset":
+        if (limitOffset) {
+          return null;
+        }
+        limitOffset = current;
+        current = current.input;
+        continue;
+      case "set_op":
+        return {
+          setOp: current,
+          ...(project ? { project } : {}),
+          ...(sort ? { sort } : {}),
+          ...(limitOffset ? { limitOffset } : {}),
+        };
+      default:
+        return null;
+    }
+  }
+}
+
+function unwrapWithBodyRel(node: RelNode): WithBodyWrapper | null {
+  let current = node;
+  const filters: Extract<RelNode, { kind: "filter" }>[] = [];
+  let project: Extract<RelNode, { kind: "project" }> | undefined;
+  let sort: Extract<RelNode, { kind: "sort" }> | undefined;
+  let limitOffset: Extract<RelNode, { kind: "limit_offset" }> | undefined;
+  let window: Extract<RelNode, { kind: "window" }> | undefined;
+
+  while (true) {
+    switch (current.kind) {
+      case "filter":
+        filters.push(current);
+        current = current.input;
+        continue;
+      case "project":
+        if (project) {
+          return null;
+        }
+        project = current;
+        current = current.input;
+        continue;
+      case "sort":
+        if (sort) {
+          return null;
+        }
+        sort = current;
+        current = current.input;
+        continue;
+      case "limit_offset":
+        if (limitOffset) {
+          return null;
+        }
+        limitOffset = current;
+        current = current.input;
+        continue;
+      case "window":
+        if (window) {
+          return null;
+        }
+        window = current;
+        current = current.input;
+        continue;
+      case "scan":
+        return {
+          cteScan: current,
+          ...(project ? { project } : {}),
+          ...(sort ? { sort } : {}),
+          ...(limitOffset ? { limitOffset } : {}),
+          ...(window ? { window } : {}),
+          filters,
+        };
+      default:
+        return null;
+    }
+  }
+}
+
+async function buildJoinPlan<TContext>(
+  node: RelNode,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): Promise<JoinPlan<TContext>> {
+  if (node.kind === "scan") {
+    const root = createScanBinding(node, entityConfigs);
+    return {
+      root,
+      joins: [],
+      aliases: new Map([[root.alias, root]]),
+    };
+  }
+
+  if (node.kind !== "join") {
+    throw new UnsupportedSingleQueryPlanError(`Expected scan/join base node, received "${node.kind}".`);
+  }
+
+  const left = await buildJoinPlan(node.left, entityConfigs);
+
+  if (node.joinType === "semi") {
+    const leftAlias = node.leftKey.alias ?? node.leftKey.table;
+    const rightAlias = node.rightKey.alias ?? node.rightKey.table;
+    if (!leftAlias) {
+      throw new UnsupportedSingleQueryPlanError("Join keys must be alias-qualified.");
+    }
+
+    return {
+      root: left.root,
+      joins: [
+        ...left.joins,
+        {
+          joinType: "semi",
+          right: node.right,
+          leftKey: {
+            alias: leftAlias,
+            column: node.leftKey.column,
+          },
+          rightKey: {
+            ...(rightAlias ? { alias: rightAlias } : {}),
+            column: node.rightKey.column,
+          },
+        },
+      ],
+      aliases: new Map(left.aliases),
+    };
+  }
+
+  const right = await buildJoinPlan(node.right, entityConfigs);
+  if (right.joins.length > 0) {
+    throw new UnsupportedSingleQueryPlanError("Only left-deep join trees are supported.");
+  }
+
+  const rightRoot = right.root;
+  if (left.aliases.has(rightRoot.alias)) {
+    throw new UnsupportedSingleQueryPlanError(`Duplicate alias "${rightRoot.alias}" in join tree.`);
+  }
+
+  const leftAlias = node.leftKey.alias ?? node.leftKey.table;
+  const rightAlias = node.rightKey.alias ?? node.rightKey.table;
+  if (!leftAlias || !rightAlias) {
+    throw new UnsupportedSingleQueryPlanError("Join keys must be alias-qualified.");
+  }
+
+  const aliases = new Map(left.aliases);
+  aliases.set(rightRoot.alias, rightRoot);
+  for (const [alias, binding] of right.aliases.entries()) {
+    aliases.set(alias, binding);
+  }
+
+  return {
+    root: left.root,
+    joins: [
+      ...left.joins,
+      {
+        joinType: node.joinType,
+        right: rightRoot,
+        leftKey: {
+          alias: leftAlias,
+          column: node.leftKey.column,
+        },
+        rightKey: {
+          alias: rightAlias,
+          column: node.rightKey.column,
+        },
+      },
+    ],
+    aliases,
+  };
+}
+
+function createScanBinding<TContext>(
+  scan: Extract<RelNode, { kind: "scan" }>,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+): ScanBinding<TContext> {
+  const binding = entityConfigs[scan.table];
+  if (!binding) {
+    throw new UnsupportedSingleQueryPlanError(`Missing Kysely entity config for "${scan.table}".`);
+  }
+
+  return {
+    alias: scan.alias ?? binding.table,
+    entity: binding.entity,
+    table: binding.table,
+    scan,
+    config: binding.config,
+  };
+}
+
+async function applyBase<TContext>(
+  query: KyselyQueryBuilderLike,
+  db: KyselyDatabaseLike,
+  binding: BaseBinding<TContext>,
+  context: TContext,
+  alias: string,
+): Promise<KyselyQueryBuilderLike> {
+  if (!binding.config.base) {
+    return query;
+  }
+
+  return binding.config.base({
+    db,
+    query,
+    context,
+    entity: binding.entity,
+    alias,
+  });
+}
+
+function applyWhereClause<TContext>(
+  query: KyselyQueryBuilderLike,
+  clause: ScanFilterClause,
+  aliases: Map<string, ScanBinding<TContext>>,
+): KyselyQueryBuilderLike {
+  const column = resolveColumnFromFilterColumn(aliases, clause.column);
 
   switch (clause.op) {
     case "eq":
-      return `${ref} = ${literalSql(clause.value)}`;
+      return query.where(column, "=", clause.value);
     case "neq":
-      return `${ref} != ${literalSql(clause.value)}`;
+      return query.where(column, "!=", clause.value);
     case "gt":
-      return `${ref} > ${literalSql(clause.value)}`;
+      return query.where(column, ">", clause.value);
     case "gte":
-      return `${ref} >= ${literalSql(clause.value)}`;
+      return query.where(column, ">=", clause.value);
     case "lt":
-      return `${ref} < ${literalSql(clause.value)}`;
+      return query.where(column, "<", clause.value);
     case "lte":
-      return `${ref} <= ${literalSql(clause.value)}`;
+      return query.where(column, "<=", clause.value);
     case "in":
-      return clause.values.length > 0
-        ? `${ref} IN (${clause.values.map((value) => literalSql(value)).join(", ")})`
-        : "1 = 0";
+      return query.where(column, "in", clause.values.length > 0 ? clause.values : [null]);
     case "is_null":
-      return `${ref} IS NULL`;
+      return query.where(column, "is", null);
     case "is_not_null":
-      return `${ref} IS NOT NULL`;
+      return query.where(column, "is not", null);
   }
 }
 
-function literalSql(value: unknown): string {
-  if (value == null) {
-    return "NULL";
-  }
-  if (typeof value === "number" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (typeof value === "boolean") {
-    return value ? "TRUE" : "FALSE";
-  }
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
-
-function resolveOutputColumn(column: string, outputs: string[]): string | null {
-  if (outputs.includes(column)) {
+function resolveColumnFromFilterColumn<TContext>(
+  aliases: Map<string, ScanBinding<TContext>>,
+  column: string,
+): string {
+  const idx = column.lastIndexOf(".");
+  if (idx > 0) {
     return column;
   }
 
-  const suffix = `.${column}`;
-  const matches = outputs.filter((output) => output.endsWith(suffix));
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+  return resolveColumnRef(aliases, { column });
 }
 
-function escapeIdentifierRaw(identifier: string): string {
-  return identifier.replaceAll('"', '""');
+function resolveColumnRef<TContext>(
+  aliases: Map<string, ScanBinding<TContext>>,
+  ref: { alias?: string; column: string },
+): string {
+  if (ref.alias) {
+    const binding = aliases.get(ref.alias);
+    if (!binding) {
+      throw new UnsupportedSingleQueryPlanError(`Unknown alias "${ref.alias}" in rel fragment.`);
+    }
+    return `${binding.alias}.${ref.column}`;
+  }
+
+  let matched: string | null = null;
+  for (const binding of aliases.values()) {
+    const available = new Set(binding.scan.select);
+    const hasInFilter = (binding.scan.where ?? []).some((entry) => entry.column === ref.column);
+    if (!available.has(ref.column) && !hasInFilter) {
+      continue;
+    }
+
+    const candidate = `${binding.alias}.${ref.column}`;
+    if (matched && matched !== candidate) {
+      throw new UnsupportedSingleQueryPlanError(
+        `Ambiguous unqualified column "${ref.column}" in rel fragment.`,
+      );
+    }
+    matched = candidate;
+  }
+
+  if (!matched) {
+    throw new UnsupportedSingleQueryPlanError(
+      `Unknown unqualified column "${ref.column}" in rel fragment.`,
+    );
+  }
+
+  return matched;
+}
+
+type SelectionEntry = {
+  output: string;
+  toExpression: (eb: any) => unknown;
+};
+
+function buildSelection<TContext>(plan: SingleQueryPlan<TContext>): SelectionEntry[] {
+  if (!plan.pipeline.aggregate) {
+    if (!plan.pipeline.project) {
+      throw new UnsupportedSingleQueryPlanError("Non-aggregate rel fragment requires a project node.");
+    }
+
+    return plan.pipeline.project.columns.map((mapping) => {
+      const source = resolveColumnRef(plan.joinPlan.aliases, {
+        ...toRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
+      });
+
+      return {
+        output: mapping.output,
+        toExpression: (eb: any) => eb.ref(source).as(mapping.output),
+      } satisfies SelectionEntry;
+    });
+  }
+
+  const metricByAs = new Map(plan.pipeline.aggregate.metrics.map((metric) => [metric.as, metric]));
+  const groupByByColumn = new Map(
+    plan.pipeline.aggregate.groupBy.map((groupBy) => [groupBy.column, groupBy] as const),
+  );
+
+  const projection = plan.pipeline.project?.columns ??
+    [
+      ...plan.pipeline.aggregate.groupBy.map((groupBy) => ({
+        source: { column: groupBy.column },
+        output: groupBy.column,
+      })),
+      ...plan.pipeline.aggregate.metrics.map((metric) => ({
+        source: { column: metric.as },
+        output: metric.as,
+      })),
+    ];
+
+  return projection.map((mapping) => {
+    const metric = metricByAs.get(mapping.source.column);
+    if (metric) {
+      return {
+        output: mapping.output,
+        toExpression: (eb: any) => buildMetricExpression(eb, metric, plan.joinPlan.aliases).as(mapping.output),
+      } satisfies SelectionEntry;
+    }
+
+    const groupBy = groupByByColumn.get(mapping.source.column);
+    if (!groupBy) {
+      throw new UnsupportedSingleQueryPlanError(
+        `Unknown aggregate projection source "${mapping.source.column}".`,
+      );
+    }
+
+    const source = resolveColumnRef(plan.joinPlan.aliases, {
+      ...toRef(groupBy.alias ?? groupBy.table, groupBy.column),
+    });
+
+    return {
+      output: mapping.output,
+      toExpression: (eb: any) => eb.ref(source).as(mapping.output),
+    } satisfies SelectionEntry;
+  });
+}
+
+function buildMetricExpression<TContext>(
+  eb: any,
+  metric: Extract<RelNode, { kind: "aggregate" }>["metrics"][number],
+  aliases: Map<string, ScanBinding<TContext>>,
+): any {
+  if (metric.fn === "count" && !metric.column) {
+    return eb.fn.countAll();
+  }
+
+  if (!metric.column) {
+    throw new UnsupportedSingleQueryPlanError(`Aggregate ${metric.fn} requires a column.`);
+  }
+
+  const ref = resolveColumnRef(aliases, {
+    ...toRef(metric.column.alias ?? metric.column.table, metric.column.column),
+  });
+
+  const fn = (eb as { fn?: Record<string, (value: unknown) => any> }).fn;
+  if (!fn) {
+    throw new UnsupportedSingleQueryPlanError("Kysely expression builder does not expose fn helpers.");
+  }
+
+  const fnImpl = fn[metric.fn];
+  if (typeof fnImpl !== "function") {
+    throw new UnsupportedSingleQueryPlanError(`Unsupported aggregate function: ${metric.fn}.`);
+  }
+
+  let expression = fnImpl(eb.ref(ref));
+  if (metric.distinct && expression && typeof expression.distinct === "function") {
+    expression = expression.distinct();
+  }
+
+  return expression;
+}
+
+function resolveSortRef<TContext>(
+  plan: SingleQueryPlan<TContext>,
+  term: Extract<RelNode, { kind: "sort" }>['orderBy'][number],
+): string {
+  if (term.source.alias || term.source.table) {
+    return resolveColumnRef(plan.joinPlan.aliases, {
+      ...toRef(term.source.alias ?? term.source.table, term.source.column),
+    });
+  }
+
+  return term.source.column;
 }

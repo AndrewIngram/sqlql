@@ -10,6 +10,7 @@ export type PhysicalStepKind =
   | "local_filter"
   | "local_project"
   | "local_aggregate"
+  | "local_window"
   | "local_sort"
   | "local_limit_offset";
 
@@ -45,6 +46,7 @@ export interface LocalPhysicalStep extends PhysicalStepBase {
     | "local_filter"
     | "local_project"
     | "local_aggregate"
+    | "local_window"
     | "local_sort"
     | "local_limit_offset";
 }

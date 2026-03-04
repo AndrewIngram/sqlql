@@ -66,11 +66,27 @@ export interface RelProjectNode extends RelNodeBase {
 
 export interface RelJoinNode extends RelNodeBase {
   kind: "join";
-  joinType: "inner" | "left" | "right" | "full";
+  joinType: "inner" | "left" | "right" | "full" | "semi";
   left: RelNode;
   right: RelNode;
   leftKey: RelColumnRef;
   rightKey: RelColumnRef;
+}
+
+export interface RelWindowFunction {
+  fn: "dense_rank" | "rank" | "row_number";
+  as: string;
+  partitionBy: RelColumnRef[];
+  orderBy: Array<{
+    source: RelColumnRef;
+    direction: "asc" | "desc";
+  }>;
+}
+
+export interface RelWindowNode extends RelNodeBase {
+  kind: "window";
+  input: RelNode;
+  functions: RelWindowFunction[];
 }
 
 export interface RelAggregateMetric {
@@ -131,6 +147,7 @@ export type RelNode =
   | RelProjectNode
   | RelJoinNode
   | RelAggregateNode
+  | RelWindowNode
   | RelSortNode
   | RelLimitOffsetNode
   | RelSetOpNode
@@ -163,6 +180,7 @@ export function countRelNodes(node: RelNode): number {
     case "filter":
     case "project":
     case "aggregate":
+    case "window":
     case "sort":
     case "limit_offset":
       return 1 + countRelNodes(node.input);
@@ -194,6 +212,7 @@ export function collectRelTables(node: RelNode): string[] {
       case "filter":
       case "project":
       case "aggregate":
+      case "window":
       case "sort":
       case "limit_offset":
         visit(current.input);
@@ -217,10 +236,46 @@ export function collectRelTables(node: RelNode): string[] {
 }
 
 export function validateRelAgainstSchema(node: RelNode, schema: SchemaDefinition): void {
-  const tables = collectRelTables(node);
-  for (const table of tables) {
-    if (!schema.tables[table]) {
-      throw new Error(`Unknown table in relational plan: ${table}`);
+  const visit = (current: RelNode, cteNames: Set<string>): void => {
+    switch (current.kind) {
+      case "scan":
+        if (!cteNames.has(current.table) && !schema.tables[current.table]) {
+          throw new Error(`Unknown table in relational plan: ${current.table}`);
+        }
+        return;
+      case "sql":
+        for (const table of current.tables) {
+          if (!cteNames.has(table) && !schema.tables[table]) {
+            throw new Error(`Unknown table in relational plan: ${table}`);
+          }
+        }
+        return;
+      case "filter":
+      case "project":
+      case "aggregate":
+      case "window":
+      case "sort":
+      case "limit_offset":
+        visit(current.input, cteNames);
+        return;
+      case "join":
+      case "set_op":
+        visit(current.left, cteNames);
+        visit(current.right, cteNames);
+        return;
+      case "with": {
+        const nextCteNames = new Set(cteNames);
+        for (const cte of current.ctes) {
+          nextCteNames.add(cte.name);
+        }
+        for (const cte of current.ctes) {
+          visit(cte.query, nextCteNames);
+        }
+        visit(current.body, nextCteNames);
+        return;
+      }
     }
-  }
+  };
+
+  visit(node, new Set<string>());
 }

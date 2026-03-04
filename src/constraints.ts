@@ -132,10 +132,7 @@ function collectConstraintViolations(
   }
 
   for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
-    const resolved = resolveColumnDefinition(columnDefinition, {
-      tableQuery: table.query,
-      columnName,
-    });
+    const resolved = resolveColumnDefinition(columnDefinition);
     if (!resolved.enum || !rowsHaveColumn(rows, columnName)) {
       continue;
     }

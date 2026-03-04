@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-
+import { providersFromMethods } from "../support/methods-provider";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
+  scanArrayRows,
+} from "../../src/array-methods";
+
+import {
   defineSchema,
   defineTableMethods,
   query,
-  scanArrayRows,
   type TableAggregateRequest,
   type TableLookupRequest,
   type TableScanRequest,
@@ -58,7 +61,7 @@ describe("query/planner-hooks", () => {
 
     const result = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: `
         SELECT id
@@ -107,7 +110,7 @@ describe("query/planner-hooks", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM orders WHERE status = 'paid'",
       }),
@@ -154,7 +157,7 @@ describe("query/planner-hooks", () => {
 
     const result = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: "SELECT id FROM orders WHERE status = 'paid' AND total_cents > 1500 ORDER BY id ASC",
     });
@@ -207,7 +210,7 @@ describe("query/planner-hooks", () => {
 
     const result = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: `
         SELECT o.id, u.email
@@ -259,7 +262,7 @@ describe("query/planner-hooks", () => {
 
     const result = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: "SELECT SUM(total_cents) AS total FROM orders WHERE status = 'paid'",
     });

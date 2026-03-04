@@ -1,7 +1,7 @@
 {
   "name": "sqlql",
   "version": "0.3.0",
-  "description": "SQL facade runtime with schema + table methods + SQL query execution",
+  "description": "SQL facade runtime with schema + provider-based query execution",
   "homepage": "https://github.com/AndrewIngram/sqlql#readme",
   "bugs": {
     "url": "https://github.com/AndrewIngram/sqlql/issues"
@@ -41,8 +41,12 @@
     "fmt:check": "oxfmt --check",
     "example:build": "pnpm --dir examples/basic build",
     "example:start": "pnpm --dir examples/basic start",
-    "example:drizzle:build": "pnpm build && pnpm --filter @sqlql/drizzle build && pnpm --dir examples/drizzle build",
+    "example:drizzle:build": "pnpm build && pnpm --filter @sqlql/drizzle build && pnpm --dir examples/_shared build && pnpm --dir examples/drizzle build",
     "example:drizzle:start": "pnpm --dir examples/drizzle start",
+    "example:kysely:build": "pnpm build && pnpm --filter @sqlql/kysely build && pnpm --dir examples/_shared build && pnpm --dir examples/kysely build",
+    "example:kysely:start": "pnpm --dir examples/kysely start",
+    "example:objection:build": "pnpm build && pnpm --filter @sqlql/objection build && pnpm --dir examples/_shared build && pnpm --dir examples/objection build",
+    "example:objection:start": "pnpm --dir examples/objection start",
     "example:playground:build": "pnpm --dir examples/playground build",
     "example:playground:start": "pnpm --dir examples/playground start",
     "example:playground:dev": "pnpm --dir examples/playground dev",

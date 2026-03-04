@@ -143,4 +143,138 @@ describe("playground/plan-graph-model", () => {
     const joinNode = model.nodes.find((node) => node.id === "join:uw");
     expect(joinNode?.parentId).toBeUndefined();
   });
+
+  it("repositions root sibling steps to avoid overlapping top-level scope containers", () => {
+    const scopedStep: QueryExecutionPlanStep = {
+      id: "cte:scan",
+      kind: "scan",
+      dependsOn: [],
+      summary: "scan CTE rows",
+      phase: "fetch",
+      operation: { name: "scan" },
+      scopeId: "scope:cte",
+    };
+
+    const siblingStep: QueryExecutionPlanStep = {
+      id: "root:project",
+      kind: "projection",
+      dependsOn: ["cte:scan"],
+      summary: "project root rows",
+      phase: "output",
+      operation: { name: "project" },
+      scopeId: "scope:root",
+    };
+
+    const layout = {
+      steps: [scopedStep, siblingStep],
+      positionsById: new Map([
+        ["cte:scan", { x: 0, y: 0 }],
+        ["root:project", { x: 12, y: 8 }],
+      ]),
+      edges: [{ source: "cte:scan", target: "root:project" }],
+    };
+
+    const model = buildPlanGraphModel(layout, SCOPES, {}, null, null);
+
+    const scopeNode = model.nodes.find((node) => node.id === "scope:cte");
+    const rootNode = model.nodes.find((node) => node.id === "root:project");
+    if (!scopeNode || !rootNode) {
+      throw new Error("Expected scope and root nodes.");
+    }
+
+    const scopeX = scopeNode.position.x;
+    const scopeY = scopeNode.position.y;
+    const scopeWidth = Number(scopeNode.style?.width ?? 0);
+    const scopeHeight = Number(scopeNode.style?.height ?? 0);
+    expect(rootNode.parentId).toBeUndefined();
+
+    const rootRect = {
+      x: rootNode.position.x,
+      y: rootNode.position.y,
+      width: 320,
+      height: 170,
+    };
+    const scopeRect = {
+      x: scopeX,
+      y: scopeY,
+      width: scopeWidth,
+      height: scopeHeight,
+    };
+    const overlap = rootRect.x < scopeRect.x + scopeRect.width &&
+      rootRect.x + rootRect.width > scopeRect.x &&
+      rootRect.y < scopeRect.y + scopeRect.height &&
+      rootRect.y + rootRect.height > scopeRect.y;
+    expect(overlap).toBe(false);
+  });
+
+  it("packs root siblings so they do not overlap each other after scope avoidance", () => {
+    const scopedStep: QueryExecutionPlanStep = {
+      id: "cte:scan",
+      kind: "scan",
+      dependsOn: [],
+      summary: "scan CTE rows",
+      phase: "fetch",
+      operation: { name: "scan" },
+      scopeId: "scope:cte",
+    };
+
+    const rootA: QueryExecutionPlanStep = {
+      id: "window_9",
+      kind: "window",
+      dependsOn: ["cte:scan"],
+      summary: "window",
+      phase: "transform",
+      operation: { name: "window" },
+      scopeId: "scope:root",
+    };
+
+    const rootB: QueryExecutionPlanStep = {
+      id: "projection_12",
+      kind: "projection",
+      dependsOn: ["window_9"],
+      summary: "projection",
+      phase: "output",
+      operation: { name: "project" },
+      scopeId: "scope:root",
+    };
+
+    const layout = {
+      steps: [scopedStep, rootA, rootB],
+      positionsById: new Map([
+        ["cte:scan", { x: 0, y: 0 }],
+        ["window_9", { x: 20, y: 240 }],
+        ["projection_12", { x: 40, y: 280 }],
+      ]),
+      edges: [
+        { source: "cte:scan", target: "window_9" },
+        { source: "window_9", target: "projection_12" },
+      ],
+    };
+
+    const model = buildPlanGraphModel(layout, SCOPES, {}, null, null);
+    const nodeA = model.nodes.find((node) => node.id === "window_9");
+    const nodeB = model.nodes.find((node) => node.id === "projection_12");
+    if (!nodeA || !nodeB) {
+      throw new Error("Expected root sibling nodes.");
+    }
+
+    const aRect = {
+      x: nodeA.position.x,
+      y: nodeA.position.y,
+      width: 320,
+      height: 170,
+    };
+    const bRect = {
+      x: nodeB.position.x,
+      y: nodeB.position.y,
+      width: 320,
+      height: 170,
+    };
+
+    const overlap = aRect.x < bRect.x + bRect.width &&
+      aRect.x + aRect.width > bRect.x &&
+      aRect.y < bRect.y + bRect.height &&
+      aRect.y + aRect.height > bRect.y;
+    expect(overlap).toBe(false);
+  });
 });

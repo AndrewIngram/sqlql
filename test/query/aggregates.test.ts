@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
+import { aggregateArrayRows, createArrayTableMethods } from "../../src/array-methods";
 
 import {
-  aggregateArrayRows,
-  createArrayTableMethods,
   defineSchema,
   defineTableMethods,
   type TableAggregateRequest,
@@ -32,7 +32,7 @@ describe("query/aggregates", () => {
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
-        methods,
+        providers: providersFromMethods(methods),
       },
       async (harness) => {
         const routeSql = `

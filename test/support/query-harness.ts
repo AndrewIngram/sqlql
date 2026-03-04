@@ -1,14 +1,17 @@
 import Database from "better-sqlite3";
 
 import {
-  createArrayTableMethods,
-  defineTableMethods,
+  defineProviders,
   query,
   toSqlDDL,
+  type ProviderAdapter,
+  type ProviderFragment,
+  type ProvidersMap,
   type QueryRow,
+  type ScanFilterClause,
   type SchemaDefinition,
-  type TableMethodsForSchema,
   type TableName,
+  type TableScanRequest,
 } from "../../src";
 
 export type RowsByTable<TSchema extends SchemaDefinition> = {
@@ -17,7 +20,7 @@ export type RowsByTable<TSchema extends SchemaDefinition> = {
 
 export interface QueryHarness<TSchema extends SchemaDefinition, TContext> {
   schema: TSchema;
-  methods: TableMethodsForSchema<TSchema, TContext>;
+  providers: Record<string, ProviderAdapter<TContext>>;
   runSqlql: (sql: string, context: TContext) => Promise<QueryRow[]>;
   runSqlite: (sql: string) => QueryRow[];
   runAgainstBoth: (
@@ -33,27 +36,24 @@ export function createQueryHarness<
 >(options: {
   schema: TSchema;
   rowsByTable: RowsByTable<TSchema>;
-  methods?: TableMethodsForSchema<TSchema, TContext>;
+  providers?: ProvidersMap<TContext>;
 }): QueryHarness<TSchema, TContext> {
-  const { schema, rowsByTable } = options;
-  const controlDb = createControlDatabase(schema, rowsByTable);
+  const schema = ensureSchemaProviders(options.schema, "memory");
+  const rowsByTable = options.rowsByTable as Record<string, QueryRow[]>;
+  const controlDb = createControlDatabase(schema, options.rowsByTable);
 
-  const methods =
-    options.methods ??
-    defineTableMethods(
-      schema,
-      Object.fromEntries(
-        Object.entries(rowsByTable).map(([table, rows]) => [table, createArrayTableMethods(rows)]),
-      ) as TableMethodsForSchema<TSchema, TContext>,
-    );
+  const providers = options.providers ??
+    defineProviders({
+      memory: createMemoryProvider<TContext>(rowsByTable),
+    });
 
   return {
     schema,
-    methods,
+    providers,
     runSqlql: (sql, context) =>
       query({
         schema,
-        methods,
+        providers,
         context,
         sql,
       }),
@@ -61,7 +61,7 @@ export function createQueryHarness<
     runAgainstBoth: async (sql, context) => {
       const actual = await query({
         schema,
-        methods,
+        providers,
         context,
         sql,
       });
@@ -83,11 +83,11 @@ export async function withQueryHarness<
   options: {
     schema: TSchema;
     rowsByTable: RowsByTable<TSchema>;
-    methods?: TableMethodsForSchema<TSchema, TContext>;
+    providers?: ProvidersMap<TContext>;
   },
   fn: (harness: QueryHarness<TSchema, TContext>) => Promise<TResult>,
 ): Promise<TResult> {
-  const harness = createQueryHarness(options);
+  const harness = createQueryHarness<TSchema, TContext>(options);
 
   try {
     return await fn(harness);
@@ -139,4 +139,175 @@ function normalizeSqliteValue(value: unknown): unknown {
   }
 
   return value ?? null;
+}
+
+function ensureSchemaProviders<TSchema extends SchemaDefinition>(
+  schema: TSchema,
+  provider: string,
+): TSchema {
+  const tables = Object.fromEntries(
+    Object.entries(schema.tables).map(([tableName, table]) => {
+      if (table.provider && table.provider.length > 0) {
+        return [tableName, table];
+      }
+      return [
+        tableName,
+        {
+          ...table,
+          provider,
+        },
+      ];
+    }),
+  ) as TSchema["tables"];
+
+  return {
+    ...schema,
+    tables,
+  };
+}
+
+function createMemoryProvider<TContext>(
+  rowsByTable: Record<string, QueryRow[]>,
+): ProviderAdapter<TContext> {
+  return {
+    canExecute(fragment) {
+      return fragment.kind === "scan";
+    },
+    async compile(fragment) {
+      if (fragment.kind !== "scan") {
+        throw new Error(`Unsupported memory provider fragment: ${fragment.kind}`);
+      }
+      return {
+        provider: "memory",
+        kind: "scan",
+        payload: fragment,
+      };
+    },
+    async execute(plan) {
+      if (plan.kind !== "scan") {
+        throw new Error(`Unsupported memory provider compiled plan: ${plan.kind}`);
+      }
+
+      const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
+      return scanRows(rowsByTable[fragment.table] ?? [], fragment.request);
+    },
+    async lookupMany(request) {
+      const scanRequest: TableScanRequest = {
+        table: request.table,
+        select: request.select,
+        where: [
+          ...(request.where ?? []),
+          {
+            op: "in",
+            column: request.key,
+            values: request.keys,
+          } as ScanFilterClause,
+        ],
+      };
+
+      return scanRows(rowsByTable[request.table] ?? [], scanRequest);
+    },
+  };
+}
+
+function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
+  let out = rows.filter((row) => matchesFilters(row, request.where ?? []));
+
+  if (request.orderBy && request.orderBy.length > 0) {
+    out = [...out].sort((left, right) => {
+      for (const term of request.orderBy ?? []) {
+        const leftValue = left[term.column] ?? null;
+        const rightValue = right[term.column] ?? null;
+        if (leftValue === rightValue) {
+          continue;
+        }
+
+        if (leftValue == null) {
+          return term.direction === "asc" ? -1 : 1;
+        }
+        if (rightValue == null) {
+          return term.direction === "asc" ? 1 : -1;
+        }
+
+        const comparison = String(leftValue).localeCompare(String(rightValue));
+        if (comparison !== 0) {
+          return term.direction === "asc" ? comparison : -comparison;
+        }
+      }
+
+      return 0;
+    });
+  }
+
+  if (request.offset != null) {
+    out = out.slice(request.offset);
+  }
+
+  if (request.limit != null) {
+    out = out.slice(0, request.limit);
+  }
+
+  return out.map((row) => {
+    const projected: QueryRow = {};
+    for (const column of request.select) {
+      projected[column] = row[column] ?? null;
+    }
+    return projected;
+  });
+}
+
+function matchesFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {
+  for (const clause of filters) {
+    const value = row[clause.column];
+
+    switch (clause.op) {
+      case "eq":
+        if (value !== clause.value) {
+          return false;
+        }
+        break;
+      case "neq":
+        if (value === clause.value) {
+          return false;
+        }
+        break;
+      case "gt":
+        if (value == null || clause.value == null || Number(value) <= Number(clause.value)) {
+          return false;
+        }
+        break;
+      case "gte":
+        if (value == null || clause.value == null || Number(value) < Number(clause.value)) {
+          return false;
+        }
+        break;
+      case "lt":
+        if (value == null || clause.value == null || Number(value) >= Number(clause.value)) {
+          return false;
+        }
+        break;
+      case "lte":
+        if (value == null || clause.value == null || Number(value) > Number(clause.value)) {
+          return false;
+        }
+        break;
+      case "in":
+        if (!clause.values.includes(value)) {
+          return false;
+        }
+        break;
+      case "is_null":
+        if (value != null) {
+          return false;
+        }
+        break;
+      case "is_not_null":
+        if (value == null) {
+          return false;
+        }
+        break;
+    }
+  }
+
+  return true;
 }

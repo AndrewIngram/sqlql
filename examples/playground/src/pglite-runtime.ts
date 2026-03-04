@@ -6,7 +6,6 @@ import type {
   ExecutedKvLookupProviderOperation,
   ExecutedProviderOperation,
   ExecutedSqlProviderOperation,
-  ExecutedSqlQuery,
 } from "./types";
 import {
   orderItemsTable,
@@ -186,7 +185,7 @@ async function createRuntime(): Promise<PlaygroundPgliteRuntime> {
 
 async function loadPGliteConstructor(): Promise<PGliteConstructor> {
   pgliteCtorPromise ??= (async () => {
-    const preferCdn = typeof window !== "undefined";
+    const preferCdn = typeof globalThis === "object" && "document" in globalThis;
     if (preferCdn) {
       try {
         const cdnModule = await import(/* @vite-ignore */ PGLITE_CDN_URL);
@@ -259,26 +258,4 @@ export function clearExecutedProviderOperations(): void {
 
 export function getExecutedProviderOperations(): ExecutedProviderOperation[] {
   return [...executedProviderOperations];
-}
-
-/**
- * @deprecated Use clearExecutedProviderOperations().
- */
-export function clearExecutedSqlQueries(): void {
-  clearExecutedProviderOperations();
-}
-
-/**
- * @deprecated Use getExecutedProviderOperations().
- */
-export function getExecutedSqlQueries(): ExecutedSqlQuery[] {
-  return getExecutedProviderOperations()
-    .filter((entry): entry is ExecutedSqlProviderOperation => entry.kind === "sql_query")
-    .map((entry) => ({
-      id: entry.id,
-      timestamp: entry.timestamp,
-      provider: entry.provider,
-      sql: entry.sql,
-      params: entry.variables,
-    }));
 }

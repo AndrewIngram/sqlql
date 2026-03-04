@@ -18,11 +18,7 @@ describe("playground/preset-queries", () => {
           query.sql,
         );
 
-        expect(
-          compiled.ok,
-          `[${scenario.id}] ${query.label} should compile`,
-        ).toBe(true);
-
+        expect(compiled.ok, `[${scenario.id}] ${query.label} compile mismatch`).toBe(true);
         if (!compiled.ok) {
           continue;
         }

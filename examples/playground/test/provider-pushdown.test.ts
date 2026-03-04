@@ -18,8 +18,13 @@ describe("playground/provider-pushdown", () => {
     const pushdownPresetIds = [
       "orders_with_vendors",
       "vendor_spend",
+      "items_with_products",
+      "top_products",
       "status_distinct",
       "paid_orders",
+      "preferred_vendor_orders",
+      "activity_union",
+      "vendor_rank",
     ] as const;
 
     for (const presetId of pushdownPresetIds) {
@@ -49,21 +54,36 @@ describe("playground/provider-pushdown", () => {
       });
 
       const snapshot = await runSessionToCompletion(bundle.session, []);
-      expect(snapshot.executedOperations).toHaveLength(1);
+      expect(
+        snapshot.executedOperations.length,
+        `${presetId} should execute as a single provider operation`,
+      ).toBe(1);
       expect(snapshot.executedOperations[0]?.kind).toBe("sql_query");
       expect(snapshot.executedOperations[0]?.provider).toBe("dbProvider");
       const sqlText = snapshot.executedOperations[0]?.kind === "sql_query"
         ? snapshot.executedOperations[0].sql.toLowerCase()
         : "";
-      if (presetId === "orders_with_vendors" || presetId === "vendor_spend") {
+      if (
+        presetId === "orders_with_vendors" ||
+        presetId === "vendor_spend" ||
+        presetId === "items_with_products" ||
+        presetId === "top_products"
+      ) {
         expect(sqlText).toContain(" join ");
       }
-      if (presetId === "vendor_spend") {
+      if (presetId === "vendor_spend" || presetId === "top_products") {
         expect(sqlText).toContain("group by");
       }
       if (presetId === "status_distinct") {
         expect(sqlText).toContain("select distinct");
         expect(sqlText).toContain("order by");
+      }
+      if (presetId === "activity_union") {
+        expect(sqlText).toContain("union all");
+      }
+      if (presetId === "vendor_rank") {
+        expect(sqlText).toContain("with");
+        expect(sqlText).toContain("dense_rank");
       }
     }
   });

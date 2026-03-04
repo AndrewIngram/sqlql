@@ -33,17 +33,6 @@ export type ExecutedProviderOperation =
   | ExecutedSqlProviderOperation
   | ExecutedKvLookupProviderOperation;
 
-/**
- * @deprecated Use ExecutedProviderOperation.
- */
-export interface ExecutedSqlQuery {
-  sql: string;
-  params: unknown[];
-  provider: string;
-  id: string;
-  timestamp: number;
-}
-
 export type DownstreamRows = Record<string, Array<Record<string, unknown>>>;
 
 export interface PlaygroundQueryPreset {

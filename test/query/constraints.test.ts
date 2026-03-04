@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
 
 import { defineSchema, defineTableMethods, query, type ConstraintViolation } from "../../src";
 
@@ -41,7 +42,7 @@ describe("query/constraints", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, email FROM users",
         constraintValidation: {
@@ -85,7 +86,7 @@ describe("query/constraints", () => {
     const violations: ConstraintViolation[] = [];
     const rows = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: "SELECT id, email FROM users",
       constraintValidation: {
@@ -125,7 +126,7 @@ describe("query/constraints", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, email FROM users",
         constraintValidation: {
@@ -166,7 +167,7 @@ describe("query/constraints", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, email FROM users",
         constraintValidation: {
@@ -209,7 +210,7 @@ describe("query/constraints", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, email FROM users",
         constraintValidation: {
@@ -245,7 +246,7 @@ describe("query/constraints", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, email FROM users",
         constraintValidation: {
@@ -307,7 +308,7 @@ describe("query/constraints", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, user_id FROM orders",
         constraintValidation: {

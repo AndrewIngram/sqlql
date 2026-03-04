@@ -201,10 +201,7 @@ function isColumnAllowedInClause(
     return false;
   }
 
-  const resolved = resolveColumnDefinition(rawColumn, {
-    tableQuery: table.query,
-    columnName,
-  });
+  const resolved = resolveColumnDefinition(rawColumn);
 
   if (clauseContext === "where") {
     return resolved.filterable;

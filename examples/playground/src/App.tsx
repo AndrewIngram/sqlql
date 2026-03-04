@@ -70,7 +70,6 @@ import {
   isColumnNullable,
   readColumnEnumValues,
   readColumnType,
-  type DownstreamRows,
   type PlaygroundContext,
   type SchemaParseResult,
 } from "@/types";
@@ -1049,7 +1048,7 @@ export function App(): React.JSX.Element {
   const defaultQuery = QUERY_PRESETS.find((query) => query.id === DEFAULT_QUERY_ID) ??
     QUERY_PRESETS[0];
 
-  const [activeScenarioId, setActiveScenarioId] = useState(defaultScenario?.id ?? CUSTOM_SCENARIO_ID);
+  const [, setActiveScenarioId] = useState(defaultScenario?.id ?? CUSTOM_SCENARIO_ID);
   const [activeTopTab, setActiveTopTab] = useState<TopTab>("postgres");
   const [activeSchemaTab, setActiveSchemaTab] = useState<SchemaTab>("diagram");
   const [activeQueryTab, setActiveQueryTab] = useState<QueryTab>("result");
@@ -1284,10 +1283,6 @@ export function App(): React.JSX.Element {
     return buildPostgresDdlFromRows(downstreamStructureRowsByTable);
   }, [downstreamStructureRowsByTable]);
 
-  const schemaTableNames = useMemo(
-    () => (schemaParse.ok && schemaParse.schema ? Object.keys(schemaParse.schema.tables) : []),
-    [schemaParse],
-  );
   const downstreamTableNames = useMemo(
     () => [...DOWNSTREAM_TABLE_NAMES, KV_DATA_TABLE_NAME],
     [],
@@ -1631,37 +1626,6 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     applySqlMarkers();
   }, [applySqlMarkers]);
-
-  const applyScenario = (scenarioId: string): void => {
-    const scenario = SCENARIO_PRESETS.find((candidate) => candidate.id === scenarioId);
-    if (!scenario) {
-      return;
-    }
-
-    const tableNames = Object.keys(FACADE_SCHEMA.tables);
-    const firstTable = tableNames[0] ?? null;
-
-    const defaultScenarioQuery = QUERY_PRESETS.find((query) => query.id === scenario.defaultQueryId);
-
-    setActiveScenarioId(scenario.id);
-    setSchemaCodeText(DEFAULT_FACADE_SCHEMA_CODE);
-    setProviderCodeText(DEFAULT_DB_PROVIDER_CODE);
-    setKvProviderCodeText(DEFAULT_KV_PROVIDER_CODE);
-    setRowsJsonText(serializeJson(scenario.rows));
-    setOrgId(scenario.context.orgId);
-    setUserId(scenario.context.userId);
-    if (defaultScenarioQuery) {
-      setSqlText(defaultScenarioQuery.sql);
-      setSelectedCatalogQueryId(defaultScenarioQuery.id);
-    }
-    setSelectedSchemaTable(firstTable);
-    setSelectedDataTable(DOWNSTREAM_TABLE_NAMES[0] ?? null);
-    setSelectedDataRowIndex(0);
-    setPostgresWorkspaceMode("data");
-    setActiveSchemaSourceTab("schema");
-    setDownstreamStructureRowsByTable(buildEditableStructureRows(DOWNSTREAM_ROWS_SCHEMA));
-    setSelectedStepId(null);
-  };
 
   const markScenarioCustom = (): void => {
     setActiveScenarioId((current) =>

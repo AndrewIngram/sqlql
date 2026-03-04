@@ -8,13 +8,10 @@ import {
 import type { SchemaParseResult } from "../src/types";
 
 describe("playground/query-compatibility", () => {
-  it("marks every preset query as compatible with the facade schema", () => {
+  it("marks all shipped presets as compatible", () => {
     for (const query of QUERY_PRESETS) {
       const result = checkQueryCompatibility(FACADE_SCHEMA, query.sql);
-      expect(
-        result.compatible,
-        `${query.label} should be compatible`,
-      ).toBe(true);
+      expect(result.compatible, `${query.label} compatibility mismatch`).toBe(true);
     }
   });
 

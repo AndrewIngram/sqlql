@@ -78,11 +78,6 @@ export interface TableQueryOverrides {
   maxRows?: number | null;
   reject?: TableQueryRejectPolicy;
   fallback?: TableQueryFallbackPolicy;
-
-  /** @deprecated Use per-column `filterable` instead. */
-  filterable?: "all" | string[];
-  /** @deprecated Use per-column `sortable` instead. */
-  sortable?: "all" | string[];
 }
 
 export interface PrimaryKeyConstraint {
@@ -135,7 +130,6 @@ export interface TableConstraints {
 export interface TableDefinition {
   /**
    * Provider binding used by the provider-first planner/executor.
-   * Optional for legacy table-method based flows.
    */
   provider?: string;
   columns: TableColumns;
@@ -337,9 +331,6 @@ export interface NormalizedPhysicalTableBinding {
   provider?: string;
   entity: string;
   columnBindings: Record<string, NormalizedColumnBinding>;
-  /**
-   * @deprecated Use columnBindings.
-   */
   columnToSource: Record<string, string>;
 }
 
@@ -347,9 +338,6 @@ export interface NormalizedViewTableBinding<TContext = unknown> {
   kind: "view";
   rel: (context: TContext) => SchemaViewRelNode | unknown;
   columnBindings: Record<string, NormalizedColumnBinding>;
-  /**
-   * @deprecated Use columnBindings.
-   */
   columnToSource: Record<string, string>;
 }
 
@@ -437,8 +425,6 @@ export const DEFAULT_QUERY_BEHAVIOR: ResolvedTableQueryBehavior = {
   },
 };
 
-const warnedDeprecatedQueryCapabilities = new Set<string>();
-
 export function defineSchema<TContext>(
   schemaBuilder: (helpers: SchemaDslHelpers<TContext>) => SchemaDslDefinition<TContext>,
 ): SchemaDefinition;
@@ -453,7 +439,6 @@ export function defineSchema<TSchema extends SchemaDefinition, TContext>(
   attachIdentityBindingsIfMissing(schema);
   validateTableProviders(schema);
   validateSchemaConstraints(schema);
-  warnDeprecatedQueryCapabilities(schema);
   return schema;
 }
 
@@ -1478,10 +1463,7 @@ export function toSqlDDL(schema: SchemaDefinition, options: SqlDdlOptions = {}):
     }
 
     const definitionLines = columnEntries.map(([columnName, columnDefinition]) => {
-      const resolved = resolveColumnDefinition(columnDefinition, {
-        tableQuery: table.query,
-        columnName,
-      });
+      const resolved = resolveColumnDefinition(columnDefinition);
       const nullability = resolved.nullable ? "" : " NOT NULL";
       const metadataComment = renderColumnMetadataComment(resolved);
       return `  ${escapeIdentifier(columnName)} ${toSqlType(resolved.type)}${nullability}${metadataComment}`;
@@ -1686,10 +1668,7 @@ function buildCheckConstraints(tableName: string, table: TableDefinition): Check
   const checks: CheckConstraintForDDL[] = [];
 
   for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
-    const resolved = resolveColumnDefinition(columnDefinition, {
-      tableQuery: table.query,
-      columnName,
-    });
+    const resolved = resolveColumnDefinition(columnDefinition);
     if (resolved.enum && resolved.enum.length > 0) {
       checks.push({
         name: `${tableName}_${columnName}_enum_check`,
@@ -1758,30 +1737,15 @@ export interface ResolvedColumnDefinition {
   description?: string;
 }
 
-interface ResolveColumnContext {
-  tableQuery?: TableQueryOverrides | undefined;
-  columnName?: string | undefined;
-}
-
 export function resolveColumnDefinition(
   definition: TableColumnDefinition,
-  context: ResolveColumnContext = {},
 ): ResolvedColumnDefinition {
-  const legacyFilterable = resolveLegacyColumnCapability(
-    context.tableQuery?.filterable,
-    context.columnName,
-  );
-  const legacySortable = resolveLegacyColumnCapability(
-    context.tableQuery?.sortable,
-    context.columnName,
-  );
-
   if (typeof definition === "string") {
     return {
       type: definition,
       nullable: true,
-      filterable: legacyFilterable ?? true,
-      sortable: legacySortable ?? true,
+      filterable: true,
+      sortable: true,
       primaryKey: false,
       unique: false,
     };
@@ -1792,8 +1756,8 @@ export function resolveColumnDefinition(
   return {
     type: definition.type,
     nullable: definition.nullable ?? true,
-    filterable: definition.filterable ?? legacyFilterable ?? true,
-    sortable: definition.sortable ?? legacySortable ?? true,
+    filterable: definition.filterable ?? true,
+    sortable: definition.sortable ?? true,
     primaryKey: definition.primaryKey === true,
     unique: definition.unique === true,
     ...(definition.enum ? { enum: definition.enum } : {}),
@@ -1831,10 +1795,7 @@ export function resolveTableColumnDefinition(
     throw new Error(`Unknown column ${tableName}.${columnName}`);
   }
 
-  return resolveColumnDefinition(column, {
-    tableQuery: table.query,
-    columnName,
-  });
+  return resolveColumnDefinition(column);
 }
 
 export interface EnumLinkReference {
@@ -1871,10 +1832,7 @@ export function resolveSchemaLinkedEnums(
         continue;
       }
 
-      const resolved = resolveColumnDefinition(columnDefinition, {
-        tableQuery: table.query,
-        columnName,
-      });
+      const resolved = resolveColumnDefinition(columnDefinition);
       if (!resolved.enumFrom) {
         columns[columnName] = columnDefinition;
         continue;
@@ -1960,7 +1918,6 @@ export function resolveSchemaLinkedEnums(
   attachIdentityBindingsIfMissing(resolvedSchema);
   validateTableProviders(resolvedSchema);
   validateSchemaConstraints(resolvedSchema);
-  warnDeprecatedQueryCapabilities(resolvedSchema);
   return resolvedSchema;
 }
 
@@ -1995,26 +1952,8 @@ function defaultResolveLinkedEnumValues(
     return undefined;
   }
 
-  const resolved = resolveColumnDefinition(columnDefinition, {
-    tableQuery: table.query,
-    columnName: ref.column,
-  });
+  const resolved = resolveColumnDefinition(columnDefinition);
   return resolved.enum;
-}
-
-function resolveLegacyColumnCapability(
-  configured: "all" | string[] | undefined,
-  columnName: string | undefined,
-): boolean | undefined {
-  if (!configured || !columnName) {
-    return undefined;
-  }
-
-  if (configured === "all") {
-    return true;
-  }
-
-  return configured.includes(columnName);
 }
 
 export function resolveColumnType(definition: TableColumnDefinition): SqlScalarType {
@@ -2036,10 +1975,7 @@ function renderConstraintPrefix(name: string | undefined): string {
 function validateSchemaConstraints(schema: SchemaDefinition): void {
   for (const [tableName, table] of Object.entries(schema.tables)) {
     for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
-      const resolved = resolveColumnDefinition(columnDefinition, {
-        tableQuery: table.query,
-        columnName,
-      });
+      const resolved = resolveColumnDefinition(columnDefinition);
       validateColumnDefinition(tableName, columnName, resolved);
     }
 
@@ -2158,20 +2094,6 @@ function validateTableQueryPolicy(
       throw new Error(
         `Invalid reject policy on ${tableName}: required filter column "${columnName}" does not exist on table "${tableName}".`,
       );
-    }
-  }
-
-  for (const deprecatedKey of ["filterable", "sortable"] as const) {
-    const deprecatedValue = table.query?.[deprecatedKey];
-    if (!Array.isArray(deprecatedValue)) {
-      continue;
-    }
-    for (const columnName of deprecatedValue) {
-      if (!(columnName in table.columns)) {
-        throw new Error(
-          `Invalid query.${deprecatedKey} on ${tableName}: column "${columnName}" does not exist on table "${tableName}".`,
-        );
-      }
     }
   }
 
@@ -2308,22 +2230,5 @@ function validateNoDuplicateColumns(tableName: string, label: string, columns: s
       );
     }
     seen.add(column);
-  }
-}
-
-function warnDeprecatedQueryCapabilities(schema: SchemaDefinition): void {
-  for (const [tableName, table] of Object.entries(schema.tables)) {
-    if (table.query?.filterable == null && table.query?.sortable == null) {
-      continue;
-    }
-
-    if (warnedDeprecatedQueryCapabilities.has(tableName)) {
-      continue;
-    }
-
-    warnedDeprecatedQueryCapabilities.add(tableName);
-    console.warn(
-      `Deprecated schema query capability fields used on table ${tableName}: query.filterable/query.sortable are deprecated; use per-column filterable/sortable instead.`,
-    );
   }
 }

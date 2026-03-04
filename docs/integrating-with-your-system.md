@@ -8,6 +8,8 @@ This guide covers the provider-first runtime in `sqlql` v1.
 2. `defineProviders(...)` with one adapter per provider name.
 3. `query({ schema, providers, context, sql, queryGuardrails? })`.
 
+`query` / `createQuerySession` are providers-only in v1; legacy `methods` execution is not part of the runtime path.
+
 You can also use source-neutral entity handles (`createDataEntityHandle`) and map logical SQL tables
 to provider-owned entities via the schema DSL (`table({ from, columns })`).
 When using the DSL callback form, `table(...)` values can be reused as typed references in
@@ -22,6 +24,8 @@ A provider implements:
 - `execute(compiled, context)`
 - optional `lookupMany(request, context)`
 - optional `estimate(fragment, context)`
+
+Provider fragments are `rel`, `scan`, and `aggregate` (no `sql_query` fragment kind).
 
 Source-neutral naming:
 
@@ -91,6 +95,17 @@ const rows = await query({
 - `@sqlql/kysely`
 
 These implement the same provider contract with backend-specific execution behavior.
+
+Adapter example commands:
+
+```bash
+pnpm example:drizzle:build
+pnpm example:drizzle:start
+pnpm example:kysely:build
+pnpm example:kysely:start
+pnpm example:objection:build
+pnpm example:objection:start
+```
 
 ## Facade-over-downstream pattern
 

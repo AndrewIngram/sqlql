@@ -14,6 +14,8 @@ const SCOPE_PADDING_TOP = 34;
 const SCOPE_PADDING_BOTTOM = 18;
 const MIN_SCOPE_WIDTH = NODE_WIDTH + 40;
 const MIN_SCOPE_HEIGHT = NODE_HEIGHT + SCOPE_PADDING_TOP + SCOPE_PADDING_BOTTOM;
+const ROOT_STEP_CLEARANCE_X = 36;
+const ROOT_STEP_CLEARANCE_Y = 32;
 
 interface LayoutPosition {
   x: number;
@@ -25,6 +27,20 @@ interface Rect {
   y: number;
   width: number;
   height: number;
+}
+
+function rectOverlapsWithClearance(
+  candidate: Rect,
+  blocker: Rect,
+  clearanceX: number,
+  clearanceY: number,
+): boolean {
+  return (
+    candidate.x < blocker.x + blocker.width + clearanceX &&
+    candidate.x + candidate.width > blocker.x - clearanceX &&
+    candidate.y < blocker.y + blocker.height + clearanceY &&
+    candidate.y + candidate.height > blocker.y - clearanceY
+  );
 }
 
 export interface PlanNodeData extends Record<string, unknown> {
@@ -319,6 +335,75 @@ export function buildPlanGraphModel(
     return undefined;
   };
 
+  const parentScopeByStepId = new Map<string, string | undefined>();
+  for (const step of layout.steps) {
+    parentScopeByStepId.set(step.id, resolveVisibleScopeId(step.scopeId));
+  }
+
+  const topLevelScopeRects = [...scopeBoundsById.entries()]
+    .filter(([scopeId]) => !visibleParentById.get(scopeId))
+    .map(([, rect]) => rect)
+    .sort((left, right) => left.x - right.x);
+
+  const adjustedPositionsById = new Map(layout.positionsById);
+  const rootSteps = layout.steps
+    .filter((step) => !parentScopeByStepId.get(step.id))
+    .sort((left, right) => {
+      const leftPos = layout.positionsById.get(left.id) ?? { x: 0, y: 0 };
+      const rightPos = layout.positionsById.get(right.id) ?? { x: 0, y: 0 };
+      if (leftPos.x !== rightPos.x) {
+        return leftPos.x - rightPos.x;
+      }
+      if (leftPos.y !== rightPos.y) {
+        return leftPos.y - rightPos.y;
+      }
+      return left.id.localeCompare(right.id);
+    });
+
+  const blockedRects: Rect[] = [...topLevelScopeRects];
+  for (const step of rootSteps) {
+    const position = adjustedPositionsById.get(step.id) ?? { x: 0, y: 0 };
+    const rect: Rect = {
+      x: position.x,
+      y: position.y,
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+    };
+
+    let guard = 0;
+    while (guard < 120) {
+      const scopeBlocker = topLevelScopeRects.find((blocked) =>
+        rectOverlapsWithClearance(
+          rect,
+          blocked,
+          ROOT_STEP_CLEARANCE_X,
+          ROOT_STEP_CLEARANCE_Y,
+        ));
+      if (scopeBlocker) {
+        rect.y = scopeBlocker.y + scopeBlocker.height + ROOT_STEP_CLEARANCE_Y;
+        guard += 1;
+        continue;
+      }
+
+      const siblingBlocker = blockedRects.find((blocked) =>
+        rectOverlapsWithClearance(
+          rect,
+          blocked,
+          ROOT_STEP_CLEARANCE_X,
+          ROOT_STEP_CLEARANCE_Y,
+        ));
+      if (!siblingBlocker) {
+        break;
+      }
+
+      rect.x = siblingBlocker.x + siblingBlocker.width + ROOT_STEP_CLEARANCE_X;
+      guard += 1;
+    }
+
+    adjustedPositionsById.set(step.id, { x: rect.x, y: rect.y });
+    blockedRects.push({ ...rect });
+  }
+
   const depthCache = new Map<string, number>();
   const depthOf = (scopeId: string): number => {
     const cached = depthCache.get(scopeId);
@@ -379,8 +464,8 @@ export function buildPlanGraphModel(
   }
 
   const nodes: Array<Node<PlanGraphNodeData>> = layout.steps.map((step) => {
-    const absolutePosition = layout.positionsById.get(step.id) ?? { x: 0, y: 0 };
-    const parentScopeId = resolveVisibleScopeId(step.scopeId);
+    const absolutePosition = adjustedPositionsById.get(step.id) ?? { x: 0, y: 0 };
+    const parentScopeId = parentScopeByStepId.get(step.id);
     const parentRect = parentScopeId ? scopeBoundsById.get(parentScopeId) : undefined;
     const position = parentRect
       ? {

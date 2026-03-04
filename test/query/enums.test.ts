@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
+import { createArrayTableMethods } from "../../src/array-methods";
 
-import { createArrayTableMethods, defineSchema, defineTableMethods, query } from "../../src";
+import { defineSchema, defineTableMethods, query } from "../../src";
 
 const EMPTY_CONTEXT = {} as const;
 
@@ -24,7 +26,7 @@ describe("query/enums", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM orders WHERE status = 'unknown'",
       }),
@@ -50,7 +52,7 @@ describe("query/enums", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM orders WHERE status IN ('paid', 'unknown')",
       }),
@@ -83,7 +85,7 @@ describe("query/enums", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, status FROM orders",
         constraintValidation: {
@@ -125,7 +127,7 @@ describe("query/enums", () => {
     await expect(
       query({
         schema,
-        methods,
+        providers: providersFromMethods(methods),
         context: EMPTY_CONTEXT,
         sql: "SELECT id, amount_due FROM invoices",
         constraintValidation: {

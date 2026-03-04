@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { providersFromMethods } from "../support/methods-provider";
+import { createArrayTableMethods } from "../../src/array-methods";
 
 import {
-  createArrayTableMethods,
   createQuerySession,
   defineTableMethods,
 } from "../../src";
@@ -135,7 +136,7 @@ describe("query/subqueries", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -204,7 +205,7 @@ describe("query/subqueries", () => {
 
     const session = createQuerySession({
       schema: commerceSchema,
-      methods,
+      providers: providersFromMethods(methods),
       context: EMPTY_CONTEXT,
       sql: `
         SELECT id, (SELECT MAX(total_cents) FROM orders) AS max_total

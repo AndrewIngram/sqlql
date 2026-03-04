@@ -311,9 +311,6 @@ const productViewCounts = createDataEntityHandle<"product_id" | "view_count">({
 });
 
 export const kvProvider = {
-  tables: {
-    product_view_counts: productViewCounts,
-  },
   entities: {
     product_view_counts: productViewCounts,
   },
@@ -327,11 +324,11 @@ import { kvProvider } from "${KV_PROVIDER_MODULE_ID}";
 
 export const schema = defineSchema(({ table, view, rel, expr, col }) => {
   const myOrders = table({
-    from: dbProvider.tables.my_orders,
+    from: dbProvider.entities.my_orders,
     columns: {
-      id: { source: col(dbProvider.tables.my_orders, "id"), type: "text", nullable: false, primaryKey: true },
+      id: { source: col(dbProvider.entities.my_orders, "id"), type: "text", nullable: false, primaryKey: true },
       vendor_id: {
-        source: col(dbProvider.tables.my_orders, "vendor_id"),
+        source: col(dbProvider.entities.my_orders, "vendor_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -339,18 +336,18 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      status: { source: col(dbProvider.tables.my_orders, "status"), type: "text", nullable: false, enum: ["pending", "paid", "shipped"] as const },
-      total_cents: { source: col(dbProvider.tables.my_orders, "total_cents"), type: "integer", nullable: false },
-      created_at: { source: col(dbProvider.tables.my_orders, "created_at"), type: "timestamp", nullable: false },
+      status: { source: col(dbProvider.entities.my_orders, "status"), type: "text", nullable: false, enum: ["pending", "paid", "shipped"] as const },
+      total_cents: { source: col(dbProvider.entities.my_orders, "total_cents"), type: "integer", nullable: false },
+      created_at: { source: col(dbProvider.entities.my_orders, "created_at"), type: "timestamp", nullable: false },
     },
   });
 
   const myOrderItems = table({
-    from: dbProvider.tables.my_order_items,
+    from: dbProvider.entities.my_order_items,
     columns: {
-      id: { source: col(dbProvider.tables.my_order_items, "id"), type: "text", nullable: false, primaryKey: true },
+      id: { source: col(dbProvider.entities.my_order_items, "id"), type: "text", nullable: false, primaryKey: true },
       order_id: {
-        source: col(dbProvider.tables.my_order_items, "order_id"),
+        source: col(dbProvider.entities.my_order_items, "order_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -359,7 +356,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
         },
       },
       product_id: {
-        source: col(dbProvider.tables.my_order_items, "product_id"),
+        source: col(dbProvider.entities.my_order_items, "product_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -367,28 +364,28 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      quantity: { source: col(dbProvider.tables.my_order_items, "quantity"), type: "integer", nullable: false },
-      line_total_cents: { source: col(dbProvider.tables.my_order_items, "line_total_cents"), type: "integer", nullable: false },
+      quantity: { source: col(dbProvider.entities.my_order_items, "quantity"), type: "integer", nullable: false },
+      line_total_cents: { source: col(dbProvider.entities.my_order_items, "line_total_cents"), type: "integer", nullable: false },
     },
   });
 
   const vendorsForOrg = table({
-    from: dbProvider.tables.vendors_for_org,
+    from: dbProvider.entities.vendors_for_org,
     columns: {
-      id: { source: col(dbProvider.tables.vendors_for_org, "id"), type: "text", nullable: false, primaryKey: true },
-      name: { source: col(dbProvider.tables.vendors_for_org, "name"), type: "text", nullable: false },
-      tier: { source: col(dbProvider.tables.vendors_for_org, "tier"), type: "text", nullable: false, enum: ["standard", "preferred"] as const },
+      id: { source: col(dbProvider.entities.vendors_for_org, "id"), type: "text", nullable: false, primaryKey: true },
+      name: { source: col(dbProvider.entities.vendors_for_org, "name"), type: "text", nullable: false },
+      tier: { source: col(dbProvider.entities.vendors_for_org, "tier"), type: "text", nullable: false, enum: ["standard", "preferred"] as const },
     },
   });
 
   const activeProducts = table({
-    from: dbProvider.tables.active_products,
+    from: dbProvider.entities.active_products,
     columns: {
-      id: { source: col(dbProvider.tables.active_products, "id"), type: "text", nullable: false, primaryKey: true },
-      sku: { source: col(dbProvider.tables.active_products, "sku"), type: "text", nullable: false },
-      name: { source: col(dbProvider.tables.active_products, "name"), type: "text", nullable: false },
+      id: { source: col(dbProvider.entities.active_products, "id"), type: "text", nullable: false, primaryKey: true },
+      sku: { source: col(dbProvider.entities.active_products, "sku"), type: "text", nullable: false },
+      name: { source: col(dbProvider.entities.active_products, "name"), type: "text", nullable: false },
       category: {
-        source: col(dbProvider.tables.active_products, "category"),
+        source: col(dbProvider.entities.active_products, "category"),
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
@@ -440,10 +437,10 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
   });
 
   const productViewCounts = table({
-    from: kvProvider.tables.product_view_counts,
+    from: kvProvider.entities.product_view_counts,
     columns: {
       product_id: {
-        source: col(kvProvider.tables.product_view_counts, "product_id"),
+        source: col(kvProvider.entities.product_view_counts, "product_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -451,7 +448,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      view_count: { source: col(kvProvider.tables.product_view_counts, "view_count"), type: "integer", nullable: false },
+      view_count: { source: col(kvProvider.entities.product_view_counts, "view_count"), type: "integer", nullable: false },
     },
   });
 

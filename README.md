@@ -49,6 +49,7 @@ Accepted limitation (relational data sources):
 - provider pushdown is capability-driven; unsupported fragments fall back to local execution paths.
 - cross-provider joins can route via lookup joins when the target provider exposes `lookupMany`.
 - recursive CTE pushdown and correlated-subquery pushdown are still limited.
+- SQL-shaped rel nodes (`kind: "sql"`) are not executed by the v1 provider runtime; queries lowering to those nodes fail with an explicit unsupported-runtime error.
 
 ## Quick usage
 
@@ -125,6 +126,12 @@ Providers expose fragment planning/execution and optional lookup joins:
 - `lookupMany(request, context)` (optional, used for cross-provider lookup joins)
 - `estimate(fragment, context)` (optional)
 
+Provider fragment kinds:
+
+- `rel`
+- `scan`
+- `aggregate`
+
 Cross-provider joins:
 
 - `lookupMany` is used for lookup-join plans across providers.
@@ -135,6 +142,17 @@ First-party provider packages:
 - `@sqlql/drizzle`
 - `@sqlql/objection`
 - `@sqlql/kysely`
+
+Build/run examples:
+
+```bash
+pnpm example:drizzle:build
+pnpm example:drizzle:start
+pnpm example:kysely:build
+pnpm example:kysely:start
+pnpm example:objection:build
+pnpm example:objection:start
+```
 
 Schema DSL typed refs:
 

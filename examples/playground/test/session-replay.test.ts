@@ -72,17 +72,6 @@ describe("playground/session-replay", () => {
     expect(snapshot.result).not.toBeNull();
     expect((snapshot.result ?? []).length).toBeGreaterThan(0);
     expect(Array.isArray(snapshot.executedOperations)).toBe(true);
-    expect(Array.isArray(snapshot.executedQueries)).toBe(true);
-    expect(snapshot.executedQueries).toEqual(
-      snapshot.executedOperations
-        .filter(isSqlProviderOperation)
-        .map((entry) => ({
-          id: entry.id,
-          timestamp: entry.timestamp,
-          provider: entry.provider,
-          sql: entry.sql,
-          params: entry.variables,
-        })),
-    );
+    expect(snapshot.executedOperations.filter(isSqlProviderOperation).length).toBeGreaterThan(0);
   });
 });

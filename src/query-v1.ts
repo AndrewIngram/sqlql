@@ -1,37 +1,17 @@
 import type { ConstraintValidationOptions } from "./constraints";
 import {
-  createQuerySession as createLegacyQuerySession,
-  query as legacyQuery,
-  type QueryExecutionPlan as LegacyQueryExecutionPlan,
-  type QueryExecutionPlanScope as LegacyQueryExecutionPlanScope,
-  type QueryExecutionPlanStep as LegacyQueryExecutionPlanStep,
-  type QuerySession as LegacyQuerySession,
-  type QuerySessionInput as LegacyQuerySessionInput,
-  type QueryStepEvent as LegacyQueryStepEvent,
-  type QueryStepKind as LegacyQueryStepKind,
-  type QueryStepRoute as LegacyQueryStepRoute,
-  type QueryStepState as LegacyQueryStepState,
-} from "./query";
-import {
   normalizeCapability,
-  resolveTableProvider,
   validateProviderBindings,
   type ProviderAdapter,
   type ProviderCompiledPlan,
   type ProviderFragment,
   type ProvidersMap,
 } from "./provider";
-import { collectRelTables, countRelNodes, type RelNode } from "./rel";
-import { executeRelWithProviders, UnsupportedRelExecutionError } from "./executor";
-import { buildProviderFragmentForRel, lowerSqlToRel, planPhysicalQuery } from "./planning";
-import { getNormalizedTableBinding, resolveSchemaLinkedEnums } from "./schema";
-import type {
-  QueryRow,
-  SchemaDefinition,
-  TableLookupRequest,
-  TableMethodsMap,
-  TableScanRequest,
-} from "./schema";
+import { countRelNodes, type RelNode } from "./rel";
+import { executeRelWithProviders } from "./executor";
+import { buildProviderFragmentForRel, expandRelViews, lowerSqlToRel } from "./planning";
+import { resolveSchemaLinkedEnums } from "./schema";
+import type { QueryRow, SchemaDefinition } from "./schema";
 
 export interface QueryGuardrails {
   maxPlannerNodes: number;
@@ -51,20 +31,73 @@ export const DEFAULT_QUERY_GUARDRAILS: QueryGuardrails = {
 
 export interface QueryInput<TContext> {
   schema: SchemaDefinition;
-  providers?: ProvidersMap<TContext>;
-  methods?: TableMethodsMap<TContext>;
+  providers: ProvidersMap<TContext>;
   context: TContext;
   sql: string;
   queryGuardrails?: Partial<QueryGuardrails>;
   constraintValidation?: ConstraintValidationOptions;
 }
 
-export type QueryStepKind = LegacyQueryStepKind | "remote_fragment" | "lookup_join";
-export type QueryStepRoute = LegacyQueryStepRoute | "provider_fragment" | "lookup_join";
+export type QueryStepKind =
+  | "cte"
+  | "set_op_branch"
+  | "scan"
+  | "filter"
+  | "join"
+  | "aggregate"
+  | "window"
+  | "distinct"
+  | "order"
+  | "limit_offset"
+  | "projection"
+  | "remote_fragment"
+  | "lookup_join";
 
-export interface QueryExecutionPlanStep
-  extends Omit<LegacyQueryExecutionPlanStep, "kind"> {
+export type QueryStepPhase = "logical" | "fetch" | "transform" | "output";
+export type QuerySqlOrigin =
+  | "SELECT"
+  | "FROM"
+  | "WHERE"
+  | "GROUP BY"
+  | "HAVING"
+  | "ORDER BY"
+  | "WITH"
+  | "SET_OP";
+
+export type QueryStepRoute =
+  | "scan"
+  | "lookup"
+  | "aggregate"
+  | "local"
+  | "provider_fragment"
+  | "lookup_join";
+
+export interface QueryStepOperation {
+  name: string;
+  details?: Record<string, unknown>;
+}
+
+export type QueryPlanScopeKind = "root" | "cte" | "subquery" | "set_op_branch";
+
+export interface QueryExecutionPlanScope {
+  id: string;
+  kind: QueryPlanScopeKind;
+  label: string;
+  parentId?: string;
+}
+
+export interface QueryExecutionPlanStep {
+  id: string;
   kind: QueryStepKind;
+  dependsOn: string[];
+  summary: string;
+  phase: QueryStepPhase;
+  operation: QueryStepOperation;
+  request?: Record<string, unknown>;
+  pushdown?: Record<string, unknown>;
+  outputs?: string[];
+  sqlOrigin?: QuerySqlOrigin;
+  scopeId?: string;
 }
 
 export interface QueryExecutionPlan {
@@ -72,16 +105,44 @@ export interface QueryExecutionPlan {
   scopes?: QueryExecutionPlanScope[];
 }
 
-export type QueryExecutionPlanScope = LegacyQueryExecutionPlanScope;
+export type QueryStepStatus = "ready" | "running" | "done" | "failed";
 
-export interface QueryStepState extends Omit<LegacyQueryStepState, "kind" | "routeUsed"> {
+export interface QueryStepState {
+  id: string;
   kind: QueryStepKind;
+  status: QueryStepStatus;
+  summary: string;
+  dependsOn: string[];
+  executionIndex?: number;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  rowCount?: number;
+  inputRowCount?: number;
+  outputRowCount?: number;
+  rows?: QueryRow[];
   routeUsed?: QueryStepRoute;
+  notes?: string[];
+  error?: string;
 }
 
-export interface QueryStepEvent extends Omit<LegacyQueryStepEvent, "kind" | "routeUsed"> {
+export interface QueryStepEvent {
+  id: string;
   kind: QueryStepKind;
+  status: "done" | "failed";
+  summary: string;
+  dependsOn: string[];
+  executionIndex: number;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  rowCount?: number;
+  inputRowCount?: number;
+  outputRowCount?: number;
+  rows?: QueryRow[];
   routeUsed?: QueryStepRoute;
+  notes?: string[];
+  error?: string;
 }
 
 export interface QuerySessionOptions {
@@ -103,10 +164,6 @@ export interface QuerySession {
   getStepState(stepId: string): QueryStepState | undefined;
 }
 
-interface GuardrailRuntimeState {
-  lookupBatches: number;
-}
-
 function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrails {
   return {
     maxPlannerNodes: overrides?.maxPlannerNodes ?? DEFAULT_QUERY_GUARDRAILS.maxPlannerNodes,
@@ -115,6 +172,45 @@ function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrail
       overrides?.maxLookupKeysPerBatch ?? DEFAULT_QUERY_GUARDRAILS.maxLookupKeysPerBatch,
     maxLookupBatches: overrides?.maxLookupBatches ?? DEFAULT_QUERY_GUARDRAILS.maxLookupBatches,
     timeoutMs: overrides?.timeoutMs ?? DEFAULT_QUERY_GUARDRAILS.timeoutMs,
+  };
+}
+
+function maybeInferSingleProvider<TContext>(
+  schema: SchemaDefinition,
+  providers: ProvidersMap<TContext>,
+): SchemaDefinition {
+  const providerNames = Object.keys(providers);
+  if (providerNames.length !== 1) {
+    return schema;
+  }
+
+  const provider = providerNames[0];
+  if (!provider) {
+    return schema;
+  }
+  let changed = false;
+  const tables: SchemaDefinition["tables"] = {};
+
+  for (const [tableName, table] of Object.entries(schema.tables)) {
+    if (table.provider && table.provider.length > 0) {
+      tables[tableName] = table;
+      continue;
+    }
+
+    changed = true;
+    tables[tableName] = {
+      ...table,
+      provider,
+    };
+  }
+
+  if (!changed) {
+    return schema;
+  }
+
+  return {
+    ...schema,
+    tables,
   };
 }
 
@@ -151,15 +247,40 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
+function hasSqlNode(node: RelNode): boolean {
+  switch (node.kind) {
+    case "sql":
+      return true;
+    case "scan":
+      return false;
+    case "filter":
+    case "project":
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return hasSqlNode(node.input);
+    case "join":
+    case "set_op":
+      return hasSqlNode(node.left) || hasSqlNode(node.right);
+    case "with":
+      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
+  }
+}
+
+function assertNoSqlNodesWithoutProviderFragment(rel: RelNode): void {
+  if (hasSqlNode(rel)) {
+    throw new Error(
+      "Query lowered to a SQL-shaped relational node that cannot be executed by the provider runtime without provider rel pushdown.",
+    );
+  }
+}
+
 async function maybeExecuteWholeQueryFragment<TContext>(
   input: QueryInput<TContext>,
   rel: RelNode,
 ): Promise<QueryRow[] | null> {
-  if (!input.providers) {
-    return null;
-  }
-
-  const fragment = buildProviderFragmentForRel(rel, input.schema);
+  const fragment = buildProviderFragmentForRel(rel, input.schema, input.context);
   if (!fragment) {
     return null;
   }
@@ -176,161 +297,6 @@ async function maybeExecuteWholeQueryFragment<TContext>(
 
   const compiled = await provider.compile(fragment, input.context);
   return provider.execute(compiled, input.context);
-}
-
-function buildLegacyMethodsMap<TContext>(
-  input: QueryInput<TContext>,
-  guardrails: QueryGuardrails,
-  runtimeState: GuardrailRuntimeState,
-): TableMethodsMap<TContext> {
-  const providers = requireProviders(input);
-  const methods: TableMethodsMap<TContext> = {};
-
-  for (const tableName of Object.keys(input.schema.tables)) {
-    const normalizedTable = getNormalizedTableBinding(input.schema, tableName);
-    if (normalizedTable?.kind === "view") {
-      continue;
-    }
-
-    const providerName = resolveTableProvider(input.schema, tableName);
-    const provider = providers[providerName];
-    if (!provider) {
-      throw new Error(`Missing provider adapter ${providerName} for table ${tableName}.`);
-    }
-
-    methods[tableName] = {
-      scan: async (request, context) => {
-        const fragment: ProviderFragment = {
-          kind: "scan",
-          provider: providerName,
-          table: request.table,
-          request,
-        };
-
-        const capability = normalizeCapability(await provider.canExecute(fragment, context));
-        if (!capability.supported) {
-          throw new Error(
-            `Provider ${providerName} cannot execute scan for table ${request.table}${capability.reason ? `: ${capability.reason}` : ""}.`,
-          );
-        }
-
-        const compiled = await provider.compile(fragment, context);
-        return provider.execute(compiled, context);
-      },
-      ...(provider.lookupMany
-        ? {
-            lookup: async (request: TableLookupRequest, context: TContext): Promise<QueryRow[]> => {
-              const dedupedKeys = [...new Set(request.values)];
-              const allRows: QueryRow[] = [];
-
-              for (
-                let startIndex = 0;
-                startIndex < dedupedKeys.length;
-                startIndex += guardrails.maxLookupKeysPerBatch
-              ) {
-                runtimeState.lookupBatches += 1;
-                if (runtimeState.lookupBatches > guardrails.maxLookupBatches) {
-                  throw new Error(
-                    `Query exceeded maxLookupBatches guardrail (${guardrails.maxLookupBatches}).`,
-                  );
-                }
-
-                const batch = dedupedKeys.slice(
-                  startIndex,
-                  startIndex + guardrails.maxLookupKeysPerBatch,
-                );
-
-                const batchRows = await provider.lookupMany!(
-                  {
-                    table: request.table,
-                    key: request.key,
-                    keys: batch,
-                    select: request.select,
-                    ...(request.where ? { where: request.where } : {}),
-                  },
-                  context,
-                );
-                allRows.push(...batchRows);
-              }
-
-              return allRows;
-            },
-          }
-        : {}),
-    };
-  }
-
-  return methods;
-}
-
-function requireProviders<TContext>(input: QueryInput<TContext>): ProvidersMap<TContext> {
-  if (!input.providers) {
-    throw new Error("Query input requires `providers` when `methods` are not supplied.");
-  }
-
-  return input.providers;
-}
-
-function mapStepKind(step: LegacyQueryExecutionPlanStep): QueryStepKind {
-  if (step.kind !== "scan") {
-    return step.kind;
-  }
-
-  const routeCandidates = (step.pushdown as { routeCandidates?: string[] } | undefined)
-    ?.routeCandidates;
-  if (Array.isArray(routeCandidates) && routeCandidates.includes("lookup")) {
-    return "lookup_join";
-  }
-
-  return "remote_fragment";
-}
-
-function mapRoute(route: LegacyQueryStepRoute | undefined): QueryStepRoute | undefined {
-  switch (route) {
-    case "lookup":
-      return "lookup_join";
-    case "scan":
-    case "aggregate":
-      return "provider_fragment";
-    case "local":
-      return "local";
-    default:
-      return undefined;
-  }
-}
-
-function mapPlan(plan: LegacyQueryExecutionPlan): QueryExecutionPlan {
-  return {
-    steps: plan.steps.map((step) => ({
-      ...step,
-      kind: mapStepKind(step),
-    })),
-    ...(plan.scopes ? { scopes: plan.scopes } : {}),
-  };
-}
-
-function mapStepState(state: LegacyQueryStepState | undefined): QueryStepState | undefined {
-  if (!state) {
-    return undefined;
-  }
-
-  const { kind, routeUsed, ...rest } = state;
-  const mappedRoute = mapRoute(routeUsed);
-  return {
-    ...rest,
-    kind: kind === "scan" ? "remote_fragment" : (kind as QueryStepKind),
-    ...(mappedRoute ? { routeUsed: mappedRoute } : {}),
-  };
-}
-
-function mapStepEvent(event: LegacyQueryStepEvent): QueryStepEvent {
-  const { kind, routeUsed, ...rest } = event;
-  const mappedRoute = mapRoute(routeUsed);
-  return {
-    ...rest,
-    kind: kind === "scan" ? "remote_fragment" : (kind as QueryStepKind),
-    ...(mappedRoute ? { routeUsed: mappedRoute } : {}),
-  };
 }
 
 function createProviderFragmentSession<TContext>(
@@ -459,52 +425,28 @@ function createRelExecutionSession<TContext>(
   input: QuerySessionInput<TContext>,
   guardrails: QueryGuardrails,
   rel: RelNode,
-): QuerySession | null {
-  const providers = input.providers;
-  if (!providers) {
-    return null;
-  }
+): QuerySession {
+  const plan = buildRelExecutionPlan(rel);
+  const states = new Map<string, QueryStepState>(
+    plan.steps.map((step) => [
+      step.id,
+      {
+        id: step.id,
+        kind: step.kind,
+        status: "ready",
+        summary: step.summary,
+        dependsOn: step.dependsOn,
+      },
+    ]),
+  );
+  const stepById = new Map(plan.steps.map((step) => [step.id, step]));
+  const executionOrder = plan.steps.map((step) => step.id);
+  const rootStepId = executionOrder[executionOrder.length - 1] ?? null;
 
   let executed = false;
   let result: QueryRow[] | null = null;
-  let eventDispatched = false;
-
-  const stepId = "remote_fragment_1";
-  const plan: QueryExecutionPlan = {
-    steps: [
-      {
-        id: stepId,
-        kind: "remote_fragment",
-        dependsOn: [],
-        summary: "Execute relational runtime plan (provider + local operators)",
-        phase: "fetch",
-        operation: {
-          name: "provider_fragment",
-          details: {
-            provider: "mixed",
-          },
-        },
-        request: {
-          fragment: "rel",
-        },
-      },
-    ],
-    scopes: [
-      {
-        id: "scope_root",
-        kind: "root",
-        label: "Root query",
-      },
-    ],
-  };
-
-  let state: QueryStepState = {
-    id: stepId,
-    kind: "remote_fragment",
-    status: "ready",
-    summary: "Execute relational runtime plan (provider + local operators)",
-    dependsOn: [],
-  };
+  let emittedEvents: QueryStepEvent[] = [];
+  let emittedIndex = 0;
 
   const run = async (): Promise<QueryRow[]> => {
     if (executed) {
@@ -513,18 +455,24 @@ function createRelExecutionSession<TContext>(
 
     executed = true;
     const startedAt = Date.now();
-    state = {
-      ...state,
-      status: "running",
-      startedAt,
-    };
+
+    if (rootStepId) {
+      const rootState = states.get(rootStepId);
+      if (rootState) {
+        states.set(rootStepId, {
+          ...rootState,
+          status: "running",
+          startedAt,
+        });
+      }
+    }
 
     try {
       const rows = await withTimeout(
         executeRelWithProviders(
           rel,
           input.schema,
-          providers,
+          input.providers,
           input.context,
           {
             maxExecutionRows: guardrails.maxExecutionRows,
@@ -538,29 +486,67 @@ function createRelExecutionSession<TContext>(
       result = rows;
 
       const endedAt = Date.now();
-      state = {
-        ...state,
-        status: "done",
-        routeUsed: "provider_fragment",
-        rowCount: rows.length,
-        outputRowCount: rows.length,
-        startedAt,
-        endedAt,
-        durationMs: endedAt - startedAt,
-        ...(input.options?.captureRows === "full" ? { rows } : {}),
-      };
+      const duration = Math.max(endedAt - startedAt, 1);
+      const stepCount = Math.max(executionOrder.length, 1);
+      emittedEvents = executionOrder.map((stepId, index) => {
+        const step = stepById.get(stepId);
+        if (!step) {
+          throw new Error(`Unknown query step id: ${stepId}`);
+        }
+        const stepStartedAt = startedAt + Math.floor((duration * index) / stepCount);
+        const stepEndedAt = startedAt + Math.floor((duration * (index + 1)) / stepCount);
+        const stepDuration = Math.max(stepEndedAt - stepStartedAt, 0);
+        const isRoot = stepId === rootStepId;
+        const routeUsed = routeForStepKind(step.kind);
+
+        const nextState: QueryStepState = {
+          id: step.id,
+          kind: step.kind,
+          status: "done",
+          summary: step.summary,
+          dependsOn: step.dependsOn,
+          executionIndex: index + 1,
+          startedAt: stepStartedAt,
+          endedAt: stepEndedAt,
+          durationMs: stepDuration,
+          ...(routeUsed ? { routeUsed } : {}),
+          ...(isRoot ? { rowCount: rows.length, outputRowCount: rows.length } : {}),
+          ...(isRoot && input.options?.captureRows === "full" ? { rows } : {}),
+        };
+        states.set(step.id, nextState);
+
+        const event: QueryStepEvent = {
+          id: step.id,
+          kind: step.kind,
+          status: "done",
+          summary: step.summary,
+          dependsOn: step.dependsOn,
+          executionIndex: index + 1,
+          startedAt: stepStartedAt,
+          endedAt: stepEndedAt,
+          durationMs: stepDuration,
+          ...(routeUsed ? { routeUsed } : {}),
+          ...(isRoot ? { rowCount: rows.length, outputRowCount: rows.length } : {}),
+          ...(isRoot && input.options?.captureRows === "full" ? { rows } : {}),
+        };
+        return event;
+      });
 
       return rows;
     } catch (error) {
       const endedAt = Date.now();
-      state = {
-        ...state,
-        status: "failed",
-        startedAt,
-        endedAt,
-        durationMs: endedAt - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      if (rootStepId) {
+        const rootState = states.get(rootStepId);
+        if (rootState) {
+          states.set(rootStepId, {
+            ...rootState,
+            status: "failed",
+            endedAt,
+            durationMs: endedAt - (rootState.startedAt ?? startedAt),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       throw error;
     }
   };
@@ -569,26 +555,13 @@ function createRelExecutionSession<TContext>(
     getPlan: () => plan,
     next: async () => {
       await run();
-      if (!eventDispatched) {
-        eventDispatched = true;
-        const event: QueryStepEvent = {
-          id: stepId,
-          kind: "remote_fragment",
-          status: "done",
-          summary: state.summary,
-          dependsOn: [],
-          executionIndex: 1,
-          startedAt: state.startedAt ?? Date.now(),
-          endedAt: state.endedAt ?? Date.now(),
-          durationMs: state.durationMs ?? 0,
-          routeUsed: "provider_fragment",
-          ...(state.rowCount != null ? { rowCount: state.rowCount } : {}),
-          ...(state.outputRowCount != null ? { outputRowCount: state.outputRowCount } : {}),
-          ...(input.options?.captureRows === "full" ? { rows: result ?? [] } : {}),
-        };
-
-        input.options?.onEvent?.(event);
-        return event;
+      if (emittedIndex < emittedEvents.length) {
+        const event = emittedEvents[emittedIndex];
+        emittedIndex += 1;
+        if (event) {
+          input.options?.onEvent?.(event);
+          return event;
+        }
       }
 
       return {
@@ -598,98 +571,390 @@ function createRelExecutionSession<TContext>(
     },
     runToCompletion: async () => run(),
     getResult: () => result,
-    getStepState: (id: string) => (id === stepId ? state : undefined),
+    getStepState: (id: string) => states.get(id),
   };
 }
 
-function createLegacyBackedSession<TContext>(
-  input: QuerySessionInput<TContext>,
-  guardrails: QueryGuardrails,
-): QuerySession {
-  const runtimeState: GuardrailRuntimeState = {
-    lookupBatches: 0,
-  };
-  const methods = buildLegacyMethodsMap(input, guardrails, runtimeState);
+function buildRelExecutionPlan(rel: RelNode): QueryExecutionPlan {
+  let stepCounter = 0;
+  const steps: QueryExecutionPlanStep[] = [];
+  const scopes: QueryExecutionPlanScope[] = [
+    {
+      id: "scope_root",
+      kind: "root",
+      label: "Root query",
+    },
+  ];
 
-  const legacyOptions = input.options
-    ? {
-        ...(input.options.maxConcurrency != null
-          ? { maxConcurrency: input.options.maxConcurrency }
-          : {}),
-        ...(input.options.eventOrder ? { eventOrder: input.options.eventOrder } : {}),
-        ...(input.options.captureRows ? { captureRows: input.options.captureRows } : {}),
+  const nextId = (prefix: string): string => {
+    stepCounter += 1;
+    return `${prefix}_${stepCounter}`;
+  };
+
+  const visit = (node: RelNode, scopeId = "scope_root"): string => {
+    switch (node.kind) {
+      case "scan": {
+        const id = nextId("scan");
+        steps.push({
+          id,
+          kind: "scan",
+          dependsOn: [],
+          summary: `Scan ${node.alias ?? node.table} (${node.table})`,
+          phase: "fetch",
+          operation: {
+            name: "scan",
+            details: {
+              table: node.table,
+              alias: node.alias ?? node.table,
+            },
+          },
+          request: {
+            select: node.select,
+            ...(node.where ? { where: node.where } : {}),
+            ...(node.orderBy ? { orderBy: node.orderBy } : {}),
+            ...(node.limit != null ? { limit: node.limit } : {}),
+            ...(node.offset != null ? { offset: node.offset } : {}),
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "FROM",
+          scopeId,
+        });
+        return id;
       }
-    : undefined;
-
-  const legacyInput: LegacyQuerySessionInput<TContext> = {
-    schema: input.schema,
-    methods,
-    context: input.context,
-    sql: input.sql,
-    ...(input.constraintValidation ? { constraintValidation: input.constraintValidation } : {}),
-    ...(legacyOptions ? { options: legacyOptions } : {}),
+      case "filter": {
+        const inputId = visit(node.input, scopeId);
+        const id = nextId("filter");
+        steps.push({
+          id,
+          kind: "filter",
+          dependsOn: [inputId],
+          summary: "Apply filter predicates",
+          phase: "transform",
+          operation: {
+            name: "filter",
+            details: {
+              clauseCount: node.where.length,
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "WHERE",
+          scopeId,
+        });
+        return id;
+      }
+      case "project": {
+        const inputId = visit(node.input, scopeId);
+        const id = nextId("projection");
+        steps.push({
+          id,
+          kind: "projection",
+          dependsOn: [inputId],
+          summary: "Project result rows",
+          phase: "output",
+          operation: {
+            name: "project",
+            details: {
+              columnCount: node.columns.length,
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "SELECT",
+          scopeId,
+        });
+        return id;
+      }
+      case "join": {
+        const leftId = visit(node.left, scopeId);
+        const rightId = visit(node.right, scopeId);
+        const id = nextId("join");
+        steps.push({
+          id,
+          kind: "join",
+          dependsOn: [leftId, rightId],
+          summary: `${node.joinType.toUpperCase()} join`,
+          phase: "transform",
+          operation: {
+            name: "join",
+            details: {
+              joinType: node.joinType,
+              on: `${formatColumnRef(node.leftKey)} = ${formatColumnRef(node.rightKey)}`,
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "FROM",
+          scopeId,
+        });
+        return id;
+      }
+      case "aggregate": {
+        const inputId = visit(node.input, scopeId);
+        const id = nextId("aggregate");
+        steps.push({
+          id,
+          kind: "aggregate",
+          dependsOn: [inputId],
+          summary: "Compute grouped aggregates",
+          phase: "transform",
+          operation: {
+            name: "aggregate",
+            details: {
+              groupBy: node.groupBy.map(formatColumnRef),
+              metrics: node.metrics.map((metric) => ({
+                fn: metric.fn,
+                as: metric.as,
+                ...(metric.column ? { column: formatColumnRef(metric.column) } : {}),
+              })),
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "GROUP BY",
+          scopeId,
+        });
+        return id;
+      }
+      case "window": {
+        const inputId = visit(node.input, scopeId);
+        const id = nextId("window");
+        steps.push({
+          id,
+          kind: "window",
+          dependsOn: [inputId],
+          summary: "Compute window functions",
+          phase: "transform",
+          operation: {
+            name: "window",
+            details: {
+              functions: node.functions.map((fn) => ({
+                fn: fn.fn,
+                as: fn.as,
+                partitionBy: fn.partitionBy.map(formatColumnRef),
+                orderBy: fn.orderBy.map((term) => ({
+                  source: formatColumnRef(term.source),
+                  direction: term.direction,
+                })),
+              })),
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "SELECT",
+          scopeId,
+        });
+        return id;
+      }
+      case "sort": {
+        const inputId = visit(node.input, scopeId);
+        const id = nextId("order");
+        steps.push({
+          id,
+          kind: "order",
+          dependsOn: [inputId],
+          summary: "Order result rows",
+          phase: "transform",
+          operation: {
+            name: "order",
+            details: {
+              orderBy: node.orderBy.map((term) => ({
+                source: formatColumnRef(term.source),
+                direction: term.direction,
+              })),
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "ORDER BY",
+          scopeId,
+        });
+        return id;
+      }
+      case "limit_offset": {
+        const inputId = visit(node.input, scopeId);
+        const id = nextId("limit_offset");
+        steps.push({
+          id,
+          kind: "limit_offset",
+          dependsOn: [inputId],
+          summary: "Apply LIMIT/OFFSET",
+          phase: "output",
+          operation: {
+            name: "limit_offset",
+            details: {
+              ...(node.limit != null ? { limit: node.limit } : {}),
+              ...(node.offset != null ? { offset: node.offset } : {}),
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "ORDER BY",
+          scopeId,
+        });
+        return id;
+      }
+      case "set_op": {
+        const leftScopeId = `${nextId("scope_set_left")}`;
+        const rightScopeId = `${nextId("scope_set_right")}`;
+        scopes.push(
+          {
+            id: leftScopeId,
+            kind: "set_op_branch",
+            label: "Set operation left branch",
+            parentId: scopeId,
+          },
+          {
+            id: rightScopeId,
+            kind: "set_op_branch",
+            label: "Set operation right branch",
+            parentId: scopeId,
+          },
+        );
+        const leftInput = visit(node.left, leftScopeId);
+        const rightInput = visit(node.right, rightScopeId);
+        const leftStep = nextId("set_op_branch");
+        const rightStep = nextId("set_op_branch");
+        steps.push(
+          {
+            id: leftStep,
+            kind: "set_op_branch",
+            dependsOn: [leftInput],
+            summary: "Set operation left branch",
+            phase: "transform",
+            operation: {
+              name: "set_op_branch",
+              details: {
+                branch: "left",
+              },
+            },
+            scopeId: leftScopeId,
+          },
+          {
+            id: rightStep,
+            kind: "set_op_branch",
+            dependsOn: [rightInput],
+            summary: "Set operation right branch",
+            phase: "transform",
+            operation: {
+              name: "set_op_branch",
+              details: {
+                branch: "right",
+              },
+            },
+            scopeId: rightScopeId,
+          },
+        );
+        const id = nextId("projection");
+        steps.push({
+          id,
+          kind: "projection",
+          dependsOn: [leftStep, rightStep],
+          summary: `Apply set operation (${node.op})`,
+          phase: "output",
+          operation: {
+            name: "set_op",
+            details: {
+              op: node.op,
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "SET_OP",
+          scopeId,
+        });
+        return id;
+      }
+      case "with": {
+        const cteStepIds: string[] = [];
+        for (const cte of node.ctes) {
+          const cteScopeId = nextId("scope_cte");
+          scopes.push({
+            id: cteScopeId,
+            kind: "cte",
+            label: `CTE ${cte.name}`,
+            parentId: scopeId,
+          });
+          const cteInput = visit(cte.query, cteScopeId);
+          const cteStepId = nextId("cte");
+          steps.push({
+            id: cteStepId,
+            kind: "cte",
+            dependsOn: [cteInput],
+            summary: `CTE ${cte.name}`,
+            phase: "transform",
+            operation: {
+              name: "cte",
+              details: {
+                name: cte.name,
+              },
+            },
+            sqlOrigin: "WITH",
+            scopeId: cteScopeId,
+          });
+          cteStepIds.push(cteStepId);
+        }
+        const bodyStepId = visit(node.body, scopeId);
+        const id = nextId("projection");
+        steps.push({
+          id,
+          kind: "projection",
+          dependsOn: [...cteStepIds, bodyStepId],
+          summary: "Finalize WITH query",
+          phase: "output",
+          operation: {
+            name: "with",
+            details: {
+              cteCount: node.ctes.length,
+            },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "WITH",
+          scopeId,
+        });
+        return id;
+      }
+      case "sql": {
+        const id = nextId("remote_fragment");
+        steps.push({
+          id,
+          kind: "remote_fragment",
+          dependsOn: [],
+          summary: "Execute SQL-shaped relational fragment",
+          phase: "fetch",
+          operation: {
+            name: "provider_fragment",
+            details: {
+              fragment: "sql",
+            },
+          },
+          request: {
+            tables: node.tables,
+          },
+          sqlOrigin: "SELECT",
+          scopeId,
+        });
+        return id;
+      }
+    }
   };
 
-  const legacySession: LegacyQuerySession = createLegacyQuerySession(legacyInput);
+  visit(rel, "scope_root");
 
   return {
-    getPlan: () => mapPlan(legacySession.getPlan()),
-    next: async () => {
-      const next = await withTimeout(legacySession.next(), guardrails.timeoutMs);
-      if ("done" in next) {
-        enforceExecutionRowLimit(next.result, guardrails);
-        return next;
-      }
-
-      const mapped = mapStepEvent(next);
-      input.options?.onEvent?.(mapped);
-      return mapped;
-    },
-    runToCompletion: async () => {
-      const rows = await withTimeout(legacySession.runToCompletion(), guardrails.timeoutMs);
-      enforceExecutionRowLimit(rows, guardrails);
-      return rows;
-    },
-    getResult: () => legacySession.getResult(),
-    getStepState: (stepId: string) => mapStepState(legacySession.getStepState(stepId)),
+    steps,
+    scopes,
   };
 }
 
-function createMethodsBackedSession<TContext>(
-  input: QuerySessionInput<TContext> & { methods: TableMethodsMap<TContext> },
-  guardrails: QueryGuardrails,
-): QuerySession {
-  const legacyInput: LegacyQuerySessionInput<TContext> = {
-    schema: input.schema,
-    methods: input.methods,
-    context: input.context,
-    sql: input.sql,
-    ...(input.constraintValidation ? { constraintValidation: input.constraintValidation } : {}),
-    ...(input.options ? { options: input.options } : {}),
-  };
+function formatColumnRef(ref: { alias?: string; table?: string; column: string }): string {
+  const prefix = ref.alias ?? ref.table;
+  return prefix ? `${prefix}.${ref.column}` : ref.column;
+}
 
-  const legacySession = createLegacyQuerySession(legacyInput);
-
-  return {
-    getPlan: () => legacySession.getPlan(),
-    next: async () => {
-      const next = await withTimeout(legacySession.next(), guardrails.timeoutMs);
-      if ("done" in next) {
-        enforceExecutionRowLimit(next.result, guardrails);
-        return next;
-      }
-
-      input.options?.onEvent?.(next as QueryStepEvent);
-      return next as QueryStepEvent;
-    },
-    runToCompletion: async () => {
-      const rows = await withTimeout(legacySession.runToCompletion(), guardrails.timeoutMs);
-      enforceExecutionRowLimit(rows, guardrails);
-      return rows;
-    },
-    getResult: () => legacySession.getResult(),
-    getStepState: (stepId: string) => legacySession.getStepState(stepId) as QueryStepState | undefined,
-  };
+function routeForStepKind(kind: QueryStepKind): QueryStepRoute | null {
+  switch (kind) {
+    case "scan":
+      return "scan";
+    case "lookup_join":
+      return "lookup_join";
+    case "remote_fragment":
+      return "provider_fragment";
+    default:
+      return "local";
+  }
 }
 
 function tryCreateSyncProviderFragmentSession<TContext>(
@@ -697,17 +962,12 @@ function tryCreateSyncProviderFragmentSession<TContext>(
   guardrails: QueryGuardrails,
   rel: RelNode,
 ): QuerySession | null {
-  const providers = input.providers;
-  if (!providers) {
-    return null;
-  }
-
-  const fragment = buildProviderFragmentForRel(rel, input.schema);
+  const fragment = buildProviderFragmentForRel(rel, input.schema, input.context);
   if (!fragment) {
     return null;
   }
 
-  const provider = providers[fragment.provider];
+  const provider = input.providers[fragment.provider];
   if (!provider) {
     return null;
   }
@@ -732,21 +992,17 @@ function tryCreateSyncProviderFragmentSession<TContext>(
 }
 
 export function createQuerySession<TContext>(input: QuerySessionInput<TContext>): QuerySession {
-  const schema = resolveSchemaLinkedEnums(input.schema);
+  const schema = maybeInferSingleProvider(
+    resolveSchemaLinkedEnums(input.schema),
+    input.providers,
+  );
   const resolvedInput: QuerySessionInput<TContext> = {
     ...input,
     schema,
   };
   const guardrails = resolveGuardrails(input.queryGuardrails);
-  if (resolvedInput.methods && !resolvedInput.providers) {
-    return createMethodsBackedSession(
-      resolvedInput as QuerySessionInput<TContext> & { methods: TableMethodsMap<TContext> },
-      guardrails,
-    );
-  }
 
-  const providers = requireProviders(resolvedInput);
-  validateProviderBindings(resolvedInput.schema, providers);
+  validateProviderBindings(resolvedInput.schema, resolvedInput.providers);
   const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
 
   const plannerNodeCount = countRelNodes(lowered.rel);
@@ -756,45 +1012,32 @@ export function createQuerySession<TContext>(input: QuerySessionInput<TContext>)
     );
   }
 
-  const referencesView = collectRelTables(lowered.rel).some(
-    (table) => getNormalizedTableBinding(resolvedInput.schema, table)?.kind === "view",
+  const providerSession = tryCreateSyncProviderFragmentSession(
+    resolvedInput,
+    guardrails,
+    lowered.rel,
   );
+  if (providerSession) {
+    return providerSession;
+  }
 
-  return (
-    tryCreateSyncProviderFragmentSession(resolvedInput, guardrails, lowered.rel) ??
-    (referencesView
-      ? createRelExecutionSession(resolvedInput, guardrails, lowered.rel)
-      : null) ??
-    createLegacyBackedSession(resolvedInput, guardrails)
-  );
+  const expandedRel = expandRelViews(lowered.rel, resolvedInput.schema, resolvedInput.context);
+  assertNoSqlNodesWithoutProviderFragment(expandedRel);
+  return createRelExecutionSession(resolvedInput, guardrails, expandedRel);
 }
 
 export async function query<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
-  const schema = resolveSchemaLinkedEnums(input.schema);
+  const schema = maybeInferSingleProvider(
+    resolveSchemaLinkedEnums(input.schema),
+    input.providers,
+  );
   const resolvedInput: QueryInput<TContext> = {
     ...input,
     schema,
   };
   const guardrails = resolveGuardrails(input.queryGuardrails);
-  if (resolvedInput.methods && !resolvedInput.providers) {
-    const rows = await withTimeout(
-      legacyQuery({
-        schema: resolvedInput.schema,
-        methods: resolvedInput.methods,
-        context: resolvedInput.context,
-        sql: resolvedInput.sql,
-        ...(resolvedInput.constraintValidation
-          ? { constraintValidation: resolvedInput.constraintValidation }
-          : {}),
-      }),
-      guardrails.timeoutMs,
-    );
-    enforceExecutionRowLimit(rows, guardrails);
-    return rows;
-  }
 
-  const providers = requireProviders(resolvedInput);
-  validateProviderBindings(resolvedInput.schema, providers);
+  validateProviderBindings(resolvedInput.schema, resolvedInput.providers);
   const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
   const plannerNodeCount = countRelNodes(lowered.rel);
 
@@ -814,59 +1057,26 @@ export async function query<TContext>(input: QueryInput<TContext>): Promise<Quer
     return remoteRows;
   }
 
-  try {
-    const physicalPlan = await planPhysicalQuery(
-      lowered.rel,
+  const expandedRel = expandRelViews(lowered.rel, resolvedInput.schema, resolvedInput.context);
+  assertNoSqlNodesWithoutProviderFragment(expandedRel);
+
+  const rows = await withTimeout(
+    executeRelWithProviders(
+      expandedRel,
       resolvedInput.schema,
-      providers,
+      resolvedInput.providers,
       resolvedInput.context,
-      resolvedInput.sql,
-    );
-
-    void physicalPlan;
-    const rows = await withTimeout(
-      executeRelWithProviders(
-        lowered.rel,
-        resolvedInput.schema,
-        providers,
-        resolvedInput.context,
-        {
-          maxExecutionRows: guardrails.maxExecutionRows,
-          maxLookupKeysPerBatch: guardrails.maxLookupKeysPerBatch,
-          maxLookupBatches: guardrails.maxLookupBatches,
-        },
-      ),
-      guardrails.timeoutMs,
-    );
-
-    enforceExecutionRowLimit(rows, guardrails);
-    return rows;
-  } catch (error) {
-    if (!(error instanceof UnsupportedRelExecutionError)) {
-      throw error;
-    }
-  }
-
-  const runtimeState: GuardrailRuntimeState = {
-    lookupBatches: 0,
-  };
-
-  const methods = buildLegacyMethodsMap(resolvedInput, guardrails, runtimeState);
-  const result = await withTimeout(
-    legacyQuery({
-      schema: resolvedInput.schema,
-      methods,
-      context: resolvedInput.context,
-      sql: resolvedInput.sql,
-      ...(resolvedInput.constraintValidation
-        ? { constraintValidation: resolvedInput.constraintValidation }
-        : {}),
-    }),
+      {
+        maxExecutionRows: guardrails.maxExecutionRows,
+        maxLookupKeysPerBatch: guardrails.maxLookupKeysPerBatch,
+        maxLookupBatches: guardrails.maxLookupBatches,
+      },
+    ),
     guardrails.timeoutMs,
   );
 
-  enforceExecutionRowLimit(result, guardrails);
-  return result;
+  enforceExecutionRowLimit(rows, guardrails);
+  return rows;
 }
 
 export interface ExplainResult {
@@ -876,10 +1086,11 @@ export interface ExplainResult {
 }
 
 export function explain<TContext>(input: QueryInput<TContext>): ExplainResult {
-  const schema = resolveSchemaLinkedEnums(input.schema);
-  if (input.providers) {
-    validateProviderBindings(schema, input.providers);
-  }
+  const schema = maybeInferSingleProvider(
+    resolveSchemaLinkedEnums(input.schema),
+    input.providers,
+  );
+  validateProviderBindings(schema, input.providers);
   const guardrails = resolveGuardrails(input.queryGuardrails);
   const lowered = lowerSqlToRel(input.sql, schema);
 
@@ -900,17 +1111,4 @@ export function asProviderCompiledPlan(
     kind,
     payload,
   };
-}
-
-async function executeProviderFragmentStep<TContext>(
-  step: { kind: "remote_fragment"; provider: string; fragment: ProviderFragment },
-  providers: ProvidersMap<TContext>,
-  context: TContext,
-): Promise<QueryRow[]> {
-  const provider = providers[step.provider];
-  if (!provider) {
-    throw new Error(`Missing provider adapter: ${step.provider}`);
-  }
-  const compiled = await provider.compile(step.fragment, context);
-  return provider.execute(compiled, context);
 }

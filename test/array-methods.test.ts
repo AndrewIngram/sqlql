@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
-
+import { providersFromMethods } from "./support/methods-provider";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
+  lookupArrayRows,
+  scanArrayRows,
+} from "../src/array-methods";
+
+import {
   defineSchema,
   defineTableMethods,
-  lookupArrayRows,
   query,
-  scanArrayRows,
   type QueryRow,
 } from "../src";
 
@@ -100,7 +103,7 @@ describe("array methods", () => {
 
     const joinRows = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: {},
       sql: `
         SELECT o.id, u.email
@@ -119,7 +122,7 @@ describe("array methods", () => {
 
     const aggregateRows = await query({
       schema,
-      methods,
+      providers: providersFromMethods(methods),
       context: {},
       sql: `
         SELECT o.user_id, COUNT(*) AS order_count, SUM(o.total_cents) AS total_cents

@@ -14,9 +14,9 @@ declare const self: DedicatedWorkerGlobalScope;
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const code = typeof event.data?.code === "string" ? event.data.code : "";
-  const result: SchemaCodeEvaluationResult = evaluateSchemaCodeInProcess(code, {
-    ...(event.data?.modules ? { modules: event.data.modules } : {}),
-  });
+  const result: SchemaCodeEvaluationResult = evaluateSchemaCodeInProcess(code, event.data?.modules
+    ? { modules: event.data.modules }
+    : undefined);
   self.postMessage(result);
 };
 

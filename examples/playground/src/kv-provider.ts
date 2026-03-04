@@ -4,8 +4,6 @@ import {
   type ProviderAdapter,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
-  type ProviderFragment,
-  type ProviderLookupManyRequest,
   type QueryRow,
   type ScanFilterClause,
   type ScanOrderBy,
@@ -193,9 +191,6 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
   entities: {
     product_view_counts: DataEntityHandle<KvEntityColumn>;
   };
-  tables: {
-    product_view_counts: DataEntityHandle<KvEntityColumn>;
-  };
 } {
   const providerName = options.name ?? KV_PROVIDER_NAME;
   const entityHandle = createDataEntityHandle<KvEntityColumn>({
@@ -209,9 +204,6 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
     entities: {
       product_view_counts: entityHandle,
     },
-    tables: {
-      product_view_counts: entityHandle,
-    },
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
         case "scan":
@@ -220,11 +212,6 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
           return {
             supported: false,
             reason: "KV provider only supports scan fragments in this playground demo.",
-          };
-        case "sql_query":
-          return {
-            supported: false,
-            reason: "KV provider does not support sql_query fragments.",
           };
         default:
           return false;

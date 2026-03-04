@@ -2,6 +2,8 @@
 
 `sqlql` v1 uses a provider-first planner/runtime.
 
+`query(...)` / `createQuerySession(...)` execute through `providers` only (no legacy `methods` execution path).
+
 ## Provider contract
 
 ```ts
@@ -20,7 +22,7 @@ interface ProviderAdapter<TContext = unknown> {
 - `scan`
 - `aggregate`
 
-`sql_query` remains in the type surface for legacy compatibility, but the planner no longer emits it.
+`sql_query` is not part of the active planner/provider contract in v1.
 
 The planner can emit mixed physical plans with:
 
