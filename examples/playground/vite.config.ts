@@ -5,17 +5,24 @@ import { resolve } from "node:path";
 
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      "@": resolve(rootDir, "./src"),
-      sqlql: resolve(rootDir, "../../src/index.ts"),
-      "@sqlql/drizzle": resolve(rootDir, "../../packages/drizzle/src/index.ts"),
+export default defineConfig(({ mode }) => {
+  const isVitest = process.env.VITEST === "true" || mode === "test";
+
+  return {
+    plugins: [react()],
+    resolve: {
+      alias: {
+        "@": resolve(rootDir, "./src"),
+        sqlql: resolve(rootDir, "../../src/index.ts"),
+        "@sqlql/drizzle": resolve(rootDir, "../../packages/drizzle/src/index.ts"),
+        ...(!isVitest
+          ? { "@electric-sql/pglite": resolve(rootDir, "./src/pglite-browser-shim.ts") }
+          : {}),
+      },
     },
-  },
-  server: {
-    host: true,
-    port: 5174,
-  },
+    server: {
+      host: true,
+      port: 5174,
+    },
+  };
 });

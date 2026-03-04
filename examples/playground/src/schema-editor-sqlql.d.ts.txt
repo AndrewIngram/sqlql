@@ -207,6 +207,10 @@ declare module "@electric-sql/pglite" {
   export class PGlite {}
 }
 
+declare module "https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js" {
+  export class PGlite {}
+}
+
 declare module "drizzle-orm/pglite" {
   export function drizzle(input: { client: unknown }): {
     select: (...args: unknown[]) => unknown;

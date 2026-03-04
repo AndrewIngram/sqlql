@@ -1,4 +1,3 @@
-import { PGlite } from "../node_modules/@electric-sql/pglite/dist/index.js";
 import { drizzle } from "drizzle-orm/pglite";
 import type { QueryRow } from "sqlql";
 
@@ -20,13 +19,22 @@ import {
 } from "./downstream-model";
 
 interface PlaygroundPgliteRuntime {
-  client: PGlite;
+  client: PGliteClient;
   db: ReturnType<typeof drizzle>;
 }
 
 let runtimePromise: Promise<PlaygroundPgliteRuntime> | null = null;
+let pgliteCtorPromise: Promise<PGliteConstructor> | null = null;
 const executedProviderOperations: ExecutedProviderOperation[] = [];
 let nextOperationId = 1;
+
+const PGLITE_CDN_URL = "https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js";
+
+interface PGliteClient {
+  exec(statement: string): Promise<unknown>;
+}
+
+type PGliteConstructor = new () => PGliteClient;
 
 type NewExecutedProviderOperation =
   | Omit<ExecutedSqlProviderOperation, "id" | "timestamp">
@@ -139,7 +147,7 @@ const DROP_SCHEMA_STATEMENTS = [
   "DROP TYPE IF EXISTS user_role;",
 ];
 
-async function execStatements(client: PGlite, statements: readonly string[]): Promise<void> {
+async function execStatements(client: PGliteClient, statements: readonly string[]): Promise<void> {
   for (const statement of statements) {
     await client.exec(statement);
   }
@@ -156,6 +164,7 @@ async function insertRowsSerial(
 }
 
 async function createRuntime(): Promise<PlaygroundPgliteRuntime> {
+  const PGlite = await loadPGliteConstructor();
   const client = new PGlite();
 
   const logger = {
@@ -171,8 +180,35 @@ async function createRuntime(): Promise<PlaygroundPgliteRuntime> {
 
   return {
     client,
-    db: drizzle(client, { logger } as never),
+    db: drizzle(client as never, { logger } as never),
   };
+}
+
+async function loadPGliteConstructor(): Promise<PGliteConstructor> {
+  pgliteCtorPromise ??= (async () => {
+    const preferCdn = typeof window !== "undefined";
+    if (preferCdn) {
+      try {
+        const cdnModule = await import(/* @vite-ignore */ PGLITE_CDN_URL);
+        const cdnConstructor = (cdnModule as { PGlite?: unknown }).PGlite;
+        if (typeof cdnConstructor === "function") {
+          return cdnConstructor as PGliteConstructor;
+        }
+      } catch {
+        // fall through to local fallback
+      }
+    }
+
+    const localSpecifier = "@electric-sql/pglite";
+    const localModule = await import(/* @vite-ignore */ localSpecifier);
+    const localConstructor = (localModule as { PGlite?: unknown }).PGlite;
+    if (typeof localConstructor === "function") {
+      return localConstructor as PGliteConstructor;
+    }
+
+    throw new Error("Failed to load PGlite constructor.");
+  })();
+  return pgliteCtorPromise;
 }
 
 export async function getPlaygroundPgliteRuntime(): Promise<PlaygroundPgliteRuntime> {

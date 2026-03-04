@@ -50,7 +50,6 @@ Table-level fallback/reject policy is no longer the core execution-control model
 Providers can now receive:
 
 - `scan`
-- `sql_query`
 - `rel`
 - `aggregate`
 

@@ -93,6 +93,8 @@ const schemaEditorDbStub: DrizzleQueryExecutor = {
   },
 };
 
+const PGLITE_CDN_URL = "https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js";
+
 function transpileModuleOrThrow(source: string, moduleId: string): string {
   const fileName = moduleId === ENTRY_MODULE_ID ? SCHEMA_FILENAME : `${moduleId}.ts`;
   const transpiled = ts.transpileModule(source, {
@@ -132,6 +134,9 @@ function createStaticModuleMap(): Record<string, unknown> {
     sqlql: sqlqlModule,
     "@sqlql/drizzle": drizzleAdapterModule,
     "@electric-sql/pglite": {
+      PGlite: class PGlite {},
+    },
+    [PGLITE_CDN_URL]: {
       PGlite: class PGlite {},
     },
     "drizzle-orm/pglite": {

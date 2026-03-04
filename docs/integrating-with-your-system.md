@@ -105,6 +105,7 @@ This is exactly how the playground demo is wired:
 
 - downstream DB: pglite + Drizzle raw tables (`orgs`, `users`, `vendors`, `products`, `orders`, `order_items`)
 - facade authoring: TypeScript schema module (`export const schema = defineSchema(...)`) in Monaco
-- facade tables: scoped lenses (`my_orders`, `my_order_items`, `vendors_for_org`, `active_products`)
-- context controls: `orgId` and `userId`
+- facade tables: scoped lenses + derived view (`my_orders`, `my_order_items`, `vendors_for_org`, `active_products`, `my_order_lines`)
+- additional non-relational provider: in-memory KV (`product_view_counts`)
+- context controls: `orgId` and `userId` (via Query tab context popover)
 - explain UI: execution plan graph plus provider step inspection

@@ -28,7 +28,8 @@ const schema = defineSchema({
 });
 ```
 
-Each table must declare `provider`, which maps table access to a registered provider adapter.
+In object-form schemas, tables declare `provider`, which maps table access to a registered provider adapter.
+In lens DSL form (`table({ from: dataEntityHandle, ... })`), provider is inferred from the handle.
 
 ## Lens DSL (provider-owned entities)
 
@@ -147,6 +148,48 @@ Effects:
 - invalid enum literals in SQL are rejected at planning time
 - DDL includes a generated `CHECK (... IN (...))`
 - optional runtime constraint validation can report returned-row enum violations
+
+Linked enums are also supported when a facade/view column maps to an upstream enum domain:
+
+```ts
+status: {
+  source: col(myOrdersEntity, "status"),
+  type: "text",
+  nullable: false,
+  enumFrom: col(myOrdersEntity, "status"),
+}
+```
+
+Mapped enums let facade values differ from upstream values:
+
+```ts
+status: {
+  source: col(myOrdersEntity, "status"),
+  type: "text",
+  nullable: false,
+  enumFrom: col(myOrdersEntity, "status"),
+  enum: ["open", "closed"] as const,
+  enumMap: {
+    pending: "open",
+    paid: "closed",
+    shipped: "closed",
+  },
+}
+```
+
+By default, linked enum resolution is strict: unmapped upstream values are rejected.
+
+## Physical metadata
+
+Logical scalar types remain `text|integer|boolean|timestamp`, and you can attach physical hints:
+
+```ts
+total_cents: {
+  type: "integer",
+  physicalType: "numeric(12,0)",
+  physicalDialect: "postgres",
+}
+```
 
 ## Field-level constraints
 

@@ -168,6 +168,7 @@ Capabilities are defined per column:
 ## Enums and CHECK constraints
 
 - Column `enum` metadata emits deterministic `CHECK (... IN (...))` in DDL.
+- Linked enum domains are supported with `enumFrom` (+ optional `enumMap`), with strict unmapped-value validation.
 - Structured table checks are supported via `constraints.checks` (`kind: "in"`).
 - Column-level constraints are supported directly on columns: `primaryKey`, `unique`, `foreignKey`.
 - Table-level constraints remain available for composite keys/uniques/FKs via `constraints.*`.
@@ -228,7 +229,7 @@ Not yet supported:
 The playground is a Vite + React app for interactive exploration with three top-level tabs:
 
 - `PostgreSQL`:
-  - editable downstream data/structure workspace for pglite + Drizzle
+  - editable downstream data/structure workspace for pglite + Drizzle (plus playground KV rows)
   - table browser + row editor + generated downstream DDL
 - `SQLQL Schema`:
   - TypeScript module editor for the **facade schema** (`export const schema = defineSchema(...)`)
@@ -236,12 +237,13 @@ The playground is a Vite + React app for interactive exploration with three top-
   - relation diagram (React Flow) from declared foreign keys
   - generated DDL viewer (syntax-highlighted SQL)
 - `Query`:
-  - scenario selector (context + downstream seed data) and query preset selector
+  - query preset selector
   - runtime lens context controls (`orgId`, `userId`)
   - compatibility-aware query picker (incompatible queries are disabled with reasons)
   - compact one-line SQL preview that expands into Monaco on focus
   - auto-run on valid schema/data/query (no manual run button)
   - `Result` and `Explain` tabs with plan graph + step overlay details
+  - executed provider operations panel (SQL queries + KV lookups)
 
 Run:
 

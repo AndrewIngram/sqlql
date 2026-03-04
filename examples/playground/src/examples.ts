@@ -203,7 +203,7 @@ export const KV_PROVIDER_MODULE_ID = "./kv-provider";
 export const DEFAULT_GENERATED_DB_FILE_CODE = `
 // Generated from the downstream Postgres model used by the playground.
 // This file is read-only in the editor.
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js";
 import { drizzle } from "drizzle-orm/pglite";
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
