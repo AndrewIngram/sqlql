@@ -28,6 +28,7 @@
     "drizzle-orm": "latest",
     "lucide-react": "^0.545.0",
     "monaco-editor": "^0.52.2",
+    "nuqs": "^2.8.9",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "sqlql": "workspace:*",
