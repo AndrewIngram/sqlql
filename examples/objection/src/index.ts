@@ -64,19 +64,19 @@ async function main(): Promise<void> {
     name: "dbProvider",
     knex,
     entities: {
-      orders: {
+      orders_raw: {
         table: "orders_raw",
         base: (context) => OrdersRawModel.getQueryBuilder(context).toKnexQuery(),
       },
-      vendors: {
+      vendors_raw: {
         table: "vendors_raw",
         base: (context) => VendorsRawModel.getQueryBuilder(context).toKnexQuery(),
       },
     },
   });
 
-  const ordersEntity = dbProvider.entities.orders;
-  const vendorsEntity = dbProvider.entities.vendors;
+  const ordersEntity = dbProvider.entities.orders_raw;
+  const vendorsEntity = dbProvider.entities.vendors_raw;
   if (!ordersEntity || !vendorsEntity) {
     throw new Error("Objection provider did not expose expected entity handles.");
   }

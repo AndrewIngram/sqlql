@@ -1,8 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
-import {
-  createDrizzleProvider,
-  type DrizzleProviderTableConfig,
-} from "../../../packages/drizzle/src/index";
+import * as drizzleAdapterModule from "../../../packages/drizzle/src/index";
+import * as drizzleOrmModule from "drizzle-orm";
+import * as ts from "typescript";
 import {
   createQuerySession,
   defaultSqlAstParser,
@@ -13,6 +11,7 @@ import {
   resolveTableColumnDefinition,
   type PhysicalPlan,
   type ProviderFragment,
+  type ProviderAdapter,
   type QueryExecutionPlan,
   type QueryRow,
   type QuerySession,
@@ -20,12 +19,15 @@ import {
   type RelNode,
   type SchemaDefinition,
 } from "sqlql";
+import * as sqlqlModule from "sqlql";
 
 import {
   DOWNSTREAM_ROWS_SCHEMA,
   orderItemsTable,
+  orgsTable,
   ordersTable,
   productsTable,
+  usersTable,
   userProductAccessTable,
   vendorsTable,
 } from "./downstream-model";
@@ -38,8 +40,9 @@ import {
   KV_PROVIDER_MODULE_ID,
 } from "./examples";
 import {
-  createInMemoryKvProvider,
-  KV_DATA_TABLE_NAME,
+  createKvProvider,
+  KV_INPUT_TABLE_NAME,
+  type KvInputRow,
 } from "./kv-provider";
 import {
   clearExecutedProviderOperations,
@@ -60,6 +63,7 @@ export interface PlaygroundCompileSuccess {
   schema: SchemaDefinition;
   downstreamRows: DownstreamRows;
   sql: string;
+  modules: Record<string, string>;
 }
 
 export interface PlaygroundCompileFailure {
@@ -454,60 +458,186 @@ function hasSqlNode(node: RelNode): boolean {
   }
 }
 
-function buildProvider() {
-  const tableConfigs = {
-    my_orders: {
-      table: ordersTable,
-      scope: (ctx: PlaygroundContext) =>
-        and(eq(ordersTable.org_id, ctx.orgId), eq(ordersTable.user_id, ctx.userId)),
-    },
-    my_order_items: {
-      table: orderItemsTable,
-      scope: (ctx: PlaygroundContext) =>
-        and(eq(orderItemsTable.org_id, ctx.orgId), eq(orderItemsTable.user_id, ctx.userId)),
-    },
-    vendors_for_org: {
-      table: vendorsTable,
-      scope: (ctx: PlaygroundContext) => eq(vendorsTable.org_id, ctx.orgId),
-    },
-    active_products: {
-      table: productsTable,
-      scope: (ctx: PlaygroundContext) =>
-        and(
-          eq(productsTable.org_id, ctx.orgId),
-          eq(productsTable.active, true),
-          sql`exists (select 1 from ${userProductAccessTable} where ${userProductAccessTable.product_id} = ${productsTable.id} and ${userProductAccessTable.user_id} = ${ctx.userId})`,
-        ),
-    },
-  } satisfies Record<string, DrizzleProviderTableConfig<PlaygroundContext, string>>;
-
-  return getPlaygroundPgliteRuntime().then((runtime) =>
-    createDrizzleProvider<PlaygroundContext>({
-      name: "dbProvider",
-      db: runtime.db,
-      tables: tableConfigs,
-    }));
+interface ProviderFactoryModuleExports<TContext> {
+  createProvider?: (runtime: unknown) => ProviderAdapter<TContext>;
 }
 
-function buildKvProvider(rows: DownstreamRows) {
-  const kvRows = ((rows[KV_DATA_TABLE_NAME] ?? []) as Array<Record<string, unknown>>)
+interface DbProviderRuntimeInput {
+  db: Awaited<ReturnType<typeof getPlaygroundPgliteRuntime>>["db"];
+  tables: {
+    orgs: typeof orgsTable;
+    users: typeof usersTable;
+    vendors: typeof vendorsTable;
+    products: typeof productsTable;
+    orders: typeof ordersTable;
+    order_items: typeof orderItemsTable;
+    user_product_access: typeof userProductAccessTable;
+  };
+}
+
+function transpilePlaygroundModuleOrThrow(source: string, moduleId: string): string {
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      strict: true,
+      esModuleInterop: true,
+    },
+    reportDiagnostics: true,
+    fileName: `${moduleId}.ts`,
+  });
+
+  const firstError = (transpiled.diagnostics ?? []).find(
+    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+  );
+  if (firstError) {
+    const message = ts.flattenDiagnosticMessageText(firstError.messageText, "\n");
+    throw new Error(`[TS_PARSE_ERROR] ${moduleId}: ${message}`);
+  }
+
+  return transpiled.outputText;
+}
+
+function executePlaygroundModule(
+  moduleId: string,
+  sourceModules: Record<string, string>,
+  staticModules: Record<string, unknown>,
+  cache: Map<string, Record<string, unknown>>,
+): Record<string, unknown> {
+  const cached = cache.get(moduleId);
+  if (cached) {
+    return cached;
+  }
+
+  const staticModule = staticModules[moduleId];
+  if (staticModule && typeof staticModule === "object") {
+    const record = staticModule as Record<string, unknown>;
+    cache.set(moduleId, record);
+    return record;
+  }
+
+  const source = sourceModules[moduleId];
+  if (typeof source !== "string") {
+    throw new Error(`Unsupported import in playground module graph: ${moduleId}`);
+  }
+
+  const transpiledOutput = transpilePlaygroundModuleOrThrow(source, moduleId);
+  const moduleRecord: { exports: Record<string, unknown> } = {
+    exports: {},
+  };
+
+  const require = (id: string): unknown => {
+    return executePlaygroundModule(id, sourceModules, staticModules, cache);
+  };
+
+  const runModule = new Function(
+    "exports",
+    "module",
+    "require",
+    `${transpiledOutput}\n//# sourceURL=playground-provider-${moduleId}.js`,
+  ) as (
+    exports: Record<string, unknown>,
+    module: { exports: Record<string, unknown> },
+    requireFn: (id: string) => unknown,
+  ) => void;
+
+  runModule(moduleRecord.exports, moduleRecord, require);
+  cache.set(moduleId, moduleRecord.exports);
+  return moduleRecord.exports;
+}
+
+function readProviderFactoryOrThrow<TContext>(
+  moduleId: string,
+  exportsRecord: Record<string, unknown>,
+): (runtime: unknown) => ProviderAdapter<TContext> {
+  const factory = (exportsRecord as ProviderFactoryModuleExports<TContext>).createProvider;
+  if (typeof factory !== "function") {
+    throw new Error(
+      `${moduleId} must export createProvider(runtime) returning a provider adapter.`,
+    );
+  }
+
+  return factory;
+}
+
+function readKvInputRows(rows: DownstreamRows): KvInputRow[] {
+  return ((rows[KV_INPUT_TABLE_NAME] ?? []) as Array<Record<string, unknown>>)
     .flatMap((row) => {
       const key = row.key;
-      const value = row.value;
       if (typeof key !== "string" || key.trim().length === 0) {
         return [];
       }
-      if (typeof value !== "number" || !Number.isFinite(value)) {
-        return [];
-      }
-      return [{ key, value: Math.trunc(value) }];
-    });
 
-  return createInMemoryKvProvider({
-    name: "kvProvider",
-    rows: kvRows,
+      return [{ key, value: row.value }];
+    });
+}
+
+async function buildProvidersFromModules(
+  compiled: PlaygroundCompileSuccess,
+): Promise<{
+  dbProvider: ProviderAdapter<PlaygroundContext>;
+  kvProvider: ProviderAdapter<PlaygroundContext>;
+}> {
+  const runtime = await getPlaygroundPgliteRuntime();
+  const runtimeDbTables: DbProviderRuntimeInput["tables"] = {
+    orgs: orgsTable,
+    users: usersTable,
+    vendors: vendorsTable,
+    products: productsTable,
+    orders: ordersTable,
+    order_items: orderItemsTable,
+    user_product_access: userProductAccessTable,
+  };
+  const staticModules: Record<string, unknown> = {
+    sqlql: sqlqlModule,
+    "@sqlql/drizzle": drizzleAdapterModule,
+    "drizzle-orm": drizzleOrmModule,
+    "@playground/kv-provider-core": {
+      createKvProvider,
+    },
+    [GENERATED_DB_MODULE_ID]: {
+      db: runtime.db,
+      tables: runtimeDbTables,
+    } satisfies DbProviderRuntimeInput,
+  };
+
+  const cache = new Map<string, Record<string, unknown>>();
+  const dbProviderExports = executePlaygroundModule(
+    DB_PROVIDER_MODULE_ID,
+    compiled.modules,
+    staticModules,
+    cache,
+  );
+  const kvProviderExports = executePlaygroundModule(
+    KV_PROVIDER_MODULE_ID,
+    compiled.modules,
+    staticModules,
+    cache,
+  );
+
+  const createDbProvider = readProviderFactoryOrThrow<PlaygroundContext>(
+    DB_PROVIDER_MODULE_ID,
+    dbProviderExports,
+  );
+  const createKvProviderFactory = readProviderFactoryOrThrow<PlaygroundContext>(
+    KV_PROVIDER_MODULE_ID,
+    kvProviderExports,
+  );
+
+  const dbProvider = createDbProvider({
+    db: runtime.db,
+    tables: runtimeDbTables,
+  } satisfies DbProviderRuntimeInput);
+  const kvProvider = createKvProviderFactory({
+    rows: readKvInputRows(compiled.downstreamRows),
     recordOperation: operationRecorder.record,
   });
+
+  return {
+    dbProvider,
+    kvProvider,
+  };
 }
 
 function resolveDownstreamEnumValues(ref: { table: string; column: string }): readonly string[] | undefined {
@@ -644,6 +774,7 @@ export async function compilePlaygroundInput(
     schema,
     downstreamRows: parsedRows as DownstreamRows,
     sql: normalizedSql,
+    modules: { ...modules },
   };
 }
 
@@ -655,8 +786,7 @@ export async function createSession(
   await reseedDownstreamDatabase(compiled.downstreamRows);
   operationRecorder.clear();
 
-  const dbProvider = await buildProvider();
-  const kvProvider = buildKvProvider(compiled.downstreamRows);
+  const { dbProvider, kvProvider } = await buildProvidersFromModules(compiled);
   const providers = defineProviders({
     dbProvider,
     kvProvider,

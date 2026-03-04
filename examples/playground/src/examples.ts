@@ -11,25 +11,29 @@ import type {
   PlaygroundScenarioPreset,
 } from "./types";
 
-const myOrdersEntity = createDataEntityHandle<
-  "id" | "vendor_id" | "status" | "total_cents" | "created_at"
+const ordersEntity = createDataEntityHandle<
+  "id" | "org_id" | "user_id" | "vendor_id" | "status" | "total_cents" | "created_at"
 >({
   provider: "dbProvider",
-  entity: "my_orders",
+  entity: "orders",
 });
-const myOrderItemsEntity = createDataEntityHandle<
-  "id" | "order_id" | "product_id" | "quantity" | "line_total_cents"
+const orderItemsEntity = createDataEntityHandle<
+  "id" | "org_id" | "user_id" | "order_id" | "product_id" | "quantity" | "line_total_cents"
 >({
   provider: "dbProvider",
-  entity: "my_order_items",
+  entity: "order_items",
 });
-const vendorsForOrgEntity = createDataEntityHandle<"id" | "name" | "tier">({
+const vendorsEntity = createDataEntityHandle<"id" | "org_id" | "name" | "tier">({
   provider: "dbProvider",
-  entity: "vendors_for_org",
+  entity: "vendors",
 });
-const activeProductsEntity = createDataEntityHandle<"id" | "sku" | "name" | "category">({
+const productsEntity = createDataEntityHandle<"id" | "org_id" | "sku" | "name" | "category" | "active">({
   provider: "dbProvider",
-  entity: "active_products",
+  entity: "products",
+});
+const userProductAccessEntity = createDataEntityHandle<"id" | "user_id" | "product_id">({
+  provider: "dbProvider",
+  entity: "user_product_access",
 });
 const productViewCountsEntity = createDataEntityHandle<"product_id" | "view_count">({
   provider: "kvProvider",
@@ -38,11 +42,11 @@ const productViewCountsEntity = createDataEntityHandle<"product_id" | "view_coun
 
 export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel, expr, col }) => {
   const myOrders = table({
-    from: myOrdersEntity,
+    from: ordersEntity,
     columns: {
-      id: { source: col(myOrdersEntity, "id"), type: "text", nullable: false, primaryKey: true },
+      id: { source: col(ordersEntity, "id"), type: "text", nullable: false, primaryKey: true },
       vendor_id: {
-        source: col(myOrdersEntity, "vendor_id"),
+        source: col(ordersEntity, "vendor_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -51,22 +55,22 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
         },
       },
       status: {
-        source: col(myOrdersEntity, "status"),
+        source: col(ordersEntity, "status"),
         type: "text",
         nullable: false,
         enum: ["pending", "paid", "shipped"] as const,
       },
-      total_cents: { source: col(myOrdersEntity, "total_cents"), type: "integer", nullable: false },
-      created_at: { source: col(myOrdersEntity, "created_at"), type: "timestamp", nullable: false },
+      total_cents: { source: col(ordersEntity, "total_cents"), type: "integer", nullable: false },
+      created_at: { source: col(ordersEntity, "created_at"), type: "timestamp", nullable: false },
     },
   });
 
   const myOrderItems = table({
-    from: myOrderItemsEntity,
+    from: orderItemsEntity,
     columns: {
-      id: { source: col(myOrderItemsEntity, "id"), type: "text", nullable: false, primaryKey: true },
+      id: { source: col(orderItemsEntity, "id"), type: "text", nullable: false, primaryKey: true },
       order_id: {
-        source: col(myOrderItemsEntity, "order_id"),
+        source: col(orderItemsEntity, "order_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -75,7 +79,7 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
         },
       },
       product_id: {
-        source: col(myOrderItemsEntity, "product_id"),
+        source: col(orderItemsEntity, "product_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -83,9 +87,9 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
           column: "id",
         },
       },
-      quantity: { source: col(myOrderItemsEntity, "quantity"), type: "integer", nullable: false },
+      quantity: { source: col(orderItemsEntity, "quantity"), type: "integer", nullable: false },
       line_total_cents: {
-        source: col(myOrderItemsEntity, "line_total_cents"),
+        source: col(orderItemsEntity, "line_total_cents"),
         type: "integer",
         nullable: false,
       },
@@ -93,12 +97,12 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
   });
 
   const vendorsForOrg = table({
-    from: vendorsForOrgEntity,
+    from: vendorsEntity,
     columns: {
-      id: { source: col(vendorsForOrgEntity, "id"), type: "text", nullable: false, primaryKey: true },
-      name: { source: col(vendorsForOrgEntity, "name"), type: "text", nullable: false },
+      id: { source: col(vendorsEntity, "id"), type: "text", nullable: false, primaryKey: true },
+      name: { source: col(vendorsEntity, "name"), type: "text", nullable: false },
       tier: {
-        source: col(vendorsForOrgEntity, "tier"),
+        source: col(vendorsEntity, "tier"),
         type: "text",
         nullable: false,
         enum: ["standard", "preferred"] as const,
@@ -106,14 +110,53 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
     },
   });
 
-  const activeProducts = table({
-    from: activeProductsEntity,
+  const productsForOrg = table({
+    from: productsEntity,
     columns: {
-      id: { source: col(activeProductsEntity, "id"), type: "text", nullable: false, primaryKey: true },
-      sku: { source: col(activeProductsEntity, "sku"), type: "text", nullable: false },
-      name: { source: col(activeProductsEntity, "name"), type: "text", nullable: false },
+      id: { source: col(productsEntity, "id"), type: "text", nullable: false, primaryKey: true },
+      sku: { source: col(productsEntity, "sku"), type: "text", nullable: false },
+      name: { source: col(productsEntity, "name"), type: "text", nullable: false },
       category: {
-        source: col(activeProductsEntity, "category"),
+        source: col(productsEntity, "category"),
+        type: "text",
+        nullable: false,
+        enum: ["hardware", "software", "services"] as const,
+      },
+    },
+  });
+
+  const productAccessForUser = table({
+    from: userProductAccessEntity,
+    columns: {
+      product_id: {
+        source: col(userProductAccessEntity, "product_id"),
+        type: "text",
+        nullable: false,
+        foreignKey: {
+          table: "products_for_org",
+          column: "id",
+        },
+      },
+    },
+  });
+
+  const activeProducts = view({
+    rel: () =>
+      rel.join({
+        left: rel.scan(productsForOrg),
+        right: rel.scan(productAccessForUser),
+        on: expr.eq(
+          col(productsForOrg, "id"),
+          col(productAccessForUser, "product_id"),
+        ),
+        type: "inner",
+      }),
+    columns: {
+      id: { source: col(productsForOrg, "id"), type: "text", nullable: false, primaryKey: true },
+      sku: { source: col(productsForOrg, "sku"), type: "text", nullable: false },
+      name: { source: col(productsForOrg, "name"), type: "text", nullable: false },
+      category: {
+        source: col(productsForOrg, "category"),
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
@@ -124,11 +167,19 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
   const myOrderLines = view({
     rel: () =>
       rel.join({
-        left: rel.scan(myOrderItems),
-        right: rel.scan(activeProducts),
+        left: rel.join({
+          left: rel.scan(myOrderItems),
+          right: rel.scan(productsForOrg),
+          on: expr.eq(
+            col(myOrderItems, "product_id"),
+            col(productsForOrg, "id"),
+          ),
+          type: "inner",
+        }),
+        right: rel.scan(productAccessForUser),
         on: expr.eq(
-          col(myOrderItems, "product_id"),
-          col(activeProducts, "id"),
+          col(productsForOrg, "id"),
+          col(productAccessForUser, "product_id"),
         ),
         type: "inner",
       }),
@@ -143,7 +194,7 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
         },
       },
       product_id: {
-        source: col(activeProducts, "id"),
+        source: col(productsForOrg, "id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -151,10 +202,10 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
           column: "id",
         },
       },
-      product_sku: { source: col(activeProducts, "sku"), type: "text", nullable: false },
-      product_name: { source: col(activeProducts, "name"), type: "text", nullable: false },
+      product_sku: { source: col(productsForOrg, "sku"), type: "text", nullable: false },
+      product_name: { source: col(productsForOrg, "name"), type: "text", nullable: false },
       product_category: {
-        source: col(activeProducts, "category"),
+        source: col(productsForOrg, "category"),
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
@@ -189,6 +240,8 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
       my_orders: myOrders,
       my_order_items: myOrderItems,
       vendors_for_org: vendorsForOrg,
+      products_for_org: productsForOrg,
+      product_access_for_user: productAccessForUser,
       active_products: activeProducts,
       my_order_lines: myOrderLines,
       product_view_counts: productViewCounts,
@@ -277,58 +330,146 @@ export const db = drizzle({ client });
 `.trim();
 
 export const DEFAULT_DB_PROVIDER_CODE = `
+import { createDataEntityHandle } from "sqlql";
+import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
-import { db, tables } from "${GENERATED_DB_MODULE_ID}";
+import type { db as generatedDb } from "${GENERATED_DB_MODULE_ID}";
+import { tables as generatedTables } from "${GENERATED_DB_MODULE_ID}";
 
-const tableConfigs = {
-  my_orders: {
-    table: tables.orders,
-  },
-  my_order_items: {
-    table: tables.order_items,
-  },
-  vendors_for_org: {
-    table: tables.vendors,
-  },
-  active_products: {
-    table: tables.products,
-  },
-};
-
-export const dbProvider = createDrizzleProvider({
-  name: "dbProvider",
-  db,
-  tables: tableConfigs,
+export const orders = createDataEntityHandle<"id" | "org_id" | "user_id" | "vendor_id" | "status" | "total_cents" | "created_at">({
+  provider: "dbProvider",
+  entity: "orders",
 });
+export const order_items = createDataEntityHandle<"id" | "org_id" | "user_id" | "order_id" | "product_id" | "quantity" | "line_total_cents">({
+  provider: "dbProvider",
+  entity: "order_items",
+});
+export const vendors = createDataEntityHandle<"id" | "org_id" | "name" | "tier">({
+  provider: "dbProvider",
+  entity: "vendors",
+});
+export const products = createDataEntityHandle<"id" | "org_id" | "sku" | "name" | "category" | "active">({
+  provider: "dbProvider",
+  entity: "products",
+});
+export const user_product_access = createDataEntityHandle<"id" | "user_id" | "product_id">({
+  provider: "dbProvider",
+  entity: "user_product_access",
+});
+
+type QueryContext = { orgId: string; userId: string };
+
+export function createProvider(runtime: {
+  db: typeof generatedDb;
+  tables: typeof generatedTables;
+}) {
+  return createDrizzleProvider<QueryContext>({
+    name: "dbProvider",
+    db: runtime.db,
+    tables: {
+      orders: {
+        table: runtime.tables.orders,
+        scope: (ctx) =>
+          and(
+            eq(runtime.tables.orders.org_id, ctx.orgId),
+            eq(runtime.tables.orders.user_id, ctx.userId),
+          ),
+      },
+      order_items: {
+        table: runtime.tables.order_items,
+        scope: (ctx) =>
+          and(
+            eq(runtime.tables.order_items.org_id, ctx.orgId),
+            eq(runtime.tables.order_items.user_id, ctx.userId),
+          ),
+      },
+      vendors: {
+        table: runtime.tables.vendors,
+        scope: (ctx) => eq(runtime.tables.vendors.org_id, ctx.orgId),
+      },
+      products: {
+        table: runtime.tables.products,
+        scope: (ctx) =>
+          and(
+            eq(runtime.tables.products.org_id, ctx.orgId),
+            eq(runtime.tables.products.active, true),
+          ),
+      },
+      user_product_access: {
+        table: runtime.tables.user_product_access,
+        scope: (ctx) => eq(runtime.tables.user_product_access.user_id, ctx.userId),
+      },
+    },
+  });
+}
 `.trim();
 
 export const DEFAULT_KV_PROVIDER_CODE = `
 import { createDataEntityHandle } from "sqlql";
+import { createKvProvider, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
 
-const productViewCounts = createDataEntityHandle<"product_id" | "view_count">({
+export const product_view_counts = createDataEntityHandle<"product_id" | "view_count">({
   provider: "kvProvider",
   entity: "product_view_counts",
 });
 
-export const kvProvider = {
-  entities: {
-    product_view_counts: productViewCounts,
-  },
-} as const;
+type QueryContext = { orgId: string; userId: string };
+
+function parseViewCounterKey(raw: string): { userId: string; productId: string } | null {
+  const separator = raw.indexOf(":");
+  if (separator <= 0 || separator >= raw.length - 1) {
+    return null;
+  }
+
+  const userId = raw.slice(0, separator).trim();
+  const productId = raw.slice(separator + 1).trim();
+  if (userId.length === 0 || productId.length === 0) {
+    return null;
+  }
+
+  return { userId, productId };
+}
+
+export function createProvider(runtime: KvProviderFactoryRuntime) {
+  return createKvProvider({
+    name: "kvProvider",
+    rows: runtime.rows,
+    recordOperation: runtime.recordOperation,
+    entities: {
+      product_view_counts: {
+        entity: "product_view_counts",
+        columns: ["product_id", "view_count"] as const,
+        mapRow({ key, value, context }: { key: string; value: unknown; context: QueryContext }) {
+          const parsed = parseViewCounterKey(key);
+          if (!parsed || parsed.userId !== context.userId) {
+            return null;
+          }
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            return null;
+          }
+          return {
+            product_id: parsed.productId,
+            view_count: Math.trunc(value),
+          };
+        },
+      },
+    },
+  });
+}
 `.trim();
 
 export const DEFAULT_FACADE_SCHEMA_CODE = `
 import { defineSchema } from "sqlql";
-import { dbProvider } from "${DB_PROVIDER_MODULE_ID}";
-import { kvProvider } from "${KV_PROVIDER_MODULE_ID}";
+import { order_items, orders, products, user_product_access, vendors } from "${DB_PROVIDER_MODULE_ID}";
+import { product_view_counts } from "${KV_PROVIDER_MODULE_ID}";
 
 export const schema = defineSchema(({ table, view, rel, expr, col }) => {
   const myOrders = table({
-    from: dbProvider.entities.my_orders,
+    from: orders,
     columns: {
-      id: { source: col(dbProvider.entities.my_orders, "id"), type: "text", nullable: false, primaryKey: true },
+      id: { source: col(orders, "id"), type: "text", nullable: false, primaryKey: true },
       vendor_id: {
-        source: col(dbProvider.entities.my_orders, "vendor_id"),
+        source: col(orders, "vendor_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -336,18 +477,18 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      status: { source: col(dbProvider.entities.my_orders, "status"), type: "text", nullable: false, enum: ["pending", "paid", "shipped"] as const },
-      total_cents: { source: col(dbProvider.entities.my_orders, "total_cents"), type: "integer", nullable: false },
-      created_at: { source: col(dbProvider.entities.my_orders, "created_at"), type: "timestamp", nullable: false },
+      status: { source: col(orders, "status"), type: "text", nullable: false, enum: ["pending", "paid", "shipped"] as const },
+      total_cents: { source: col(orders, "total_cents"), type: "integer", nullable: false },
+      created_at: { source: col(orders, "created_at"), type: "timestamp", nullable: false },
     },
   });
 
   const myOrderItems = table({
-    from: dbProvider.entities.my_order_items,
+    from: order_items,
     columns: {
-      id: { source: col(dbProvider.entities.my_order_items, "id"), type: "text", nullable: false, primaryKey: true },
+      id: { source: col(order_items, "id"), type: "text", nullable: false, primaryKey: true },
       order_id: {
-        source: col(dbProvider.entities.my_order_items, "order_id"),
+        source: col(order_items, "order_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -356,7 +497,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
         },
       },
       product_id: {
-        source: col(dbProvider.entities.my_order_items, "product_id"),
+        source: col(order_items, "product_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -364,28 +505,67 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      quantity: { source: col(dbProvider.entities.my_order_items, "quantity"), type: "integer", nullable: false },
-      line_total_cents: { source: col(dbProvider.entities.my_order_items, "line_total_cents"), type: "integer", nullable: false },
+      quantity: { source: col(order_items, "quantity"), type: "integer", nullable: false },
+      line_total_cents: { source: col(order_items, "line_total_cents"), type: "integer", nullable: false },
     },
   });
 
   const vendorsForOrg = table({
-    from: dbProvider.entities.vendors_for_org,
+    from: vendors,
     columns: {
-      id: { source: col(dbProvider.entities.vendors_for_org, "id"), type: "text", nullable: false, primaryKey: true },
-      name: { source: col(dbProvider.entities.vendors_for_org, "name"), type: "text", nullable: false },
-      tier: { source: col(dbProvider.entities.vendors_for_org, "tier"), type: "text", nullable: false, enum: ["standard", "preferred"] as const },
+      id: { source: col(vendors, "id"), type: "text", nullable: false, primaryKey: true },
+      name: { source: col(vendors, "name"), type: "text", nullable: false },
+      tier: { source: col(vendors, "tier"), type: "text", nullable: false, enum: ["standard", "preferred"] as const },
     },
   });
 
-  const activeProducts = table({
-    from: dbProvider.entities.active_products,
+  const productsForOrg = table({
+    from: products,
     columns: {
-      id: { source: col(dbProvider.entities.active_products, "id"), type: "text", nullable: false, primaryKey: true },
-      sku: { source: col(dbProvider.entities.active_products, "sku"), type: "text", nullable: false },
-      name: { source: col(dbProvider.entities.active_products, "name"), type: "text", nullable: false },
+      id: { source: col(products, "id"), type: "text", nullable: false, primaryKey: true },
+      sku: { source: col(products, "sku"), type: "text", nullable: false },
+      name: { source: col(products, "name"), type: "text", nullable: false },
       category: {
-        source: col(dbProvider.entities.active_products, "category"),
+        source: col(products, "category"),
+        type: "text",
+        nullable: false,
+        enum: ["hardware", "software", "services"] as const,
+      },
+    },
+  });
+
+  const productAccessForUser = table({
+    from: user_product_access,
+    columns: {
+      product_id: {
+        source: col(user_product_access, "product_id"),
+        type: "text",
+        nullable: false,
+        foreignKey: {
+          table: "products_for_org",
+          column: "id",
+        },
+      },
+    },
+  });
+
+  const activeProducts = view({
+    rel: () =>
+      rel.join({
+        left: rel.scan(productsForOrg),
+        right: rel.scan(productAccessForUser),
+        on: expr.eq(
+          col(productsForOrg, "id"),
+          col(productAccessForUser, "product_id"),
+        ),
+        type: "inner",
+      }),
+    columns: {
+      id: { source: col(productsForOrg, "id"), type: "text", nullable: false, primaryKey: true },
+      sku: { source: col(productsForOrg, "sku"), type: "text", nullable: false },
+      name: { source: col(productsForOrg, "name"), type: "text", nullable: false },
+      category: {
+        source: col(productsForOrg, "category"),
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
@@ -396,11 +576,19 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
   const myOrderLines = view({
     rel: () =>
       rel.join({
-        left: rel.scan(myOrderItems),
-        right: rel.scan(activeProducts),
+        left: rel.join({
+          left: rel.scan(myOrderItems),
+          right: rel.scan(productsForOrg),
+          on: expr.eq(
+            col(myOrderItems, "product_id"),
+            col(productsForOrg, "id"),
+          ),
+          type: "inner",
+        }),
+        right: rel.scan(productAccessForUser),
         on: expr.eq(
-          col(myOrderItems, "product_id"),
-          col(activeProducts, "id"),
+          col(productsForOrg, "id"),
+          col(productAccessForUser, "product_id"),
         ),
         type: "inner",
       }),
@@ -415,7 +603,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
         },
       },
       product_id: {
-        source: col(activeProducts, "id"),
+        source: col(productsForOrg, "id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -423,10 +611,10 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      product_sku: { source: col(activeProducts, "sku"), type: "text", nullable: false },
-      product_name: { source: col(activeProducts, "name"), type: "text", nullable: false },
+      product_sku: { source: col(productsForOrg, "sku"), type: "text", nullable: false },
+      product_name: { source: col(productsForOrg, "name"), type: "text", nullable: false },
       product_category: {
-        source: col(activeProducts, "category"),
+        source: col(productsForOrg, "category"),
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
@@ -437,10 +625,10 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
   });
 
   const productViewCounts = table({
-    from: kvProvider.entities.product_view_counts,
+    from: product_view_counts,
     columns: {
       product_id: {
-        source: col(kvProvider.entities.product_view_counts, "product_id"),
+        source: col(product_view_counts, "product_id"),
         type: "text",
         nullable: false,
         foreignKey: {
@@ -448,7 +636,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      view_count: { source: col(kvProvider.entities.product_view_counts, "view_count"), type: "integer", nullable: false },
+      view_count: { source: col(product_view_counts, "view_count"), type: "integer", nullable: false },
     },
   });
 
@@ -457,6 +645,8 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
       my_orders: myOrders,
       my_order_items: myOrderItems,
       vendors_for_org: vendorsForOrg,
+      products_for_org: productsForOrg,
+      product_access_for_user: productAccessForUser,
       active_products: activeProducts,
       my_order_lines: myOrderLines,
       product_view_counts: productViewCounts,

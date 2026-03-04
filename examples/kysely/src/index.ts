@@ -35,22 +35,22 @@ async function main(): Promise<void> {
     name: "dbProvider",
     db,
     entities: {
-      orders: {
+      orders_raw: {
         table: "orders_raw",
         base: ({ query, context, alias }) =>
           query
             .where(`${alias}.org_id`, "=", context.orgId)
             .where(`${alias}.user_id`, "=", context.userId),
       },
-      vendors: {
+      vendors_raw: {
         table: "vendors_raw",
         base: ({ query, context, alias }) => query.where(`${alias}.org_id`, "=", context.orgId),
       },
     },
   });
 
-  const ordersEntity = dbProvider.entities.orders;
-  const vendorsEntity = dbProvider.entities.vendors;
+  const ordersEntity = dbProvider.entities.orders_raw;
+  const vendorsEntity = dbProvider.entities.vendors_raw;
   if (!ordersEntity || !vendorsEntity) {
     throw new Error("Kysely provider did not expose expected entity handles.");
   }

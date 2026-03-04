@@ -25,7 +25,7 @@ Current examples of intentionally unsupported syntax:
 - subqueries in `FROM`
 - named `WINDOW` clauses/references
 - explicit window frame clauses
-- navigation window functions (`LEAD`, `LAG`, etc.)
+- some advanced value/navigation window functions (for example `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`)
 
 ## 2) AST remains planner/executor-oriented
 

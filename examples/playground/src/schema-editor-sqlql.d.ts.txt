@@ -169,38 +169,94 @@ declare module "@sqlql/drizzle" {
     scope?: (context: TContext) => unknown;
   }
 
-  export function createDrizzleProvider<TContext, TTables extends Record<string, DrizzleProviderTableConfig<TContext>>>(
+  export function createDrizzleProvider<
+    TContext,
+    TTables extends Record<string, DrizzleProviderTableConfig<TContext>> = Record<
+      string,
+      DrizzleProviderTableConfig<TContext>
+    >,
+  >(
     options: {
       name?: string;
       db: DrizzleQueryExecutor;
       tables: TTables;
     },
   ): {
-    tables: { [K in keyof TTables]: import("sqlql").DataEntityHandle<string> };
     entities: { [K in keyof TTables]: import("sqlql").DataEntityHandle<string> };
+  };
+}
+
+declare module "@playground/kv-provider-core" {
+  export interface KvInputRow {
+    key: string;
+    value: unknown;
+  }
+
+  export interface KvProviderOperation {
+    kind: "kv_lookup";
+    provider: string;
+    lookup: {
+      entity: string;
+      op: "scan" | "lookupMany";
+      key?: string;
+      keys?: unknown[];
+    };
+    variables: unknown;
+  }
+
+  export interface KvProviderFactoryRuntime {
+    rows: KvInputRow[];
+    recordOperation?: (operation: KvProviderOperation) => void;
+  }
+
+  export function createKvProvider<TContext, TEntities extends Record<string, {
+    entity: string;
+    columns: readonly string[];
+    mapRow: (input: { key: string; value: unknown; context: TContext }) => Record<string, unknown> | null;
+  }>>(
+    options: {
+      name?: string;
+      rows: KvInputRow[];
+      entities: TEntities;
+      recordOperation?: (operation: KvProviderOperation) => void;
+    },
+  ): {
+    entities: { [K in keyof TEntities]: import("sqlql").DataEntityHandle<TEntities[K]["columns"][number]> };
   };
 }
 
 declare module "./generated-db" {
   export class PGlite {}
-  export const tables: Record<string, object>;
-  export const db: {
-    select: (...args: unknown[]) => unknown;
+  type TableColumns<TColumns extends string> = { [K in TColumns]: unknown };
+  export const tables: {
+    orgs: TableColumns<"id" | "name">;
+    users: TableColumns<"id" | "org_id" | "email" | "display_name" | "role">;
+    vendors: TableColumns<"id" | "org_id" | "name" | "tier">;
+    products: TableColumns<"id" | "org_id" | "sku" | "name" | "category" | "active">;
+    orders: TableColumns<"id" | "org_id" | "user_id" | "vendor_id" | "status" | "total_cents" | "created_at">;
+    order_items: TableColumns<"id" | "org_id" | "user_id" | "order_id" | "product_id" | "quantity" | "line_total_cents">;
+    user_product_access: TableColumns<"id" | "user_id" | "product_id">;
   };
+  export const db: import("@sqlql/drizzle").DrizzleQueryExecutor;
 }
 
 declare module "./db-provider" {
-  export const dbProvider: {
-    tables: Record<string, unknown>;
-    entities: Record<string, unknown>;
-  };
+  export const orders: import("sqlql").DataEntityHandle<"id" | "org_id" | "user_id" | "vendor_id" | "status" | "total_cents" | "created_at">;
+  export const order_items: import("sqlql").DataEntityHandle<"id" | "org_id" | "user_id" | "order_id" | "product_id" | "quantity" | "line_total_cents">;
+  export const vendors: import("sqlql").DataEntityHandle<"id" | "org_id" | "name" | "tier">;
+  export const products: import("sqlql").DataEntityHandle<"id" | "org_id" | "sku" | "name" | "category" | "active">;
+  export const user_product_access: import("sqlql").DataEntityHandle<"id" | "user_id" | "product_id">;
+  export function createProvider(runtime: {
+    db: typeof import("./generated-db").db;
+    tables: typeof import("./generated-db").tables;
+  }): ReturnType<typeof import("@sqlql/drizzle").createDrizzleProvider<any>>;
 }
 
 declare module "./kv-provider" {
-  export const kvProvider: {
-    tables: Record<string, unknown>;
-    entities: Record<string, unknown>;
-  };
+  export const product_view_counts: import("sqlql").DataEntityHandle<"product_id" | "view_count">;
+  export function createProvider(
+    runtime: import("@playground/kv-provider-core").KvProviderFactoryRuntime,
+  ): ReturnType<typeof import("@playground/kv-provider-core").createKvProvider<any, any>>;
 }
 
 declare module "@electric-sql/pglite" {
@@ -217,16 +273,41 @@ declare module "drizzle-orm/pglite" {
   };
 }
 
+declare module "drizzle-orm" {
+  export function and(...conditions: unknown[]): unknown;
+  export function eq(left: unknown, right: unknown): unknown;
+  export function sql(strings: TemplateStringsArray, ...params: unknown[]): unknown;
+}
+
 declare module "drizzle-orm/pg-core" {
-  interface ColumnBuilder {
-    primaryKey(): ColumnBuilder;
-    notNull(): ColumnBuilder;
-    references(ref: () => unknown): ColumnBuilder;
+  interface PgColumn<TName extends string = string> {
+    readonly name: TName;
   }
 
-  export function pgTable(name: string, columns: Record<string, unknown>): object;
-  export function text(name: string): ColumnBuilder;
-  export function integer(name: string): ColumnBuilder;
-  export function boolean(name: string): ColumnBuilder;
-  export function timestamp(name: string, options?: { mode?: string }): ColumnBuilder;
+  interface ColumnBuilder<TName extends string = string> {
+    build(): PgColumn<TName>;
+    primaryKey(): ColumnBuilder<TName>;
+    notNull(): ColumnBuilder<TName>;
+    references(ref: () => unknown): ColumnBuilder<TName>;
+  }
+
+  type BuiltColumns<TColumns extends Record<string, ColumnBuilder<string>>> = {
+    [K in keyof TColumns]: TColumns[K] extends ColumnBuilder<infer TName> ? PgColumn<TName> : never;
+  };
+
+  export function pgTable<
+    TTableName extends string,
+    TColumns extends Record<string, ColumnBuilder<string>>,
+  >(name: TTableName, columns: TColumns): BuiltColumns<TColumns> & {
+    _: {
+      config: {
+        name: TTableName;
+        dialect: "postgres";
+      };
+    };
+  };
+  export function text<TName extends string>(name: TName): ColumnBuilder<TName>;
+  export function integer<TName extends string>(name: TName): ColumnBuilder<TName>;
+  export function boolean<TName extends string>(name: TName): ColumnBuilder<TName>;
+  export function timestamp<TName extends string>(name: TName, options?: { mode?: string }): ColumnBuilder<TName>;
 }

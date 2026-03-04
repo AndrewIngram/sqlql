@@ -11,15 +11,12 @@ import {
   type TableScanRequest,
 } from "sqlql";
 
-import type { PlaygroundContext } from "./types";
-
 export const KV_PROVIDER_NAME = "kvProvider";
-export const KV_DATA_TABLE_NAME = "kv_product_views";
-export const KV_ENTITY_NAME = "product_view_counts";
+export const KV_INPUT_TABLE_NAME = "kv_product_views";
 
-export interface KvDataRow {
+export interface KvInputRow {
   key: string;
-  value: number;
+  value: unknown;
 }
 
 export interface KvProviderOperation {
@@ -34,7 +31,7 @@ export interface KvProviderOperation {
   variables: unknown;
 }
 
-export const KV_DATA_TABLE_DEFINITION: TableDefinition = {
+export const KV_INPUT_TABLE_DEFINITION: TableDefinition = {
   provider: KV_PROVIDER_NAME,
   columns: {
     key: { type: "text", nullable: false },
@@ -42,59 +39,32 @@ export const KV_DATA_TABLE_DEFINITION: TableDefinition = {
   },
 };
 
-interface CreateInMemoryKvProviderOptions<TContext extends PlaygroundContext> {
+export interface KvEntityMappingConfig<TContext, TColumns extends string = string> {
+  entity: string;
+  columns: readonly TColumns[];
+  mapRow: (input: { key: string; value: unknown; context: TContext }) => QueryRow | null;
+}
+
+type KvEntityMappingMap<TContext> = Record<string, KvEntityMappingConfig<TContext, string>>;
+
+export interface CreateKvProviderOptions<
+  TContext,
+  TEntities extends KvEntityMappingMap<TContext> = KvEntityMappingMap<TContext>,
+> {
   name?: string;
-  rows: KvDataRow[];
+  rows: KvInputRow[];
+  entities: TEntities;
   recordOperation?: (operation: KvProviderOperation) => void;
-  resolveUserId?: (context: TContext) => string;
 }
 
-type KvEntityColumn = "product_id" | "view_count";
-
-type MaterializedKvRow = {
-  product_id: string;
-  view_count: number;
-};
-
-function parseKvKey(raw: string): { userId: string; productId: string } | null {
-  const separator = raw.indexOf(":");
-  if (separator <= 0 || separator >= raw.length - 1) {
-    return null;
-  }
-
-  const userId = raw.slice(0, separator).trim();
-  const productId = raw.slice(separator + 1).trim();
-  if (userId.length === 0 || productId.length === 0) {
-    return null;
-  }
-
-  return {
-    userId,
-    productId,
-  };
+export interface KvProviderFactoryRuntime {
+  rows: KvInputRow[];
+  recordOperation?: (operation: KvProviderOperation) => void;
 }
 
-function materializeRows<TContext extends PlaygroundContext>(
-  rows: KvDataRow[],
-  context: TContext,
-  resolveUserId: (context: TContext) => string,
-): MaterializedKvRow[] {
-  const userId = resolveUserId(context);
-  const out: MaterializedKvRow[] = [];
-
-  for (const row of rows) {
-    const parsed = parseKvKey(row.key);
-    if (!parsed || parsed.userId !== userId) {
-      continue;
-    }
-
-    out.push({
-      product_id: parsed.productId,
-      view_count: row.value,
-    });
-  }
-
-  return out;
+interface KvCompiledScanPlan {
+  table: string;
+  request: TableScanRequest;
 }
 
 function matchesClause(row: QueryRow, clause: ScanFilterClause): boolean {
@@ -180,34 +150,75 @@ function applyScanRequest(rows: QueryRow[], request: TableScanRequest): QueryRow
   });
 }
 
-interface KvCompiledScanPlan {
-  table: string;
-  request: TableScanRequest;
+function filterToKnownColumns(row: QueryRow, columns: readonly string[]): QueryRow {
+  const out: QueryRow = {};
+  for (const column of columns) {
+    out[column] = row[column] ?? null;
+  }
+  return out;
 }
 
-export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
-  options: CreateInMemoryKvProviderOptions<TContext>,
+function materializeEntityRows<TContext>(
+  rows: KvInputRow[],
+  mapping: KvEntityMappingConfig<TContext, string>,
+  context: TContext,
+): QueryRow[] {
+  const out: QueryRow[] = [];
+  for (const row of rows) {
+    const mapped = mapping.mapRow({ key: row.key, value: row.value, context });
+    if (!mapped) {
+      continue;
+    }
+    out.push(filterToKnownColumns(mapped, mapping.columns));
+  }
+  return out;
+}
+
+function inferEntityHandleColumns<TConfig extends KvEntityMappingConfig<any, string>>(
+  mapping: TConfig,
+): DataEntityHandle<TConfig["columns"][number]> {
+  return createDataEntityHandle<TConfig["columns"][number]>({
+    provider: "",
+    entity: mapping.entity,
+  });
+}
+
+export function createKvProvider<
+  TContext,
+  TEntities extends KvEntityMappingMap<TContext> = KvEntityMappingMap<TContext>,
+>(
+  options: CreateKvProviderOptions<TContext, TEntities>,
 ): ProviderAdapter<TContext> & {
-  entities: {
-    product_view_counts: DataEntityHandle<KvEntityColumn>;
-  };
+  entities: { [K in keyof TEntities]: DataEntityHandle<TEntities[K]["columns"][number]> };
 } {
   const providerName = options.name ?? KV_PROVIDER_NAME;
-  const entityHandle = createDataEntityHandle<KvEntityColumn>({
-    provider: providerName,
-    entity: KV_ENTITY_NAME,
-  });
-  const resolveUserId = options.resolveUserId ?? ((context: TContext) => context.userId);
-  const knownColumns: readonly KvEntityColumn[] = ["product_id", "view_count"];
+  const handles = {} as { [K in keyof TEntities]: DataEntityHandle<TEntities[K]["columns"][number]> };
+
+  const entityByName = new Map<string, KvEntityMappingConfig<TContext, string>>();
+  const entityByKey = options.entities;
+  for (const [entityKey, mapping] of Object.entries(entityByKey) as Array<
+    [keyof TEntities, TEntities[keyof TEntities]]
+  >) {
+    handles[entityKey] = inferEntityHandleColumns(mapping);
+    handles[entityKey].provider = providerName;
+    handles[entityKey].entity = mapping.entity;
+    entityByName.set(mapping.entity, mapping);
+  }
+
+  function getEntityMappingOrThrow(entity: string): KvEntityMappingConfig<TContext, string> {
+    const mapping = entityByName.get(entity);
+    if (!mapping) {
+      throw new Error(`Unknown KV entity ${entity}.`);
+    }
+    return mapping;
+  }
 
   return {
-    entities: {
-      product_view_counts: entityHandle,
-    },
+    entities: handles,
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
         case "scan":
-          return fragment.table === KV_ENTITY_NAME;
+          return entityByName.has(fragment.table);
         case "rel":
           return {
             supported: false,
@@ -221,13 +232,12 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
       if (fragment.kind !== "scan") {
         throw new Error(`Unsupported fragment kind for KV provider: ${fragment.kind}`);
       }
-      if (fragment.table !== KV_ENTITY_NAME) {
-        throw new Error(`Unknown KV entity ${fragment.table}.`);
-      }
 
+      const mapping = getEntityMappingOrThrow(fragment.table);
+      const allowedColumns = new Set(mapping.columns);
       for (const column of fragment.request.select) {
-        if (!knownColumns.includes(column as KvEntityColumn)) {
-          throw new Error(`Unsupported KV column in select: ${column}`);
+        if (!allowedColumns.has(column)) {
+          throw new Error(`Unsupported KV column in select for ${fragment.table}: ${column}`);
         }
       }
 
@@ -246,11 +256,8 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
       }
 
       const compiled = plan.payload as KvCompiledScanPlan;
-      const materialized = materializeRows(options.rows, context, resolveUserId);
-      const rows = materialized.map((row) => ({
-        product_id: row.product_id,
-        view_count: row.view_count,
-      }));
+      const mapping = getEntityMappingOrThrow(compiled.table);
+      const rows = materializeEntityRows(options.rows, mapping, context);
 
       options.recordOperation?.({
         kind: "kv_lookup",
@@ -261,43 +268,34 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
         },
         variables: {
           request: compiled.request,
-          userId: resolveUserId(context),
         },
       });
 
       return applyScanRequest(rows, compiled.request);
     },
     async lookupMany(request, context): Promise<QueryRow[]> {
-      if (request.table !== KV_ENTITY_NAME) {
-        throw new Error(`Unknown KV entity ${request.table}.`);
-      }
+      const mapping = getEntityMappingOrThrow(request.table);
+      const allowedColumns = new Set(mapping.columns);
 
-      if (!knownColumns.includes(request.key as KvEntityColumn)) {
-        throw new Error(`Unsupported KV lookup key column: ${request.key}`);
+      if (!allowedColumns.has(request.key)) {
+        throw new Error(`Unsupported KV lookup key column for ${request.table}: ${request.key}`);
       }
-
       for (const column of request.select) {
-        if (!knownColumns.includes(column as KvEntityColumn)) {
-          throw new Error(`Unsupported KV lookup select column: ${column}`);
+        if (!allowedColumns.has(column)) {
+          throw new Error(`Unsupported KV lookup select column for ${request.table}: ${column}`);
         }
       }
-      const keyColumn = request.key as KvEntityColumn;
-      const selectColumns = request.select as KvEntityColumn[];
 
-      const materialized = materializeRows(options.rows, context, resolveUserId).map((row) => ({
-        product_id: row.product_id,
-        view_count: row.view_count,
-      }));
-
-      const inFiltered = materialized.filter((row) => request.keys.includes(row[keyColumn]));
+      const rows = materializeEntityRows(options.rows, mapping, context);
+      const inFiltered = rows.filter((row) => request.keys.includes(row[request.key]));
       const withResidual = (request.where ?? []).reduce(
-        (rows, clause) => rows.filter((row) => matchesClause(row, clause)),
+        (current, clause) => current.filter((row) => matchesClause(row, clause)),
         inFiltered,
       );
 
       const selected = withResidual.map((row) => {
         const out: QueryRow = {};
-        for (const column of selectColumns) {
+        for (const column of request.select) {
           out[column] = row[column] ?? null;
         }
         return out;
@@ -314,7 +312,6 @@ export function createInMemoryKvProvider<TContext extends PlaygroundContext>(
         },
         variables: {
           request,
-          userId: resolveUserId(context),
         },
       });
 

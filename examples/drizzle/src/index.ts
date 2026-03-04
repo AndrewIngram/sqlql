@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   const db = drizzle(sqlite);
 
   const tableConfigs = {
-    orders: {
+    orders_raw: {
       table: ordersRawTable,
       scope: (context: DemoContext) =>
         and(
@@ -38,11 +38,11 @@ async function main(): Promise<void> {
           eq(ordersRawTable.userId, context.userId),
         ),
     },
-    vendors: {
+    vendors_raw: {
       table: vendorsRawTable,
       scope: (context: DemoContext) => eq(vendorsRawTable.orgId, context.orgId),
     },
-  } satisfies Record<"orders" | "vendors", DrizzleProviderTableConfig<DemoContext, string>>;
+  } satisfies Record<"orders_raw" | "vendors_raw", DrizzleProviderTableConfig<DemoContext, string>>;
 
   const dbProvider = createDrizzleProvider<DemoContext, typeof tableConfigs>({
     name: "dbProvider",
@@ -52,20 +52,20 @@ async function main(): Promise<void> {
 
   const schema = defineSchema<DemoContext>(({ table, view, col, expr, agg, rel }) => {
     const myOrders = table({
-      from: dbProvider.entities.orders,
+      from: dbProvider.entities.orders_raw,
       columns: {
-        id: col(dbProvider.entities.orders, "id"),
-        vendorId: col(dbProvider.entities.orders, "vendor_id"),
-        totalCents: col(dbProvider.entities.orders, "total_cents"),
-        createdAt: col(dbProvider.entities.orders, "created_at"),
+        id: col(dbProvider.entities.orders_raw, "id"),
+        vendorId: col(dbProvider.entities.orders_raw, "vendor_id"),
+        totalCents: col(dbProvider.entities.orders_raw, "total_cents"),
+        createdAt: col(dbProvider.entities.orders_raw, "created_at"),
       },
     });
 
     const vendorsForOrg = table({
-      from: dbProvider.entities.vendors,
+      from: dbProvider.entities.vendors_raw,
       columns: {
-        id: col(dbProvider.entities.vendors, "id"),
-        name: col(dbProvider.entities.vendors, "name"),
+        id: col(dbProvider.entities.vendors_raw, "id"),
+        name: col(dbProvider.entities.vendors_raw, "name"),
       },
     });
 

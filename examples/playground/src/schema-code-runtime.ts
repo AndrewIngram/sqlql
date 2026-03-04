@@ -6,6 +6,9 @@ import {
 import * as sqlqlModule from "sqlql";
 import type { DrizzleQueryExecutor } from "@sqlql/drizzle";
 import * as drizzleAdapterModule from "@sqlql/drizzle";
+import * as drizzleOrmModule from "drizzle-orm";
+
+import { createKvProvider } from "./kv-provider";
 
 export type SchemaCodeErrorCode =
   | "TS_PARSE_ERROR"
@@ -156,6 +159,15 @@ function createStaticModuleMap(): Record<string, unknown> {
       integer: () => createColumnBuilder(),
       boolean: () => createColumnBuilder(),
       timestamp: () => createColumnBuilder(),
+    },
+    "drizzle-orm": {
+      ...(drizzleOrmModule as Record<string, unknown>),
+      and: (...conditions: unknown[]) => ({ kind: "and", conditions }),
+      eq: (left: unknown, right: unknown) => ({ kind: "eq", left, right }),
+      sql: (strings: TemplateStringsArray, ...params: unknown[]) => ({ strings, params }),
+    },
+    "@playground/kv-provider-core": {
+      createKvProvider,
     },
   };
 }

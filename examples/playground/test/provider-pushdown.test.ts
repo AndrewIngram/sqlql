@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DB_PROVIDER_MODULE_ID,
+  DEFAULT_DB_PROVIDER_CODE,
   DEFAULT_FACADE_SCHEMA_CODE,
+  DEFAULT_GENERATED_DB_FILE_CODE,
   QUERY_PRESETS,
   SCENARIO_PRESETS,
+  GENERATED_DB_MODULE_ID,
+  KV_PROVIDER_MODULE_ID,
   serializeJson,
 } from "../src/examples";
 import { compilePlaygroundInput, createSession, runSessionToCompletion } from "../src/session-runtime";
@@ -85,6 +90,101 @@ describe("playground/provider-pushdown", () => {
         expect(sqlText).toContain("with");
         expect(sqlText).toContain("dense_rank");
       }
+    }
+  });
+
+  it("uses kv-provider module mapping code at runtime", async () => {
+    const scenario = SCENARIO_PRESETS[0];
+    if (!scenario) {
+      throw new Error("Missing scenario preset.");
+    }
+
+    const customKvProviderCode = `
+import { createDataEntityHandle } from "sqlql";
+import { createKvProvider, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
+
+export const product_view_counts = createDataEntityHandle<"product_id" | "view_count">({
+  provider: "kvProvider",
+  entity: "product_view_counts",
+});
+
+type QueryContext = { orgId: string; userId: string };
+
+function parseViewCounterKey(raw: string): { userId: string; productId: string } | null {
+  const separator = raw.indexOf(":");
+  if (separator <= 0 || separator >= raw.length - 1) {
+    return null;
+  }
+
+  const userId = raw.slice(0, separator).trim();
+  const productId = raw.slice(separator + 1).trim();
+  if (userId.length === 0 || productId.length === 0) {
+    return null;
+  }
+
+  return { userId, productId };
+}
+
+export function createProvider(runtime: KvProviderFactoryRuntime) {
+  return createKvProvider({
+    name: "kvProvider",
+    rows: runtime.rows,
+    recordOperation: runtime.recordOperation,
+    entities: {
+      product_view_counts: {
+        entity: "product_view_counts",
+        columns: ["product_id", "view_count"] as const,
+        mapRow({ key, value, context }: { key: string; value: unknown; context: QueryContext }) {
+          const parsed = parseViewCounterKey(key);
+          if (!parsed || parsed.userId !== context.userId) {
+            return null;
+          }
+          if (typeof value !== "number") {
+            return null;
+          }
+          return {
+            product_id: parsed.productId,
+            view_count: value * 10,
+          };
+        },
+      },
+    },
+  });
+}
+    `.trim();
+
+    const compiled = await compilePlaygroundInput(
+      DEFAULT_FACADE_SCHEMA_CODE,
+      serializeJson(scenario.rows),
+      `
+SELECT product_id, view_count
+FROM product_view_counts
+ORDER BY view_count DESC;
+      `.trim(),
+      {
+        modules: {
+          [DB_PROVIDER_MODULE_ID]: DEFAULT_DB_PROVIDER_CODE,
+          [GENERATED_DB_MODULE_ID]: DEFAULT_GENERATED_DB_FILE_CODE,
+          [KV_PROVIDER_MODULE_ID]: customKvProviderCode,
+        },
+      },
+    );
+
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) {
+      return;
+    }
+
+    const bundle = await createSession(compiled, scenario.context);
+    const snapshot = await runSessionToCompletion(bundle.session, []);
+    expect(snapshot.executedOperations).toHaveLength(1);
+    expect(snapshot.executedOperations[0]?.kind).toBe("kv_lookup");
+
+    const rows = snapshot.result ?? [];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(typeof row.view_count).toBe("number");
+      expect((row.view_count as number) % 10).toBe(0);
     }
   });
 });

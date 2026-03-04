@@ -8,7 +8,7 @@ import {
 } from "sqlql";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
-import { KV_DATA_TABLE_DEFINITION, KV_DATA_TABLE_NAME } from "./kv-provider";
+import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "./kv-provider";
 import {
   evaluateSchemaCodeInProcess,
   type SchemaCodeEvaluationOptions,
@@ -46,7 +46,7 @@ const queryFallbackSchema = z
 const DOWNSTREAM_INPUT_ROWS_SCHEMA: SchemaDefinition = defineSchema({
   tables: {
     ...DOWNSTREAM_ROWS_SCHEMA.tables,
-    [KV_DATA_TABLE_NAME]: KV_DATA_TABLE_DEFINITION,
+    [KV_INPUT_TABLE_NAME]: KV_INPUT_TABLE_DEFINITION,
   },
 });
 

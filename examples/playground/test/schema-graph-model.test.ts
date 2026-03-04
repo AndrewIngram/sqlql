@@ -20,11 +20,13 @@ describe("playground/schema-graph-model", () => {
       "my_orders",
       "my_order_items",
       "vendors_for_org",
+      "products_for_org",
+      "product_access_for_user",
       "active_products",
       "my_order_lines",
       "product_view_counts",
     ]);
-    expect(layout.edges).toHaveLength(6);
+    expect(layout.edges).toHaveLength(7);
     expect(
       layout.edges
         .map(
@@ -38,6 +40,7 @@ describe("playground/schema-graph-model", () => {
       "my_order_lines.order_id->my_orders.id",
       "my_order_lines.product_id->active_products.id",
       "my_orders.vendor_id->vendors_for_org.id",
+      "product_access_for_user.product_id->products_for_org.id",
       "product_view_counts.product_id->active_products.id",
     ]);
   });

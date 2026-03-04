@@ -57,7 +57,7 @@ import {
 import { SqlPreviewLine } from "@/SqlPreviewLine";
 import { registerSqlCompletionProvider } from "@/sql-completion";
 import { configureSchemaTypescriptProject } from "@/schema-monaco";
-import { KV_DATA_TABLE_DEFINITION, KV_DATA_TABLE_NAME } from "@/kv-provider";
+import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "@/kv-provider";
 import {
   parseDownstreamRowsText,
   parseFacadeSchemaCode,
@@ -1284,7 +1284,7 @@ export function App(): React.JSX.Element {
   }, [downstreamStructureRowsByTable]);
 
   const downstreamTableNames = useMemo(
-    () => [...DOWNSTREAM_TABLE_NAMES, KV_DATA_TABLE_NAME],
+    () => [...DOWNSTREAM_TABLE_NAMES, KV_INPUT_TABLE_NAME],
     [],
   );
 
@@ -1303,18 +1303,18 @@ export function App(): React.JSX.Element {
     : downstreamTableNames[0] ?? null;
 
   const currentDataTableDefinition =
-    currentDataTable === KV_DATA_TABLE_NAME
-      ? KV_DATA_TABLE_DEFINITION
+    currentDataTable === KV_INPUT_TABLE_NAME
+      ? KV_INPUT_TABLE_DEFINITION
       : currentDataTable
         ? downstreamStructureSchema.tables[currentDataTable]
         : undefined;
 
   const currentDataRows = currentDataTable ? editableRowsByTable[currentDataTable] ?? [] : [];
   const currentStructureRows =
-    currentDataTable && currentDataTable !== KV_DATA_TABLE_NAME
+    currentDataTable && currentDataTable !== KV_INPUT_TABLE_NAME
       ? downstreamStructureRowsByTable[currentDataTable] ?? []
       : [];
-  const selectedTableSupportsStructure = currentDataTable !== KV_DATA_TABLE_NAME;
+  const selectedTableSupportsStructure = currentDataTable !== KV_INPUT_TABLE_NAME;
 
   const currentTableIssues =
     !rowsParse.ok && currentDataTable
@@ -1330,9 +1330,9 @@ export function App(): React.JSX.Element {
   const filteredKvTableNames = useMemo(() => {
     const query = downstreamTableFilter.trim().toLowerCase();
     if (query.length === 0) {
-      return [KV_DATA_TABLE_NAME];
+      return [KV_INPUT_TABLE_NAME];
     }
-    return KV_DATA_TABLE_NAME.toLowerCase().includes(query) ? [KV_DATA_TABLE_NAME] : [];
+    return KV_INPUT_TABLE_NAME.toLowerCase().includes(query) ? [KV_INPUT_TABLE_NAME] : [];
   }, [downstreamTableFilter]);
   const hasAnyFilteredTables = filteredPostgresTableNames.length > 0 || filteredKvTableNames.length > 0;
   const selectedDataRow =
@@ -1550,7 +1550,7 @@ export function App(): React.JSX.Element {
   }, [postgresWorkspaceMode, selectedTableSupportsStructure]);
 
   useEffect(() => {
-    if (currentDataTable === KV_DATA_TABLE_NAME) {
+    if (currentDataTable === KV_INPUT_TABLE_NAME) {
       setOpenDataSourceSection("kv");
       return;
     }
@@ -2031,7 +2031,7 @@ export function App(): React.JSX.Element {
 
   const handleSelectDataTable = (tableName: string): void => {
     setSelectedDataTable(tableName);
-    setOpenDataSourceSection(tableName === KV_DATA_TABLE_NAME ? "kv" : "postgres");
+    setOpenDataSourceSection(tableName === KV_INPUT_TABLE_NAME ? "kv" : "postgres");
   };
 
   const handleSetTableRows = (tableName: string, tableRows: QueryRow[]): void => {
