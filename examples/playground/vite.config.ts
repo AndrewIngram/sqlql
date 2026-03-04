@@ -11,6 +11,7 @@ export default defineConfig({
     alias: {
       "@": resolve(rootDir, "./src"),
       sqlql: resolve(rootDir, "../../src/index.ts"),
+      "@sqlql/drizzle": resolve(rootDir, "../../packages/drizzle/src/index.ts"),
     },
   },
   server: {
