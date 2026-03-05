@@ -3,6 +3,7 @@ import type React from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { ChevronDown, ChevronRight, Database, SearchCode, Table2, Trash2, X } from "lucide-react";
 import type * as Monaco from "monaco-editor";
+import { parseAsStringLiteral, useQueryState } from "nuqs";
 import type {
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
@@ -115,7 +116,7 @@ const SCHEMA_SPLIT_MAX_PERCENT = 70;
 const QUERY_SPLIT_MIN_PERCENT = 35;
 const QUERY_SPLIT_MAX_PERCENT = 80;
 
-type TopTab = "postgres" | "sqlql_schema" | "query";
+type TopTab = "data" | "schema" | "query";
 type SchemaTab = "diagram" | "ddl";
 type QueryTab = "result" | "explain";
 type PostgresWorkspaceMode = "data" | "structure";
@@ -1049,7 +1050,10 @@ export function App(): React.JSX.Element {
     QUERY_PRESETS[0];
 
   const [, setActiveScenarioId] = useState(defaultScenario?.id ?? CUSTOM_SCENARIO_ID);
-  const [activeTopTab, setActiveTopTab] = useState<TopTab>("postgres");
+  const [activeTopTab, setActiveTopTab] = useQueryState(
+    "view",
+    parseAsStringLiteral(["data", "schema", "query"] as const).withDefault("data"),
+  );
   const [activeSchemaTab, setActiveSchemaTab] = useState<SchemaTab>("diagram");
   const [activeQueryTab, setActiveQueryTab] = useState<QueryTab>("result");
   const [postgresWorkspaceMode, setPostgresWorkspaceMode] = useState<PostgresWorkspaceMode>("data");
@@ -1876,7 +1880,7 @@ export function App(): React.JSX.Element {
   }, [clampQuerySplitPercent, isQuerySplitDragging]);
 
   useEffect(() => {
-    if (activeTopTab !== "sqlql_schema") {
+    if (activeTopTab !== "schema") {
       return;
     }
 
@@ -2001,7 +2005,7 @@ export function App(): React.JSX.Element {
   }, [orgId, orgIdOptions, userId, usersByOrg]);
 
   useEffect(() => {
-    if (activeTopTab !== "sqlql_schema") {
+    if (activeTopTab !== "schema") {
       setIsSchemaSplitDragging(false);
     }
     if (activeTopTab !== "query") {
@@ -2211,7 +2215,7 @@ export function App(): React.JSX.Element {
     <div className="h-screen w-screen overflow-hidden">
       <Tabs
         value={activeTopTab}
-        onValueChange={(value) => setActiveTopTab(value as TopTab)}
+        onValueChange={(value) => void setActiveTopTab(value as TopTab)}
         className="h-full"
       >
         <div className="flex h-full min-h-0 flex-col">
@@ -2219,7 +2223,7 @@ export function App(): React.JSX.Element {
             <div className="grid gap-2 px-2 py-2 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center">
                 <TabsList className="gap-1">
                   <TabsTrigger
-                    value="postgres"
+                    value="data"
                     title="PostgreSQL workspace"
                     aria-label="PostgreSQL workspace"
                     className="px-2.5"
@@ -2228,7 +2232,7 @@ export function App(): React.JSX.Element {
                     <span className="sr-only">PostgreSQL workspace</span>
                   </TabsTrigger>
                   <TabsTrigger
-                    value="sqlql_schema"
+                    value="schema"
                     title="sqlql schema"
                     aria-label="sqlql schema"
                     className="px-2.5"
@@ -2392,7 +2396,7 @@ export function App(): React.JSX.Element {
 
                 <div className="flex items-center gap-2 justify-self-start lg:justify-self-end">
 
-                  {activeTopTab === "sqlql_schema" ? (
+                  {activeTopTab === "schema" ? (
                     <Tabs
                       value={activeSchemaTab}
                       onValueChange={(value) => setActiveSchemaTab(value as SchemaTab)}
@@ -2420,7 +2424,7 @@ export function App(): React.JSX.Element {
             </header>
 
           <div className="min-h-0 flex-1 overflow-hidden bg-background p-2">
-              <TabsContent value="postgres" forceMount className="mt-0 h-full min-h-0">
+              <TabsContent value="data" forceMount className="mt-0 h-full min-h-0">
                 {downstreamTableNames.length > 0 ? (
                   <div className="grid h-full min-h-0 gap-2 lg:grid-cols-[240px_minmax(0,1fr)]">
                     <div className="flex min-h-0 flex-col rounded-md border bg-slate-50 p-2">
@@ -2971,7 +2975,7 @@ export function App(): React.JSX.Element {
                                       selectedTableName={currentDataTable}
                                       onSelectTable={(tableName) => setSelectedDataTable(tableName)}
                                       isVisible={
-                                        activeTopTab === "postgres" &&
+                                        activeTopTab === "data" &&
                                         postgresWorkspaceMode === "structure" &&
                                         postgresStructureTab === "diagram"
                                       }
@@ -3051,7 +3055,7 @@ export function App(): React.JSX.Element {
                 )}
               </TabsContent>
 
-              <TabsContent value="sqlql_schema" forceMount className="mt-0 h-full min-h-0">
+              <TabsContent value="schema" forceMount className="mt-0 h-full min-h-0">
                 <div className="hidden h-full min-h-0 flex-col gap-2 lg:flex">
                   <div
                     ref={schemaWorkspaceRef}
@@ -3115,7 +3119,7 @@ export function App(): React.JSX.Element {
                             selectedTableName={selectedSchemaTable}
                             onSelectTable={handleSelectSchemaTable}
                             onClearSelection={() => setSelectedSchemaTable(null)}
-                            isVisible={activeTopTab === "sqlql_schema" && activeSchemaTab === "diagram"}
+                            isVisible={activeTopTab === "schema" && activeSchemaTab === "diagram"}
                             heightClassName="h-full"
                             embedded
                           />
@@ -3207,7 +3211,7 @@ export function App(): React.JSX.Element {
                           selectedTableName={selectedSchemaTable}
                           onSelectTable={handleSelectSchemaTable}
                           onClearSelection={() => setSelectedSchemaTable(null)}
-                          isVisible={activeTopTab === "sqlql_schema" && activeSchemaTab === "diagram"}
+                          isVisible={activeTopTab === "schema" && activeSchemaTab === "diagram"}
                           heightClassName="h-full"
                         />
                       ) : (
