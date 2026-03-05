@@ -1,4 +1,4 @@
-import { resolveColumnDefinition, type SchemaDefinition } from "sqlql";
+import { type SchemaDefinition } from "sqlql";
 import type * as Monaco from "monaco-editor";
 
 const SQL_KEYWORDS = [
@@ -193,24 +193,13 @@ function isColumnAllowedInClause(
   schema: SchemaDefinition,
   tableName: string,
   columnName: string,
-  clauseContext: ClauseContext,
+  _clauseContext: ClauseContext,
 ): boolean {
   const table = schema.tables[tableName];
-  const rawColumn = table?.columns[columnName];
-  if (!table || !rawColumn) {
+  if (!table) {
     return false;
   }
-
-  const resolved = resolveColumnDefinition(rawColumn);
-
-  if (clauseContext === "where") {
-    return resolved.filterable;
-  }
-  if (clauseContext === "order_by") {
-    return resolved.sortable;
-  }
-
-  return true;
+  return columnName in table.columns;
 }
 
 function tableColumnNamesForClause(

@@ -26,39 +26,12 @@ import {
 const sqlScalarTypeSchema = z.enum(["text", "integer", "boolean", "timestamp"]);
 const physicalDialectSchema = z.enum(["postgres", "sqlite"]);
 
-const queryRejectSchema = z
-  .object({
-    requiresLimit: z.boolean().optional(),
-    forbidFullScan: z.boolean().optional(),
-    requireAnyFilterOn: z.array(z.string()).optional(),
-  })
-  .strict();
-
-const queryFallbackSchema = z
-  .object({
-    filters: z.enum(["allow_local", "require_pushdown"]).optional(),
-    sorting: z.enum(["allow_local", "require_pushdown"]).optional(),
-    aggregates: z.enum(["allow_local", "require_pushdown"]).optional(),
-    limitOffset: z.enum(["allow_local", "require_pushdown"]).optional(),
-  })
-  .strict();
-
 const DOWNSTREAM_INPUT_ROWS_SCHEMA: SchemaDefinition = defineSchema({
   tables: {
     ...DOWNSTREAM_ROWS_SCHEMA.tables,
     [KV_INPUT_TABLE_NAME]: KV_INPUT_TABLE_DEFINITION,
   },
 });
-
-const queryDefaultsSchema = z
-  .object({
-    maxRows: z.number().int().nonnegative().nullable().optional(),
-    reject: queryRejectSchema.optional(),
-    fallback: queryFallbackSchema.optional(),
-    filterable: z.union([z.literal("all"), z.array(z.string())]).optional(),
-    sortable: z.union([z.literal("all"), z.array(z.string())]).optional(),
-  })
-  .strict();
 
 const primaryKeySchema = z
   .object({
@@ -120,8 +93,6 @@ const columnObjectDefinitionSchema = z
   .object({
     type: sqlScalarTypeSchema,
     nullable: z.boolean().optional(),
-    filterable: z.boolean().optional(),
-    sortable: z.boolean().optional(),
     primaryKey: z.boolean().optional(),
     unique: z.boolean().optional(),
     enum: z.array(z.string()).min(1).optional(),
@@ -156,7 +127,6 @@ const tableSchema = z
   .object({
     provider: z.string().min(1),
     columns: z.record(z.string().min(1), columnDefinitionSchema),
-    query: queryDefaultsSchema.optional(),
     constraints: z
       .object({
         primaryKey: primaryKeySchema.optional(),
@@ -171,12 +141,6 @@ const tableSchema = z
 
 const schemaSchema = z
   .object({
-    defaults: z
-      .object({
-        query: queryDefaultsSchema.partial().optional(),
-      })
-      .strict()
-      .optional(),
     tables: z.record(z.string().min(1), tableSchema),
   })
   .strict();
@@ -555,61 +519,6 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
   required: ["tables"],
   properties: {
-    defaults: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        query: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            maxRows: {
-              anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
-            },
-            reject: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                requiresLimit: { type: "boolean" },
-                forbidFullScan: { type: "boolean" },
-                requireAnyFilterOn: {
-                  type: "array",
-                  items: { type: "string" },
-                },
-              },
-            },
-            fallback: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                filters: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                sorting: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                aggregates: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                limitOffset: { type: "string", enum: ["allow_local", "require_pushdown"] },
-              },
-            },
-            filterable: {
-              anyOf: [
-                { type: "string", enum: ["all"] },
-                {
-                  type: "array",
-                  items: { type: "string" },
-                },
-              ],
-            },
-            sortable: {
-              anyOf: [
-                { type: "string", enum: ["all"] },
-                {
-                  type: "array",
-                  items: { type: "string" },
-                },
-              ],
-            },
-          },
-        },
-      },
-    },
     tables: {
       type: "object",
       additionalProperties: {
@@ -636,8 +545,6 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                       enum: ["text", "integer", "boolean", "timestamp"],
                     },
                     nullable: { type: "boolean" },
-                    filterable: { type: "boolean" },
-                    sortable: { type: "boolean" },
                     primaryKey: { type: "boolean" },
                     unique: { type: "boolean" },
                     enum: {
@@ -689,49 +596,6 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                   ],
                 },
               ],
-            },
-          },
-          query: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              maxRows: {
-                anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
-              },
-              reject: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  requiresLimit: { type: "boolean" },
-                  forbidFullScan: { type: "boolean" },
-                  requireAnyFilterOn: {
-                    type: "array",
-                    items: { type: "string" },
-                  },
-                },
-              },
-              fallback: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  filters: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                  sorting: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                  aggregates: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                  limitOffset: { type: "string", enum: ["allow_local", "require_pushdown"] },
-                },
-              },
-              filterable: {
-                anyOf: [
-                  { type: "string", enum: ["all"] },
-                  { type: "array", items: { type: "string" } },
-                ],
-              },
-              sortable: {
-                anyOf: [
-                  { type: "string", enum: ["all"] },
-                  { type: "array", items: { type: "string" } },
-                ],
-              },
             },
           },
           constraints: {

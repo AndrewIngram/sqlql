@@ -79,18 +79,13 @@ describe("query/planner-hooks", () => {
     expect(remoteRequests[0]?.limit).toBeUndefined();
   });
 
-  it("rejects planScan residuals when fallback requires pushdown", async () => {
+  it("allows planScan residuals by default", async () => {
     const schema = defineSchema({
       tables: {
         orders: {
           columns: {
             id: "text",
             status: "text",
-          },
-          query: {
-            fallback: {
-              filters: "require_pushdown",
-            },
           },
         },
       },
@@ -107,14 +102,14 @@ describe("query/planner-hooks", () => {
       },
     });
 
-    await expect(
-      query({
-        schema,
-        providers: providersFromMethods(methods),
-        context: EMPTY_CONTEXT,
-        sql: "SELECT id FROM orders WHERE status = 'paid'",
-      }),
-    ).rejects.toThrow("filter residuals require local execution");
+    const result = await query({
+      schema,
+      providers: providersFromMethods(methods),
+      context: EMPTY_CONTEXT,
+      sql: "SELECT id FROM orders WHERE status = 'paid'",
+    });
+
+    expect(result).toEqual([{ id: "o1" }]);
   });
 
   it("supports explicit remote/residual planScan mode", async () => {

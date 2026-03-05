@@ -92,13 +92,13 @@ describe("playground/sql-completion", () => {
     expect(suggestions.labels).toContain("'paid'");
   });
 
-  it("omits non-filterable columns from WHERE suggestions", () => {
-    const schemaForPolicies = {
+  it("includes declared columns in WHERE suggestions", () => {
+    const schemaForSuggestions = {
       tables: {
         orders: {
           columns: {
             id: { type: "text", nullable: false },
-            status: { type: "text", nullable: false, filterable: false },
+            status: { type: "text", nullable: false },
             created_at: { type: "timestamp", nullable: false },
           },
         },
@@ -106,53 +106,53 @@ describe("playground/sql-completion", () => {
     } as const;
 
     const aliasSql = "SELECT * FROM orders o WHERE o.";
-    const aliasSuggestions = getSqlSuggestionLabels(aliasSql, aliasSql.length, schemaForPolicies);
+    const aliasSuggestions = getSqlSuggestionLabels(aliasSql, aliasSql.length, schemaForSuggestions);
     expect(aliasSuggestions.context).toBe("alias_column");
     expect(aliasSuggestions.labels).toContain("id");
     expect(aliasSuggestions.labels).toContain("created_at");
-    expect(aliasSuggestions.labels).not.toContain("status");
+    expect(aliasSuggestions.labels).toContain("status");
 
     const generalSql = "SELECT * FROM orders WHERE ";
     const generalSuggestions = getSqlSuggestionLabels(
       generalSql,
       generalSql.length,
-      schemaForPolicies,
+      schemaForSuggestions,
     );
     expect(generalSuggestions.labels).toContain("id");
     expect(generalSuggestions.labels).toContain("created_at");
-    expect(generalSuggestions.labels).not.toContain("status");
-    expect(generalSuggestions.labels).not.toContain("orders.status");
+    expect(generalSuggestions.labels).toContain("status");
+    expect(generalSuggestions.labels).toContain("orders.status");
   });
 
-  it("omits non-sortable columns from ORDER BY suggestions", () => {
-    const schemaForPolicies = {
+  it("includes declared columns in ORDER BY suggestions", () => {
+    const schemaForSuggestions = {
       tables: {
         orders: {
           columns: {
-            id: { type: "text", nullable: false, sortable: false },
-            status: { type: "text", nullable: false, sortable: false },
-            created_at: { type: "timestamp", nullable: false, sortable: true },
+            id: { type: "text", nullable: false },
+            status: { type: "text", nullable: false },
+            created_at: { type: "timestamp", nullable: false },
           },
         },
       },
     } as const;
 
     const aliasSql = "SELECT * FROM orders o ORDER BY o.";
-    const aliasSuggestions = getSqlSuggestionLabels(aliasSql, aliasSql.length, schemaForPolicies);
+    const aliasSuggestions = getSqlSuggestionLabels(aliasSql, aliasSql.length, schemaForSuggestions);
     expect(aliasSuggestions.context).toBe("alias_column");
     expect(aliasSuggestions.labels).toContain("created_at");
-    expect(aliasSuggestions.labels).not.toContain("id");
-    expect(aliasSuggestions.labels).not.toContain("status");
+    expect(aliasSuggestions.labels).toContain("id");
+    expect(aliasSuggestions.labels).toContain("status");
 
     const generalSql = "SELECT * FROM orders ORDER BY ";
     const generalSuggestions = getSqlSuggestionLabels(
       generalSql,
       generalSql.length,
-      schemaForPolicies,
+      schemaForSuggestions,
     );
     expect(generalSuggestions.labels).toContain("created_at");
-    expect(generalSuggestions.labels).not.toContain("id");
-    expect(generalSuggestions.labels).not.toContain("status");
-    expect(generalSuggestions.labels).not.toContain("orders.status");
+    expect(generalSuggestions.labels).toContain("id");
+    expect(generalSuggestions.labels).toContain("status");
+    expect(generalSuggestions.labels).toContain("orders.status");
   });
 });

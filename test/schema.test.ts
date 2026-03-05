@@ -8,7 +8,6 @@ import {
   getNormalizedTableBinding,
   resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
-  resolveTableQueryBehavior,
   toSqlDDL,
 } from "../src";
 
@@ -282,84 +281,7 @@ describe("defineSchema", () => {
     expect(() => resolveSchemaLinkedEnums(schema)).toThrow("Unmapped enumFrom value");
   });
 
-  it("applies default non-column query policy", () => {
-    const schema = defineSchema({
-      tables: {
-        agent_events: {
-          columns: {
-            event_id: "text",
-            org_id: "text",
-            created_at: "timestamp",
-          },
-        },
-      },
-    });
-
-    expect(resolveTableQueryBehavior(schema, "agent_events")).toEqual({
-      maxRows: null,
-      reject: {
-        requiresLimit: false,
-        forbidFullScan: false,
-        requireAnyFilterOn: [],
-      },
-      fallback: {
-        filters: "allow_local",
-        sorting: "allow_local",
-        aggregates: "allow_local",
-        limitOffset: "allow_local",
-      },
-    });
-  });
-
-  it("supports table-level reject/fallback policy overrides", () => {
-    const schema = defineSchema({
-      defaults: {
-        query: {
-          maxRows: 5_000,
-          reject: {
-            requiresLimit: true,
-          },
-          fallback: {
-            filters: "require_pushdown",
-          },
-        },
-      },
-      tables: {
-        agent_events: {
-          columns: {
-            event_id: "text",
-            org_id: "text",
-          },
-          query: {
-            maxRows: 100,
-            reject: {
-              forbidFullScan: true,
-            },
-            fallback: {
-              sorting: "require_pushdown",
-            },
-          },
-        },
-      },
-    });
-
-    expect(resolveTableQueryBehavior(schema, "agent_events")).toEqual({
-      maxRows: 100,
-      reject: {
-        requiresLimit: true,
-        forbidFullScan: true,
-        requireAnyFilterOn: [],
-      },
-      fallback: {
-        filters: "require_pushdown",
-        sorting: "require_pushdown",
-        aggregates: "allow_local",
-        limitOffset: "allow_local",
-      },
-    });
-  });
-
-  it("generates DDL with column metadata comments on every column and table metadata", () => {
+  it("generates DDL with metadata comments for timestamp/description fields", () => {
     const schema = defineSchema({
       tables: {
         orders: {
@@ -369,14 +291,8 @@ describe("defineSchema", () => {
               type: "text",
               nullable: false,
               enum: ["draft", "paid", "void"] as const,
-              sortable: false,
             },
             created_at: "timestamp",
-          },
-          query: {
-            reject: {
-              requiresLimit: true,
-            },
           },
         },
       },
@@ -384,11 +300,10 @@ describe("defineSchema", () => {
 
     const ddl = toSqlDDL(schema, { ifNotExists: true });
     expect(ddl).toContain('CREATE TABLE IF NOT EXISTS "orders"');
-    expect(ddl).toContain('"id" TEXT NOT NULL /* sqlql: filterable:true sortable:true description:"Order id" */');
-    expect(ddl).toContain('"status" TEXT NOT NULL /* sqlql: filterable:true sortable:false */');
-    expect(ddl).toContain('"created_at" TEXT /* sqlql: filterable:true sortable:true format:iso8601 */');
+    expect(ddl).toContain('"id" TEXT NOT NULL /* sqlql: description:"Order id" */');
+    expect(ddl).toContain('"status" TEXT NOT NULL');
+    expect(ddl).toContain('"created_at" TEXT /* sqlql: format:iso8601 */');
     expect(ddl).toContain('CHECK ("status" IN (\'draft\', \'paid\', \'void\'))');
-    expect(ddl).toContain('/* sqlql: query:{"maxRows":null,"reject":{"requiresLimit":true');
   });
 
   it("generates explicit CHECK constraints", () => {
@@ -471,8 +386,8 @@ describe("defineSchema", () => {
     const ddl = toSqlDDL(schema);
     expect(ddl).toContain('PRIMARY KEY ("id")');
     expect(ddl).toContain('UNIQUE ("sku")');
-    expect(ddl).toContain('"id" TEXT NOT NULL /* sqlql: filterable:true sortable:true */');
-    expect(ddl).toContain('"sku" TEXT NOT NULL /* sqlql: filterable:true sortable:true */');
+    expect(ddl).toContain('"id" TEXT NOT NULL');
+    expect(ddl).toContain('"sku" TEXT NOT NULL');
   });
 
   it("rejects invalid enum/check declarations", () => {

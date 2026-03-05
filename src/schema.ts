@@ -30,8 +30,6 @@ type ColumnConstraintFlags =
 interface ColumnDefinitionBase {
   type: SqlScalarType;
   nullable?: boolean;
-  filterable?: boolean;
-  sortable?: boolean;
   enum?: readonly string[];
   enumFrom?: SchemaColRefToken | string;
   enumMap?: Record<string, string>;
@@ -46,39 +44,6 @@ export type ColumnDefinition = ColumnDefinitionBase & ColumnConstraintFlags;
 export type TableColumnDefinition = SqlScalarType | ColumnDefinition;
 
 export type TableColumns = Record<string, TableColumnDefinition>;
-
-export interface TableQueryRejectPolicy {
-  requiresLimit?: boolean;
-  forbidFullScan?: boolean;
-  requireAnyFilterOn?: string[];
-}
-
-export type TableQueryFallbackMode = "allow_local" | "require_pushdown";
-
-export interface TableQueryFallbackPolicy {
-  filters?: TableQueryFallbackMode;
-  sorting?: TableQueryFallbackMode;
-  aggregates?: TableQueryFallbackMode;
-  limitOffset?: TableQueryFallbackMode;
-}
-
-export interface SchemaQueryDefaults {
-  maxRows: number | null;
-  reject: TableQueryRejectPolicy;
-  fallback: Required<TableQueryFallbackPolicy>;
-}
-
-export interface SchemaQueryDefaultsInput {
-  maxRows?: number | null;
-  reject?: TableQueryRejectPolicy;
-  fallback?: TableQueryFallbackPolicy;
-}
-
-export interface TableQueryOverrides {
-  maxRows?: number | null;
-  reject?: TableQueryRejectPolicy;
-  fallback?: TableQueryFallbackPolicy;
-}
 
 export interface PrimaryKeyConstraint {
   columns: string[];
@@ -133,14 +98,10 @@ export interface TableDefinition {
    */
   provider?: string;
   columns: TableColumns;
-  query?: TableQueryOverrides;
   constraints?: TableConstraints;
 }
 
 export interface SchemaDefinition {
-  defaults?: {
-    query?: SchemaQueryDefaultsInput;
-  };
   tables: Record<string, TableDefinition>;
 }
 
@@ -230,8 +191,6 @@ export interface SchemaColumnLensDefinition {
   source: string | SchemaColRefToken;
   type?: SqlScalarType;
   nullable?: boolean;
-  filterable?: boolean;
-  sortable?: boolean;
   primaryKey?: boolean;
   unique?: boolean;
   enum?: readonly string[];
@@ -248,7 +207,6 @@ interface DslTableDefinition<TColumns extends string = string> {
   tableToken: SchemaDslTableToken<TColumns>;
   from: SchemaDataEntityHandle;
   columns: Record<TColumns, TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken>;
-  query?: TableQueryOverrides;
   constraints?: TableConstraints;
 }
 
@@ -256,7 +214,6 @@ interface DslViewDefinition<TContext> {
   kind: "dsl_view";
   rel: (context: TContext) => SchemaViewRelNodeInput | unknown;
   columns: Record<string, SchemaColumnLensDefinition | SchemaColRefToken>;
-  query?: TableQueryOverrides;
   constraints?: TableConstraints;
 }
 
@@ -293,14 +250,12 @@ interface SchemaDslHelpers<TContext> {
     <TColumns extends string>(input: {
       from: SchemaDataEntityHandle;
       columns: Record<TColumns, TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken>;
-      query?: TableQueryOverrides;
       constraints?: TableConstraints;
     }): DslTableDefinition<TColumns>;
   };
   view: (input: {
     rel: (context: TContext) => SchemaViewRelNodeInput | unknown;
     columns: Record<string, SchemaColumnLensDefinition | SchemaColRefToken>;
-    query?: TableQueryOverrides;
     constraints?: TableConstraints;
   }) => DslViewDefinition<TContext>;
   col: {
@@ -320,9 +275,6 @@ interface SchemaDslHelpers<TContext> {
 }
 
 interface SchemaDslDefinition<TContext> {
-  defaults?: {
-    query?: SchemaQueryDefaultsInput;
-  };
   tables: Record<string, DslTableDefinition | DslViewDefinition<TContext> | TableDefinition>;
 }
 
@@ -393,36 +345,6 @@ export type TableRow<TSchema extends SchemaDefinition, TTableName extends TableN
   [TColumnName in TableColumnName<TSchema, TTableName>]: ColumnValue<
     TSchema["tables"][TTableName]["columns"][TColumnName]
   >;
-};
-
-export interface ResolvedTableQueryBehavior {
-  maxRows: number | null;
-  reject: {
-    requiresLimit: boolean;
-    forbidFullScan: boolean;
-    requireAnyFilterOn: string[];
-  };
-  fallback: {
-    filters: TableQueryFallbackMode;
-    sorting: TableQueryFallbackMode;
-    aggregates: TableQueryFallbackMode;
-    limitOffset: TableQueryFallbackMode;
-  };
-}
-
-export const DEFAULT_QUERY_BEHAVIOR: ResolvedTableQueryBehavior = {
-  maxRows: null,
-  reject: {
-    requiresLimit: false,
-    forbidFullScan: false,
-    requireAnyFilterOn: [],
-  },
-  fallback: {
-    filters: "allow_local",
-    sorting: "allow_local",
-    aggregates: "allow_local",
-    limitOffset: "allow_local",
-  },
 };
 
 export function defineSchema<TContext>(
@@ -531,7 +453,6 @@ function normalizeDslSchema<TContext>(
       tables[tableName] = {
         provider: rawTable.from.provider,
         columns: normalizedColumns,
-        ...(rawTable.query ? { query: rawTable.query } : {}),
         ...(rawTable.constraints ? { constraints: rawTable.constraints } : {}),
       };
 
@@ -561,7 +482,6 @@ function normalizeDslSchema<TContext>(
       tables[tableName] = {
         provider: "__view__",
         columns: normalizedColumns,
-        ...(rawTable.query ? { query: rawTable.query } : {}),
         ...(rawTable.constraints ? { constraints: rawTable.constraints } : {}),
       };
 
@@ -580,10 +500,7 @@ function normalizeDslSchema<TContext>(
     tables[tableName] = rawTable as TableDefinition;
   }
 
-  const schema: SchemaDefinition = {
-    ...(built.defaults ? { defaults: built.defaults } : {}),
-    tables,
-  };
+  const schema: SchemaDefinition = { tables };
 
   normalizedSchemaState.set(schema, { tables: bindings });
   return schema;
@@ -668,8 +585,6 @@ function normalizeColumnLens(
     const definition = {
         type: rawColumn.type ?? "text",
         ...(rawColumn.nullable != null ? { nullable: rawColumn.nullable } : {}),
-        ...(rawColumn.filterable != null ? { filterable: rawColumn.filterable } : {}),
-        ...(rawColumn.sortable != null ? { sortable: rawColumn.sortable } : {}),
         ...(rawColumn.primaryKey === true
           ? { primaryKey: true as const }
           : rawColumn.primaryKey === false
@@ -841,7 +756,6 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
     table<TColumns extends string>(input: {
       from: SchemaDataEntityHandle;
       columns: Record<TColumns, TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken>;
-      query?: TableQueryOverrides;
       constraints?: TableConstraints;
     }): DslTableDefinition<TColumns> {
       return {
@@ -849,7 +763,6 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
         tableToken: createTableToken<TColumns>(),
         from: input.from,
         columns: input.columns,
-        ...(input.query ? { query: input.query } : {}),
         ...(input.constraints ? { constraints: input.constraints } : {}),
       };
     },
@@ -858,7 +771,6 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
         kind: "dsl_view",
         rel: input.rel,
         columns: input.columns,
-        ...(input.query ? { query: input.query } : {}),
         ...(input.constraints ? { constraints: input.constraints } : {}),
       };
     },
@@ -1032,54 +944,6 @@ export function getTable(schema: SchemaDefinition, tableName: string): TableDefi
   }
 
   return table;
-}
-
-export function resolveTableQueryBehavior(
-  schema: SchemaDefinition,
-  tableName: string,
-): ResolvedTableQueryBehavior {
-  const table = getTable(schema, tableName);
-  const defaults = schema.defaults?.query;
-  const tableReject = table.query?.reject;
-  const defaultReject = defaults?.reject;
-  const tableFallback = table.query?.fallback;
-  const defaultFallback = defaults?.fallback;
-
-  return {
-    maxRows: table.query?.maxRows ?? defaults?.maxRows ?? DEFAULT_QUERY_BEHAVIOR.maxRows,
-    reject: {
-      requiresLimit:
-        tableReject?.requiresLimit ??
-        defaultReject?.requiresLimit ??
-        DEFAULT_QUERY_BEHAVIOR.reject.requiresLimit,
-      forbidFullScan:
-        tableReject?.forbidFullScan ??
-        defaultReject?.forbidFullScan ??
-        DEFAULT_QUERY_BEHAVIOR.reject.forbidFullScan,
-      requireAnyFilterOn:
-        tableReject?.requireAnyFilterOn ??
-        defaultReject?.requireAnyFilterOn ??
-        DEFAULT_QUERY_BEHAVIOR.reject.requireAnyFilterOn,
-    },
-    fallback: {
-      filters:
-        tableFallback?.filters ??
-        defaultFallback?.filters ??
-        DEFAULT_QUERY_BEHAVIOR.fallback.filters,
-      sorting:
-        tableFallback?.sorting ??
-        defaultFallback?.sorting ??
-        DEFAULT_QUERY_BEHAVIOR.fallback.sorting,
-      aggregates:
-        tableFallback?.aggregates ??
-        defaultFallback?.aggregates ??
-        DEFAULT_QUERY_BEHAVIOR.fallback.aggregates,
-      limitOffset:
-        tableFallback?.limitOffset ??
-        defaultFallback?.limitOffset ??
-        DEFAULT_QUERY_BEHAVIOR.fallback.limitOffset,
-    },
-  };
 }
 
 export type ScanFilterOperator =
@@ -1496,9 +1360,8 @@ export function toSqlDDL(schema: SchemaDefinition, options: SqlDdlOptions = {}):
       );
     }
 
-    const tableMetadata = renderTableMetadataComment(resolveTableQueryBehavior(schema, tableName));
     statements.push(
-      `${createPrefix} ${escapeIdentifier(tableName)} (\n${definitionLines.join(",\n")}\n)${tableMetadata};`,
+      `${createPrefix} ${escapeIdentifier(tableName)} (\n${definitionLines.join(",\n")}\n);`,
     );
   }
 
@@ -1519,10 +1382,7 @@ function toSqlType(type: SqlScalarType): string {
 }
 
 function renderColumnMetadataComment(column: ResolvedColumnDefinition): string {
-  const attributes = [
-    `filterable:${String(column.filterable)}`,
-    `sortable:${String(column.sortable)}`,
-  ];
+  const attributes: string[] = [];
 
   if (column.type === "timestamp") {
     attributes.push("format:iso8601");
@@ -1532,11 +1392,11 @@ function renderColumnMetadataComment(column: ResolvedColumnDefinition): string {
     attributes.push(`description:${JSON.stringify(column.description)}`);
   }
 
-  return ` /* sqlql: ${attributes.join(" ")} */`;
-}
+  if (attributes.length === 0) {
+    return "";
+  }
 
-function renderTableMetadataComment(tableBehavior: ResolvedTableQueryBehavior): string {
-  return ` /* sqlql: query:${JSON.stringify(tableBehavior)} */`;
+  return ` /* sqlql: ${attributes.join(" ")} */`;
 }
 
 interface CheckConstraintForDDL {
@@ -1724,8 +1584,6 @@ function renderSqlLiteral(value: string | number | boolean): string {
 export interface ResolvedColumnDefinition {
   type: SqlScalarType;
   nullable: boolean;
-  filterable: boolean;
-  sortable: boolean;
   primaryKey: boolean;
   unique: boolean;
   enum?: readonly string[];
@@ -1744,8 +1602,6 @@ export function resolveColumnDefinition(
     return {
       type: definition,
       nullable: true,
-      filterable: true,
-      sortable: true,
       primaryKey: false,
       unique: false,
     };
@@ -1756,8 +1612,6 @@ export function resolveColumnDefinition(
   return {
     type: definition.type,
     nullable: definition.nullable ?? true,
-    filterable: definition.filterable ?? true,
-    sortable: definition.sortable ?? true,
     primaryKey: definition.primaryKey === true,
     unique: definition.unique === true,
     ...(definition.enum ? { enum: definition.enum } : {}),
@@ -1904,10 +1758,7 @@ export function resolveSchemaLinkedEnums(
     return schema;
   }
 
-  const resolvedSchema: SchemaDefinition = {
-    ...(schema.defaults ? { defaults: schema.defaults } : {}),
-    tables,
-  };
+  const resolvedSchema: SchemaDefinition = { tables };
 
   const existingBindings = normalizedSchemaState.get(schema);
   if (existingBindings) {
@@ -1978,8 +1829,6 @@ function validateSchemaConstraints(schema: SchemaDefinition): void {
       const resolved = resolveColumnDefinition(columnDefinition);
       validateColumnDefinition(tableName, columnName, resolved);
     }
-
-    validateTableQueryPolicy(schema, tableName, table);
 
     const columnPrimaryKeyColumns = readColumnPrimaryKeyColumns(table);
     if (columnPrimaryKeyColumns.length > 1) {
@@ -2080,32 +1929,6 @@ function validateSchemaConstraints(schema: SchemaDefinition): void {
         }
       }
     });
-  }
-}
-
-function validateTableQueryPolicy(
-  schema: SchemaDefinition,
-  tableName: string,
-  table: TableDefinition,
-): void {
-  const requireAnyFilterOn = table.query?.reject?.requireAnyFilterOn ?? [];
-  for (const columnName of requireAnyFilterOn) {
-    if (!(columnName in table.columns)) {
-      throw new Error(
-        `Invalid reject policy on ${tableName}: required filter column "${columnName}" does not exist on table "${tableName}".`,
-      );
-    }
-  }
-
-  const defaultRequireAnyFilterOn = schema.defaults?.query?.reject?.requireAnyFilterOn;
-  if (Array.isArray(defaultRequireAnyFilterOn)) {
-    for (const columnName of defaultRequireAnyFilterOn) {
-      if (!(columnName in table.columns)) {
-        throw new Error(
-          `Invalid defaults.query.reject.requireAnyFilterOn entry "${columnName}" for table "${tableName}": column does not exist.`,
-        );
-      }
-    }
   }
 }
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Audit"
+  short_description: "Find exploitable security risks in code"
+  default_prompt: "Use $security-audit to run a findings-first security review of this TypeScript/Node codebase."

@@ -4,8 +4,6 @@ declare module "sqlql" {
   export interface ColumnDefinition {
     type: SqlScalarType;
     nullable?: boolean;
-    filterable?: boolean;
-    sortable?: boolean;
     primaryKey?: boolean;
     unique?: boolean;
     enum?: readonly string[];
@@ -25,11 +23,6 @@ declare module "sqlql" {
   }
 
   export interface SchemaDefinition {
-    defaults?: {
-      query?: {
-        maxRows?: number | null;
-      };
-    };
     tables: Record<string, TableDefinition>;
   }
 
@@ -56,8 +49,6 @@ declare module "sqlql" {
     source: string | SchemaColRefToken;
     type?: SqlScalarType;
     nullable?: boolean;
-    filterable?: boolean;
-    sortable?: boolean;
     primaryKey?: boolean;
     unique?: boolean;
     enum?: readonly string[];
@@ -147,11 +138,6 @@ declare module "sqlql" {
 
   export function defineSchema<TContext>(
     schemaBuilder: (helpers: SchemaDslHelpers<TContext>) => {
-      defaults?: {
-        query?: {
-          maxRows?: number | null;
-        };
-      };
       tables: Record<string, unknown>;
     },
   ): SchemaDefinition;

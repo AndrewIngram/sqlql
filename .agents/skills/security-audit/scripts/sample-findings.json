@@ -1,0 +1,28 @@
+[
+  {
+    "severity": "critical",
+    "title": "Undeclared Column Exposure in Relational Plan",
+    "vulnerability": "Planner allows selecting columns not declared in the facade schema.",
+    "exploit_path": "Untrusted SQL references hidden column and execution path returns value.",
+    "impact": "Direct unauthorized sensitive-data disclosure.",
+    "evidence": "src/rel.ts:238",
+    "remediation": "Validate all scan select/where/orderBy columns against schema before execution.",
+    "required_tests": [
+      "Reject SELECT on undeclared columns",
+      "Reject ORDER BY on undeclared columns"
+    ]
+  },
+  {
+    "severity": "medium",
+    "title": "Post-Fetch Row Limit Enforcement",
+    "vulnerability": "Row cap is enforced after expensive work in some fallback paths.",
+    "exploit_path": "Attacker submits high-cardinality request that forces large intermediate materialization.",
+    "impact": "Availability degradation and resource exhaustion risk.",
+    "evidence": "src/query.ts:2100",
+    "remediation": "Apply guardrails before executing expensive branches where feasible.",
+    "required_tests": [
+      "Guardrail triggers on large fallback scans",
+      "Deterministic error returned for oversized requests"
+    ]
+  }
+]

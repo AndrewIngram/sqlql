@@ -236,11 +236,33 @@ export function collectRelTables(node: RelNode): string[] {
 }
 
 export function validateRelAgainstSchema(node: RelNode, schema: SchemaDefinition): void {
+  const validateScanColumn = (tableName: string, column: string): void => {
+    const table = schema.tables[tableName];
+    if (!table) {
+      return;
+    }
+    const logicalColumn = column.includes(".") ? column.slice(column.lastIndexOf(".") + 1) : column;
+    if (!(logicalColumn in table.columns)) {
+      throw new Error(`Unknown column in relational plan: ${tableName}.${logicalColumn}`);
+    }
+  };
+
   const visit = (current: RelNode, cteNames: Set<string>): void => {
     switch (current.kind) {
       case "scan":
         if (!cteNames.has(current.table) && !schema.tables[current.table]) {
           throw new Error(`Unknown table in relational plan: ${current.table}`);
+        }
+        if (!cteNames.has(current.table) && schema.tables[current.table]) {
+          for (const column of current.select) {
+            validateScanColumn(current.table, column);
+          }
+          for (const clause of current.where ?? []) {
+            validateScanColumn(current.table, clause.column);
+          }
+          for (const term of current.orderBy ?? []) {
+            validateScanColumn(current.table, term.column);
+          }
         }
         return;
       case "sql":
