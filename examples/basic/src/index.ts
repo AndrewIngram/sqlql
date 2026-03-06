@@ -1,16 +1,25 @@
 import {
-  defineProviders,
+  bindAdapterEntities,
+  createDataEntityHandle,
+  createExecutableSchema,
   defineSchema,
-  query,
   toSqlDDL,
   type ProviderAdapter,
   type QueryRow,
+  type SchemaColumnLensDefinition,
+  type SchemaDefinition,
   type ScanFilterClause,
+  type TableColumnDefinition,
   type TableScanRequest,
 } from "sqlql";
 
-function createMemoryProvider<TContext>(tables: Record<string, QueryRow[]>): ProviderAdapter<TContext> {
-  return {
+function createMemoryProvider<TContext>(
+  schema: SchemaDefinition,
+  tables: Record<string, QueryRow[]>,
+): ProviderAdapter<TContext> {
+  const adapter: ProviderAdapter<TContext> = {
+    name: "memory",
+    entities: {},
     canExecute(fragment) {
       return fragment.kind === "scan";
     },
@@ -34,6 +43,28 @@ function createMemoryProvider<TContext>(tables: Record<string, QueryRow[]>): Pro
         .map((row) => projectRow(row, request.select));
     },
   };
+
+  for (const [tableName, table] of Object.entries(schema.tables)) {
+    adapter.entities![tableName] = createDataEntityHandle({
+      entity: tableName,
+      provider: adapter.name,
+      adapter,
+      columns: Object.fromEntries(
+        Object.entries(table.columns).map(([columnName, definition]) => [
+          columnName,
+          typeof definition === "string"
+            ? { source: columnName, type: definition }
+            : {
+                source: columnName,
+                type: definition.type,
+                ...(definition.nullable != null ? { nullable: definition.nullable } : {}),
+              },
+        ]),
+      ),
+    });
+  }
+
+  return bindAdapterEntities(adapter);
 }
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
@@ -140,6 +171,36 @@ function projectRow(row: QueryRow, select: string[]): QueryRow {
   return out;
 }
 
+function toColumnLens(
+  columnName: string,
+  definition: TableColumnDefinition,
+): SchemaColumnLensDefinition {
+  if (typeof definition === "string") {
+    return {
+      source: columnName,
+      type: definition,
+    };
+  }
+
+  const lens: SchemaColumnLensDefinition = {
+    source: columnName,
+    type: definition.type,
+  };
+  if (definition.nullable != null) {
+    lens.nullable = definition.nullable;
+  }
+  if (definition.primaryKey != null) {
+    lens.primaryKey = definition.primaryKey;
+  }
+  if (definition.unique != null) {
+    lens.unique = definition.unique;
+  }
+  if (definition.enum) {
+    lens.enum = definition.enum;
+  }
+  return lens;
+}
+
 async function main(): Promise<void> {
   const schema = defineSchema({
     tables: {
@@ -214,15 +275,29 @@ async function main(): Promise<void> {
     ],
   };
 
-  const providers = defineProviders({
-    memory: createMemoryProvider(tableData),
-  });
+  const memoryProvider = createMemoryProvider(schema, tableData);
+  const executableSchema = createExecutableSchema<Record<string, never>>(({ table }) => ({
+    tables: Object.fromEntries(
+      Object.entries(schema.tables).map(([tableName, tableDefinition]) => [
+        tableName,
+        table(memoryProvider.entities![tableName]!, {
+          columns: () => Object.fromEntries(
+            Object.entries(tableDefinition.columns).map(([columnName, definition]) => [
+              columnName,
+              toColumnLens(columnName, definition),
+            ]),
+          ),
+          ...(("constraints" in tableDefinition && tableDefinition.constraints)
+            ? { constraints: tableDefinition.constraints }
+            : {}),
+        }),
+      ]),
+    ),
+  }));
 
   const ddl = toSqlDDL(schema, { ifNotExists: true });
 
-  const joinRows = await query({
-    schema,
-    providers,
+  const joinRows = await executableSchema.query({
     context: {},
     sql: `
       SELECT o.id, o.total_cents, u.email

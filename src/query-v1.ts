@@ -10,8 +10,13 @@ import {
 import { countRelNodes, type RelNode } from "./rel";
 import { executeRelWithProviders } from "./executor";
 import { buildProviderFragmentForRel, expandRelViews, lowerSqlToRel } from "./planning";
-import { resolveSchemaLinkedEnums } from "./schema";
-import type { QueryRow, SchemaDefinition } from "./schema";
+import {
+  defineSchema,
+  getNormalizedTableBinding,
+  mapProviderRowsToLogical,
+  resolveSchemaLinkedEnums,
+} from "./schema";
+import type { QueryRow, SchemaDefinition, SchemaDslDefinition, SchemaDslHelpers } from "./schema";
 
 export interface QueryGuardrails {
   maxPlannerNodes: number;
@@ -156,12 +161,35 @@ export interface QuerySessionInput<TContext> extends QueryInput<TContext> {
   options?: QuerySessionOptions;
 }
 
+export interface ExecutableSchemaQueryInput<TContext> {
+  context: TContext;
+  sql: string;
+  queryGuardrails?: Partial<QueryGuardrails>;
+  constraintValidation?: ConstraintValidationOptions;
+}
+
+export interface ExecutableSchemaSessionInput<TContext> extends ExecutableSchemaQueryInput<TContext> {
+  options?: QuerySessionOptions;
+}
+
 export interface QuerySession {
   getPlan(): QueryExecutionPlan;
   next(): Promise<QueryStepEvent | { done: true; result: QueryRow[] }>;
   runToCompletion(): Promise<QueryRow[]>;
   getResult(): QueryRow[] | null;
   getStepState(stepId: string): QueryStepState | undefined;
+}
+
+export interface ExecutableSchema<TContext, TSchema extends SchemaDefinition = SchemaDefinition> {
+  schema: TSchema;
+  query(input: ExecutableSchemaQueryInput<TContext>): Promise<QueryRow[]>;
+  createSession(input: ExecutableSchemaSessionInput<TContext>): QuerySession;
+  explain(input: ExecutableSchemaQueryInput<TContext>): ExplainResult;
+}
+
+interface ExecutableSchemaRuntime<TContext> {
+  schema: SchemaDefinition;
+  providers: ProvidersMap<TContext>;
 }
 
 function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrails {
@@ -172,45 +200,6 @@ function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrail
       overrides?.maxLookupKeysPerBatch ?? DEFAULT_QUERY_GUARDRAILS.maxLookupKeysPerBatch,
     maxLookupBatches: overrides?.maxLookupBatches ?? DEFAULT_QUERY_GUARDRAILS.maxLookupBatches,
     timeoutMs: overrides?.timeoutMs ?? DEFAULT_QUERY_GUARDRAILS.timeoutMs,
-  };
-}
-
-function maybeInferSingleProvider<TContext>(
-  schema: SchemaDefinition,
-  providers: ProvidersMap<TContext>,
-): SchemaDefinition {
-  const providerNames = Object.keys(providers);
-  if (providerNames.length !== 1) {
-    return schema;
-  }
-
-  const provider = providerNames[0];
-  if (!provider) {
-    return schema;
-  }
-  let changed = false;
-  const tables: SchemaDefinition["tables"] = {};
-
-  for (const [tableName, table] of Object.entries(schema.tables)) {
-    if (table.provider && table.provider.length > 0) {
-      tables[tableName] = table;
-      continue;
-    }
-
-    changed = true;
-    tables[tableName] = {
-      ...table,
-      provider,
-    };
-  }
-
-  if (!changed) {
-    return schema;
-  }
-
-  return {
-    ...schema,
-    tables,
   };
 }
 
@@ -305,6 +294,7 @@ function createProviderFragmentSession<TContext>(
   provider: ProviderAdapter<TContext>,
   providerName: string,
   fragment: ProviderFragment,
+  rel: RelNode,
 ): QuerySession {
   let executed = false;
   let result: QueryRow[] | null = null;
@@ -361,7 +351,16 @@ function createProviderFragmentSession<TContext>(
     };
 
     const compiled = await provider.compile(fragment, input.context);
-    const rows = await withTimeout(provider.execute(compiled, input.context), guardrails.timeoutMs);
+    let rows = await withTimeout(provider.execute(compiled, input.context), guardrails.timeoutMs);
+    if (fragment.kind === "scan" && rel.kind === "scan") {
+      const binding = getNormalizedTableBinding(input.schema, rel.table);
+      rows = mapProviderRowsToLogical(
+        rows,
+        rel.select,
+        binding?.kind === "physical" ? binding : null,
+        input.schema.tables[rel.table],
+      );
+    }
     enforceExecutionRowLimit(rows, guardrails);
     result = rows;
 
@@ -988,21 +987,22 @@ function tryCreateSyncProviderFragmentSession<TContext>(
     provider,
     fragment.provider,
     fragment,
+    rel,
   );
 }
 
-export function createQuerySession<TContext>(input: QuerySessionInput<TContext>): QuerySession {
-  const schema = maybeInferSingleProvider(
-    resolveSchemaLinkedEnums(input.schema),
-    input.providers,
-  );
-  const resolvedInput: QuerySessionInput<TContext> = {
+function normalizeRuntimeSchema<TContext>(input: QueryInput<TContext>): QueryInput<TContext> {
+  const schema = resolveSchemaLinkedEnums(input.schema);
+  validateProviderBindings(schema, input.providers);
+  return {
     ...input,
     schema,
   };
-  const guardrails = resolveGuardrails(input.queryGuardrails);
+}
 
-  validateProviderBindings(resolvedInput.schema, resolvedInput.providers);
+function createQuerySessionInternal<TContext>(input: QuerySessionInput<TContext>): QuerySession {
+  const resolvedInput = normalizeRuntimeSchema(input);
+  const guardrails = resolveGuardrails(input.queryGuardrails);
   const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
 
   const plannerNodeCount = countRelNodes(lowered.rel);
@@ -1026,18 +1026,9 @@ export function createQuerySession<TContext>(input: QuerySessionInput<TContext>)
   return createRelExecutionSession(resolvedInput, guardrails, expandedRel);
 }
 
-export async function query<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
-  const schema = maybeInferSingleProvider(
-    resolveSchemaLinkedEnums(input.schema),
-    input.providers,
-  );
-  const resolvedInput: QueryInput<TContext> = {
-    ...input,
-    schema,
-  };
+async function queryInternal<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
+  const resolvedInput = normalizeRuntimeSchema(input);
   const guardrails = resolveGuardrails(input.queryGuardrails);
-
-  validateProviderBindings(resolvedInput.schema, resolvedInput.providers);
   const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
   const plannerNodeCount = countRelNodes(lowered.rel);
 
@@ -1085,19 +1076,89 @@ export interface ExplainResult {
   guardrails: QueryGuardrails;
 }
 
-export function explain<TContext>(input: QueryInput<TContext>): ExplainResult {
-  const schema = maybeInferSingleProvider(
-    resolveSchemaLinkedEnums(input.schema),
-    input.providers,
-  );
-  validateProviderBindings(schema, input.providers);
+function explainInternal<TContext>(input: QueryInput<TContext>): ExplainResult {
+  const resolvedInput = normalizeRuntimeSchema(input);
   const guardrails = resolveGuardrails(input.queryGuardrails);
-  const lowered = lowerSqlToRel(input.sql, schema);
+  const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
 
   return {
     rel: lowered.rel,
     plannerNodeCount: countRelNodes(lowered.rel),
     guardrails,
+  };
+}
+
+function collectExecutableProviders<TContext>(schema: SchemaDefinition): ProvidersMap<TContext> {
+  const providers: ProvidersMap<TContext> = {};
+
+  for (const [tableName, table] of Object.entries(schema.tables)) {
+    const binding = getNormalizedTableBinding(schema, tableName);
+    if (!binding || binding.kind === "view") {
+      continue;
+    }
+
+    const provider = binding.adapter as ProviderAdapter<TContext> | undefined;
+    if (!provider) {
+      throw new Error(
+        `Table ${tableName} must be declared from a provider-owned entity via table({ from: provider.entities... }).`,
+      );
+    }
+
+    const existing = providers[provider.name];
+    if (existing && existing !== provider) {
+      throw new Error(`Duplicate provider name detected in executable schema: ${provider.name}.`);
+    }
+    providers[provider.name] = provider;
+
+    if (!binding.provider || binding.provider !== provider.name) {
+      throw new Error(
+        `Table ${tableName} is bound to provider ${binding.provider ?? "<missing>"}, but the attached adapter is named ${provider.name}.`,
+      );
+    }
+  }
+
+  return providers;
+}
+
+export function createExecutableSchema<TContext>(
+  schemaBuilder: (helpers: SchemaDslHelpers<TContext>) => SchemaDslDefinition<TContext>,
+): ExecutableSchema<TContext, SchemaDefinition>;
+export function createExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+  schema: TSchema,
+): ExecutableSchema<TContext, TSchema>;
+export function createExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+  input: TSchema | ((helpers: SchemaDslHelpers<TContext>) => SchemaDslDefinition<TContext>),
+): ExecutableSchema<TContext, TSchema | SchemaDefinition> {
+  const schema = defineSchema(input as never) as TSchema | SchemaDefinition;
+  const providers = collectExecutableProviders<TContext>(schema);
+  const runtime: ExecutableSchemaRuntime<TContext> = {
+    schema,
+    providers,
+  };
+
+  return {
+    schema,
+    query(input) {
+      return queryInternal({
+        schema: runtime.schema,
+        providers: runtime.providers,
+        ...input,
+      });
+    },
+    createSession(input) {
+      return createQuerySessionInternal({
+        schema: runtime.schema,
+        providers: runtime.providers,
+        ...input,
+      });
+    },
+    explain(input) {
+      return explainInternal({
+        schema: runtime.schema,
+        providers: runtime.providers,
+        ...input,
+      });
+    },
   };
 }
 

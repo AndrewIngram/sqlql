@@ -1,11 +1,12 @@
 import * as ts from "typescript";
 import {
   defineSchema,
+  type ExecutableSchema,
   type SchemaDefinition,
 } from "sqlql";
 import * as sqlqlModule from "sqlql";
-import type { DrizzleQueryExecutor } from "@sqlql/drizzle";
-import * as drizzleAdapterModule from "@sqlql/drizzle";
+import type { DrizzleQueryExecutor } from "../../../packages/drizzle/src/index";
+import * as drizzleAdapterModule from "../../../packages/drizzle/src/index";
 import * as drizzleOrmModule from "drizzle-orm";
 
 import { createKvProvider } from "./kv-provider";
@@ -72,11 +73,11 @@ function diagnosticToIssue(diagnostic: ts.Diagnostic): SchemaCodeEvaluationIssue
 }
 
 function extractSchemaExport(moduleExports: Record<string, unknown>, namedExports: Record<string, unknown>): unknown {
-  if ("schema" in moduleExports) {
-    return moduleExports.schema;
+  if ("executableSchema" in moduleExports) {
+    return moduleExports.executableSchema;
   }
-  if ("schema" in namedExports) {
-    return namedExports.schema;
+  if ("executableSchema" in namedExports) {
+    return namedExports.executableSchema;
   }
   return undefined;
 }
@@ -168,6 +169,9 @@ function createStaticModuleMap(): Record<string, unknown> {
     },
     "@playground/kv-provider-core": {
       createKvProvider,
+      playgroundKvRuntime: {
+        rows: [],
+      },
     },
   };
 }
@@ -244,19 +248,20 @@ export function evaluateSchemaCodeInProcess(
     };
   }
 
-  const schemaValue = extractSchemaExport(moduleRecord.exports, moduleRecord.exports);
-  if (schemaValue == null) {
+  const executableSchemaValue = extractSchemaExport(moduleRecord.exports, moduleRecord.exports);
+  if (executableSchemaValue == null) {
     return {
       ok: false,
       issue: {
         code: "SCHEMA_EXPORT_MISSING",
-        message: 'Schema module must export `schema` via `export const schema = defineSchema(...)`.',
+        message: 'Schema module must export `executableSchema` via `export const executableSchema = createExecutableSchema(...)`.',
       },
     };
   }
 
   try {
-    const schema = defineSchema(schemaValue as SchemaDefinition);
+    const executableSchema = executableSchemaValue as ExecutableSchema<unknown, SchemaDefinition>;
+    const schema = defineSchema(executableSchema.schema as SchemaDefinition);
     return {
       ok: true,
       schema,

@@ -1,38 +1,52 @@
-import { createObjectionProvider } from "@sqlql/objection";
+import { createObjectionProvider, type ObjectionProviderShape } from "@sqlql/objection";
 import { SQLITE_DDL, SQLITE_SEED, type DemoContext } from "@sqlql/example-shared";
-import { Model } from "objection";
 import {
-  defineProviders,
-  defineSchema,
-  query,
+  createExecutableSchema,
 } from "sqlql";
 import knexModule from "knex";
 
 const { knex: createKnex } = knexModule;
 
-class OrdersRawModel extends Model {
-  static get tableName(): string {
-    return "orders_raw";
-  }
+type OrdersRawRow = {
+  id: string;
+  org_id: string;
+  user_id: string;
+  vendor_id: string;
+  total_cents: number;
+  created_at: string;
+};
 
-  static getQueryBuilder(context: DemoContext) {
-    return this.query().where({
-      org_id: context.orgId,
-      user_id: context.userId,
-    });
-  }
+type VendorsRawRow = {
+  id: string;
+  org_id: string;
+  name: string;
+};
+
+type DemoObjectionEntities = ObjectionProviderShape<
+  {
+    orders_raw: OrdersRawRow;
+    vendors_raw: VendorsRawRow;
+  },
+  DemoContext
+>;
+
+function getOrdersQueryBuilder(
+  knex: ReturnType<typeof createKnex>,
+  context: DemoContext,
+) {
+  return knex("orders_raw").where({
+    org_id: context.orgId,
+    user_id: context.userId,
+  });
 }
 
-class VendorsRawModel extends Model {
-  static get tableName(): string {
-    return "vendors_raw";
-  }
-
-  static getQueryBuilder(context: DemoContext) {
-    return this.query().where({
-      org_id: context.orgId,
-    });
-  }
+function getVendorsQueryBuilder(
+  knex: ReturnType<typeof createKnex>,
+  context: DemoContext,
+) {
+  return knex("vendors_raw").where({
+    org_id: context.orgId,
+  });
 }
 
 async function executeSqlBatch(knexInstance: ReturnType<typeof createKnex>, sqlText: string): Promise<void> {
@@ -55,22 +69,35 @@ async function main(): Promise<void> {
     useNullAsDefault: true,
   });
 
-  Model.knex(knex);
-
   await executeSqlBatch(knex, SQLITE_DDL);
   await executeSqlBatch(knex, SQLITE_SEED);
 
-  const dbProvider = createObjectionProvider<DemoContext>({
+  const dbProvider = createObjectionProvider<DemoContext, DemoObjectionEntities>({
     name: "dbProvider",
     knex,
     entities: {
       orders_raw: {
         table: "orders_raw",
-        base: (context) => OrdersRawModel.getQueryBuilder(context).toKnexQuery(),
+        // `shape` supplies runtime metadata; the generic row type above supplies
+        // the compile-time read shape for provider-owned entity inference.
+        shape: {
+          id: { type: "text", primaryKey: true },
+          org_id: "text",
+          user_id: "text",
+          vendor_id: "text",
+          total_cents: "integer",
+          created_at: "text",
+        },
+        base: (context) => getOrdersQueryBuilder(knex, context),
       },
       vendors_raw: {
         table: "vendors_raw",
-        base: (context) => VendorsRawModel.getQueryBuilder(context).toKnexQuery(),
+        shape: {
+          id: { type: "text", primaryKey: true },
+          org_id: "text",
+          name: "text",
+        },
+        base: (context) => getVendorsQueryBuilder(knex, context),
       },
     },
   });
@@ -81,23 +108,21 @@ async function main(): Promise<void> {
     throw new Error("Objection provider did not expose expected entity handles.");
   }
 
-  const schema = defineSchema<DemoContext>(({ table, view, col, expr, agg, rel }) => {
-    const myOrders = table({
-      from: ordersEntity,
-      columns: {
-        id: col(ordersEntity, "id"),
-        vendorId: col(ordersEntity, "vendor_id"),
-        totalCents: col(ordersEntity, "total_cents"),
-        createdAt: col(ordersEntity, "created_at"),
-      },
+  const executableSchema = createExecutableSchema<DemoContext>(({ table, view }) => {
+    const myOrders = table(ordersEntity, {
+      columns: ({ col }) => ({
+        id: col.id("id"),
+        vendorId: col.string("vendor_id"),
+        totalCents: col.integer("total_cents"),
+        createdAt: col.string("created_at"),
+      }),
     });
 
-    const vendorsForOrg = table({
-      from: vendorsEntity,
-      columns: {
-        id: col(vendorsEntity, "id"),
-        name: col(vendorsEntity, "name"),
-      },
+    const vendorsForOrg = table(vendorsEntity, {
+      columns: ({ col }) => ({
+        id: col.id("id"),
+        name: col.string("name"),
+      }),
     });
 
     return {
@@ -105,38 +130,35 @@ async function main(): Promise<void> {
         myOrders,
         vendorsForOrg,
         myVendorSpend: view({
-          rel: () =>
-            rel.aggregate({
-              from: rel.join({
-                left: rel.scan(myOrders),
-                right: rel.scan(vendorsForOrg),
+          rel: ({ scan, join, aggregate, col, expr, agg }) =>
+            aggregate({
+              from: join({
+                left: scan(myOrders),
+                right: scan(vendorsForOrg),
                 on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
                 type: "inner",
               }),
-              groupBy: [col(vendorsForOrg, "id"), col(vendorsForOrg, "name")],
+              groupBy: {
+                vendorId: col(vendorsForOrg, "id"),
+                vendorName: col(vendorsForOrg, "name"),
+              },
               measures: {
                 totalSpendCents: agg.sum(col(myOrders, "totalCents")),
                 orderCount: agg.count(),
               },
             }),
-          columns: {
-            vendorId: col("id"),
-            vendorName: col("name"),
-            totalSpendCents: col("totalSpendCents"),
-            orderCount: col("orderCount"),
-          },
+          columns: ({ col }) => ({
+            vendorId: col.id("vendorId"),
+            vendorName: col.string("vendorName"),
+            totalSpendCents: col.integer("totalSpendCents"),
+            orderCount: col.integer("orderCount"),
+          }),
         }),
       },
     };
   });
 
-  const providers = defineProviders({
-    dbProvider,
-  });
-
-  const rows = await query({
-    schema,
-    providers,
+  const rows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",
@@ -148,9 +170,7 @@ async function main(): Promise<void> {
     `,
   });
 
-  const orderRows = await query({
-    schema,
-    providers,
+  const orderRows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",

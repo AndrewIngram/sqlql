@@ -1,6 +1,6 @@
 {
   "name": "@sqlql/objection",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Objection/Knex provider adapter for sqlql",
   "license": "MIT",
   "type": "module",

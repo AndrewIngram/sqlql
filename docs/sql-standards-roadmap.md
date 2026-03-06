@@ -2,9 +2,9 @@
 
 This roadmap defines how `sqlql` expands SQL support while keeping the user-facing API stable:
 
-1. Define schema.
-2. Define table methods (`scan`, optional `lookup`, optional `aggregate`).
-3. Execute SQL with `query(...)`.
+1. Define providers.
+2. Build an executable schema from provider-owned entities.
+3. Execute SQL with `executableSchema.query(...)`.
 
 Planning remains internal; users write SQL, not plans.
 
@@ -39,7 +39,7 @@ Implemented:
   - set-op branches
   - independent CTE branches
   - eligible source scan stages
-- Opt-in step execution sessions via `createQuerySession(...)`
+- Opt-in step execution sessions via `executableSchema.createSession(...)`
 - Schema constraint metadata: `PRIMARY KEY`, `UNIQUE`, `FOREIGN KEY`
 - Structured `CHECK` metadata (`kind: "in"`) and enum-derived checks
 - Optional adapter planner hooks (`planScan`, `planLookup`, `planAggregate`) for pushdown partitioning

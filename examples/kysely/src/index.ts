@@ -2,9 +2,7 @@ import { Kysely, SqliteDialect } from "kysely";
 import { createKyselyProvider } from "@sqlql/kysely";
 import { createSeededSqliteDatabase, type DemoContext } from "@sqlql/example-shared";
 import {
-  defineProviders,
-  defineSchema,
-  query,
+  createExecutableSchema,
 } from "sqlql";
 
 type Db = {
@@ -31,7 +29,7 @@ async function main(): Promise<void> {
     }),
   });
 
-  const dbProvider = createKyselyProvider<DemoContext>({
+  const dbProvider = createKyselyProvider<DemoContext, Db>({
     name: "dbProvider",
     db,
     entities: {
@@ -55,23 +53,21 @@ async function main(): Promise<void> {
     throw new Error("Kysely provider did not expose expected entity handles.");
   }
 
-  const schema = defineSchema<DemoContext>(({ table, view, col, expr, agg, rel }) => {
-    const myOrders = table({
-      from: ordersEntity,
-      columns: {
-        id: col(ordersEntity, "id"),
-        vendorId: col(ordersEntity, "vendor_id"),
-        totalCents: col(ordersEntity, "total_cents"),
-        createdAt: col(ordersEntity, "created_at"),
-      },
+  const executableSchema = createExecutableSchema<DemoContext>(({ table, view }) => {
+    const myOrders = table(ordersEntity, {
+      columns: ({ col }) => ({
+        id: col.id("id"),
+        vendorId: col.string("vendor_id"),
+        totalCents: col.integer("total_cents"),
+        createdAt: col.string("created_at"),
+      }),
     });
 
-    const vendorsForOrg = table({
-      from: vendorsEntity,
-      columns: {
-        id: col(vendorsEntity, "id"),
-        name: col(vendorsEntity, "name"),
-      },
+    const vendorsForOrg = table(vendorsEntity, {
+      columns: ({ col }) => ({
+        id: col.id("id"),
+        name: col.string("name"),
+      }),
     });
 
     return {
@@ -79,38 +75,35 @@ async function main(): Promise<void> {
         myOrders,
         vendorsForOrg,
         myVendorSpend: view({
-          rel: () =>
-            rel.aggregate({
-              from: rel.join({
-                left: rel.scan(myOrders),
-                right: rel.scan(vendorsForOrg),
+          rel: ({ scan, join, aggregate, col, expr, agg }) =>
+            aggregate({
+              from: join({
+                left: scan(myOrders),
+                right: scan(vendorsForOrg),
                 on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
                 type: "inner",
               }),
-              groupBy: [col(vendorsForOrg, "id"), col(vendorsForOrg, "name")],
+              groupBy: {
+                vendorId: col(vendorsForOrg, "id"),
+                vendorName: col(vendorsForOrg, "name"),
+              },
               measures: {
                 totalSpendCents: agg.sum(col(myOrders, "totalCents")),
                 orderCount: agg.count(),
               },
             }),
-          columns: {
-            vendorId: col("id"),
-            vendorName: col("name"),
-            totalSpendCents: col("totalSpendCents"),
-            orderCount: col("orderCount"),
-          },
+          columns: ({ col }) => ({
+            vendorId: col.id("vendorId"),
+            vendorName: col.string("vendorName"),
+            totalSpendCents: col.integer("totalSpendCents"),
+            orderCount: col.integer("orderCount"),
+          }),
         }),
       },
     };
   });
 
-  const providers = defineProviders({
-    dbProvider,
-  });
-
-  const rows = await query({
-    schema,
-    providers,
+  const rows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",
@@ -122,9 +115,7 @@ async function main(): Promise<void> {
     `,
   });
 
-  const orderRows = await query({
-    schema,
-    providers,
+  const orderRows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",

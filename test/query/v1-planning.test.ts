@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { defineProviders, defineSchema } from "../../src";
+import { defineSchema, type ProviderAdapter } from "../../src";
+import { finalizeProviders } from "../support/executable-schema";
 import { lowerSqlToRel, planPhysicalQuery } from "../../src/planning";
 
 describe("query/v1 planning", () => {
@@ -46,10 +47,12 @@ describe("query/v1 planning", () => {
 
     expect(project.columns).toEqual([
       {
+        kind: "column",
         source: { alias: "o", column: "id" },
         output: "id",
       },
       {
+        kind: "column",
         source: { alias: "u", column: "email" },
         output: "email",
       },
@@ -85,7 +88,7 @@ describe("query/v1 planning", () => {
       },
     });
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       orders: {
         canExecute() {
           return true;
@@ -166,7 +169,7 @@ describe("query/v1 planning", () => {
       },
     });
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       warehouse: {
         canExecute(fragment) {
           return fragment.kind === "rel";
@@ -233,7 +236,7 @@ describe("query/v1 planning", () => {
       },
     });
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       warehouse: {
         canExecute(fragment) {
           return fragment.kind === "scan";
@@ -296,7 +299,7 @@ describe("query/v1 planning", () => {
       },
     });
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       orders: {
         canExecute() {
           return true;

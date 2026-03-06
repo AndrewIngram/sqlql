@@ -1,4 +1,4 @@
-import { boolean, integer, pgTable, text } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { defineSchema, type SchemaDefinition } from "sqlql";
 
 export const orgsTable = pgTable("orgs", {
@@ -37,7 +37,7 @@ export const ordersTable = pgTable("orders", {
   vendor_id: text("vendor_id").notNull().references(() => vendorsTable.id),
   status: text("status").notNull(),
   total_cents: integer("total_cents").notNull(),
-  created_at: text("created_at").notNull(),
+  created_at: timestamp("created_at", { mode: "string" }).notNull(),
 });
 
 export const orderItemsTable = pgTable("order_items", {

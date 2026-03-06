@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "../support/methods-provider";
+import { createMethodsSession, queryWithMethods } from "../support/methods-provider";
 import { createArrayTableMethods } from "../../src/array-methods";
 
 import {
-  createQuerySession,
   defineSchema,
   defineTableMethods,
-  query,
 } from "../../src";
 import { commerceRows, commerceSchema } from "../support/commerce-fixture";
 
@@ -67,9 +65,9 @@ describe("query/session", () => {
       ORDER BY total_minutes DESC
     `;
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -112,9 +110,9 @@ describe("query/session", () => {
       ORDER BY o.id ASC
     `;
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
       options: {
@@ -154,9 +152,9 @@ describe("query/session", () => {
       SELECT id AS user_id FROM users
     `;
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -188,9 +186,9 @@ describe("query/session", () => {
       teams: createArrayTableMethods(commerceRows.teams),
     });
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: `
         SELECT
@@ -228,9 +226,9 @@ describe("query/session", () => {
       ORDER BY o.id ASC
     `;
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
       options: {
@@ -258,9 +256,9 @@ describe("query/session", () => {
       }
     }
 
-    const directRows = await query({
+    const directRows = await queryWithMethods({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -282,17 +280,17 @@ describe("query/session", () => {
       ORDER BY user_id ASC
     `;
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
 
     const sessionRows = await session.runToCompletion();
-    const directRows = await query({
+    const directRows = await queryWithMethods({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -311,11 +309,13 @@ describe("query/session", () => {
       },
     });
 
-    const session = createQuerySession({
+    const methods = defineTableMethods(schema, {
+      users: createArrayTableMethods([{ id: "u1" }]),
+    });
+
+    const session = createMethodsSession({
       schema,
-      providers: providersFromMethods(defineTableMethods(schema, {
-        users: createArrayTableMethods([{ id: "u1" }]),
-      })),
+      methods,
       context: EMPTY_CONTEXT,
       sql: "SELECT * FROM missing_table",
     });

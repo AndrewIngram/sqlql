@@ -26,6 +26,20 @@ export interface RelFunctionExpr {
 
 export type RelExpr = RelLiteralExpr | RelColumnExpr | RelFunctionExpr;
 
+export interface RelProjectColumnMapping {
+  kind?: "column";
+  source: RelColumnRef;
+  output: string;
+}
+
+export interface RelProjectExprMapping {
+  kind: "expr";
+  expr: RelExpr;
+  output: string;
+}
+
+export type RelProjectMapping = RelProjectColumnMapping | RelProjectExprMapping;
+
 export interface RelOutputColumn {
   name: string;
   type?: string;
@@ -58,10 +72,13 @@ export interface RelFilterNode extends RelNodeBase {
 export interface RelProjectNode extends RelNodeBase {
   kind: "project";
   input: RelNode;
-  columns: Array<{
-    source: RelColumnRef;
-    output: string;
-  }>;
+  columns: RelProjectMapping[];
+}
+
+export function isRelProjectColumnMapping(
+  mapping: RelProjectMapping,
+): mapping is RelProjectColumnMapping {
+  return mapping.kind !== "expr";
 }
 
 export interface RelJoinNode extends RelNodeBase {

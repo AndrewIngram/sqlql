@@ -1,5 +1,24 @@
-export type SqlScalarType = "text" | "integer" | "boolean" | "timestamp";
+import type {
+  DataEntityColumnMetadata,
+  DataEntityHandle,
+  DataEntityReadMetadataMap,
+  ProviderAdapter,
+} from "./provider";
+import type { RelExpr } from "./rel";
+import { getDataEntityAdapter } from "./provider";
+
 export type PhysicalDialect = "postgres" | "sqlite";
+
+export type SqlScalarType =
+  | "text"
+  | "integer"
+  | "real"
+  | "blob"
+  | "boolean"
+  | "timestamp"
+  | "date"
+  | "datetime"
+  | "json";
 
 declare const ISO_8601_TIMESTAMP_BRAND: unique symbol;
 
@@ -105,12 +124,76 @@ export interface SchemaDefinition {
   tables: Record<string, TableDefinition>;
 }
 
-export interface SchemaDataEntityHandle<TColumns extends string = string> {
-  kind: "data_entity";
-  entity: string;
-  provider: string;
-  readonly __columns__?: TColumns;
-}
+export type SchemaDataEntityHandle<
+  TColumns extends string = string,
+  TRow extends Partial<Record<TColumns, unknown>> = Record<TColumns, unknown>,
+  TColumnMetadata extends Partial<Record<TColumns, DataEntityColumnMetadata<any>>> = DataEntityReadMetadataMap<
+    TColumns,
+    TRow
+  >,
+> = DataEntityHandle<TColumns, TRow, TColumnMetadata>;
+
+export type SchemaValueCoercionName = "isoTimestamp";
+export type SchemaValueCoercion = SchemaValueCoercionName | ((value: unknown) => unknown);
+
+type CompatibleSourceScalarType<TTarget extends SqlScalarType> = TTarget extends "real"
+  ? "real" | "integer"
+  : TTarget;
+
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type IsExactly<T, U> = [T] extends [U] ? ([U] extends [T] ? true : false) : false;
+
+type StripNullish<T> = Exclude<T, null | undefined>;
+
+type InferSourceScalarTypeFromRead<TRead> = IsAny<TRead> extends true
+  ? never
+  : [StripNullish<TRead>] extends [never]
+    ? never
+    : StripNullish<TRead> extends number
+      ? "integer" | "real"
+      : StripNullish<TRead> extends boolean
+        ? "boolean"
+        : StripNullish<TRead> extends Uint8Array
+          ? "blob"
+          : StripNullish<TRead> extends Date
+            ? "timestamp"
+            : StripNullish<TRead> extends string
+              ? "text"
+              : StripNullish<TRead> extends object
+                ? "json"
+                : never;
+
+type ExplicitSourceScalarType<TMetadata> = Extract<
+  TMetadata extends { type?: infer TType } ? TType : never,
+  SqlScalarType
+>;
+
+type KnownSourceScalarType<TMetadata> = [ExplicitSourceScalarType<TMetadata>] extends [never]
+  ? InferSourceScalarTypeFromRead<TMetadata extends { readonly __read__?: infer TRead } ? TRead : never>
+  : IsExactly<ExplicitSourceScalarType<TMetadata>, SqlScalarType> extends true
+    ? InferSourceScalarTypeFromRead<TMetadata extends { readonly __read__?: infer TRead } ? TRead : never>
+    : ExplicitSourceScalarType<TMetadata>;
+
+type IsCompileTimeCompatibleSourceType<
+  TSource extends SqlScalarType,
+  TTarget extends SqlScalarType,
+> = [Extract<TSource, CompatibleSourceScalarType<TTarget>>] extends [never] ? false : true;
+
+type CompatibleColumnName<
+  TColumns extends string,
+  TColumnMetadata extends Partial<Record<TColumns, DataEntityColumnMetadata<any>>>,
+  TTarget extends SqlScalarType,
+> = Extract<
+  {
+    [K in TColumns]:
+      [KnownSourceScalarType<TColumnMetadata[K]>] extends [never]
+        ? K
+        : IsCompileTimeCompatibleSourceType<KnownSourceScalarType<TColumnMetadata[K]>, TTarget> extends true
+          ? K
+          : never;
+  }[TColumns],
+  string
+>;
 
 declare const SCHEMA_DSL_TABLE_TOKEN_BRAND: unique symbol;
 
@@ -149,25 +232,32 @@ export interface SchemaViewJoinNode {
 
 export interface SchemaViewAggregateMetric {
   kind: "metric";
-  fn: "sum" | "count";
+  fn: AggregateFunction;
   column?: SchemaColRefToken;
+  distinct?: boolean;
 }
 
 export interface SchemaViewAggregateNode {
   kind: "aggregate";
   from: SchemaViewRelNode;
-  groupBy: SchemaColRefToken[];
+  groupBy: Record<string, SchemaColRefToken>;
   measures: Record<string, SchemaViewAggregateMetric>;
 }
 
 export type SchemaViewRelNode = SchemaViewScanNode | SchemaViewJoinNode | SchemaViewAggregateNode;
 
-interface SchemaViewScanNodeInput {
+interface SchemaViewRelNodeInputBase<TColumns extends string> {
+  readonly __columns__?: TColumns;
+}
+
+interface SchemaViewScanNodeInput<TColumns extends string = string>
+  extends SchemaViewRelNodeInputBase<TColumns> {
   kind: "scan";
   table: string | SchemaDslTableToken<string>;
 }
 
-interface SchemaViewJoinNodeInput {
+interface SchemaViewJoinNodeInput<TColumns extends string = string>
+  extends SchemaViewRelNodeInputBase<TColumns> {
   kind: "join";
   left: SchemaViewRelNodeInput;
   right: SchemaViewRelNodeInput;
@@ -175,17 +265,18 @@ interface SchemaViewJoinNodeInput {
   type: "inner" | "left" | "right" | "full";
 }
 
-interface SchemaViewAggregateNodeInput {
+interface SchemaViewAggregateNodeInput<TColumns extends string = string>
+  extends SchemaViewRelNodeInputBase<TColumns> {
   kind: "aggregate";
   from: SchemaViewRelNodeInput;
-  groupBy: SchemaColRefToken[];
+  groupBy: Record<string, SchemaColRefToken>;
   measures: Record<string, SchemaViewAggregateMetric>;
 }
 
-type SchemaViewRelNodeInput =
-  | SchemaViewScanNodeInput
-  | SchemaViewJoinNodeInput
-  | SchemaViewAggregateNodeInput;
+export type SchemaViewRelNodeInput<TColumns extends string = string> =
+  | SchemaViewScanNodeInput<TColumns>
+  | SchemaViewJoinNodeInput<TColumns>
+  | SchemaViewAggregateNodeInput<TColumns>;
 
 export interface SchemaColumnLensDefinition {
   source: string | SchemaColRefToken;
@@ -200,64 +291,357 @@ export interface SchemaColumnLensDefinition {
   physicalDialect?: PhysicalDialect;
   foreignKey?: ColumnForeignKeyReference;
   description?: string;
+  coerce?: SchemaValueCoercion;
 }
 
-interface DslTableDefinition<TColumns extends string = string> {
+export interface SchemaTypedColumnDefinition<TSourceColumn extends string = string> {
+  kind: "dsl_typed_column";
+  sourceColumn: TSourceColumn;
+  definition: TableColumnDefinition;
+  coerce?: SchemaValueCoercion;
+}
+
+export interface SchemaCalculatedColumnDefinition {
+  kind: "dsl_calculated_column";
+  expr: RelExpr;
+  definition: TableColumnDefinition;
+  coerce?: SchemaValueCoercion;
+}
+
+type DslTableColumnInput<TSourceColumns extends string = string> =
+  | TableColumnDefinition
+  | SchemaColumnLensDefinition
+  | SchemaColRefToken
+  | SchemaTypedColumnDefinition<TSourceColumns>;
+
+type DslViewColumnInput<TSourceColumns extends string = string> =
+  | SchemaColumnLensDefinition
+  | SchemaColRefToken
+  | SchemaTypedColumnDefinition<TSourceColumns>;
+
+interface DslTableDefinition<
+  TMappedColumns extends string = string,
+  TSourceColumns extends string = string,
+  TVirtualColumns extends string = never,
+> {
   kind: "dsl_table";
-  tableToken: SchemaDslTableToken<TColumns>;
-  from: SchemaDataEntityHandle;
-  columns: Record<TColumns, TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken>;
+  tableToken: SchemaDslTableToken<TMappedColumns | TVirtualColumns>;
+  from: SchemaDataEntityHandle<TSourceColumns>;
+  columns: Record<TMappedColumns, DslTableColumnInput<TSourceColumns>>;
+  virtuals?: Record<TVirtualColumns, SchemaCalculatedColumnDefinition>;
   constraints?: TableConstraints;
 }
 
-interface DslViewDefinition<TContext> {
+interface DslViewDefinition<TContext, TRelColumns extends string = string> {
   kind: "dsl_view";
-  rel: (context: TContext) => SchemaViewRelNodeInput | unknown;
-  columns: Record<string, SchemaColumnLensDefinition | SchemaColRefToken>;
+  rel: (context: TContext, helpers: SchemaDslViewRelHelpers) => SchemaViewRelNodeInput<TRelColumns> | unknown;
+  columns: Record<string, DslViewColumnInput<TRelColumns>>;
   constraints?: TableConstraints;
 }
 
-interface SchemaDslExprHelpers {
+interface SchemaTypedColumnBuilderOptions {
+  nullable?: boolean;
+  primaryKey?: boolean;
+  unique?: boolean;
+  enum?: readonly string[];
+  enumFrom?: SchemaColRefToken | string;
+  enumMap?: Record<string, string>;
+  physicalType?: string;
+  physicalDialect?: PhysicalDialect;
+  foreignKey?: ColumnForeignKeyReference;
+  description?: string;
+  coerce?: SchemaValueCoercion;
+}
+
+interface SchemaDslRelExprHelpers {
   eq: (left: SchemaColRefToken, right: SchemaColRefToken) => SchemaViewEqExpr;
 }
 
 interface SchemaDslAggHelpers {
-  sum: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
   count: () => SchemaViewAggregateMetric;
+  countDistinct: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
+  sum: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
+  sumDistinct: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
+  avg: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
+  avgDistinct: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
+  min: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
+  max: (column: SchemaColRefToken) => SchemaViewAggregateMetric;
 }
 
 interface SchemaDslRelHelpers {
   scan: {
-    (table: string): SchemaViewScanNodeInput;
-    (table: SchemaDslTableToken<string>): SchemaViewScanNodeInput;
-    <TColumns extends string>(table: DslTableDefinition<TColumns>): SchemaViewScanNodeInput;
+    (table: string): SchemaViewScanNodeInput<string>;
+    (table: SchemaDslTableToken<string>): SchemaViewScanNodeInput<string>;
+    <TColumns extends string>(table: SchemaDslTableToken<TColumns>): SchemaViewScanNodeInput<TColumns>;
+    <TColumns extends string>(table: DslTableDefinition<TColumns, string, string>): SchemaViewScanNodeInput<TColumns>;
   };
-  join: (input: {
-    left: SchemaViewRelNodeInput;
-    right: SchemaViewRelNodeInput;
+  join: <TLeftColumns extends string, TRightColumns extends string>(input: {
+    left: SchemaViewRelNodeInput<TLeftColumns>;
+    right: SchemaViewRelNodeInput<TRightColumns>;
     on: SchemaViewEqExpr;
     type?: "inner" | "left" | "right" | "full";
-  }) => SchemaViewJoinNodeInput;
-  aggregate: (input: {
-    from: SchemaViewRelNodeInput;
-    groupBy: SchemaColRefToken[];
-    measures: Record<string, SchemaViewAggregateMetric>;
-  }) => SchemaViewAggregateNodeInput;
+  }) => SchemaViewJoinNodeInput<TLeftColumns | TRightColumns>;
+  aggregate: <TGroupBy extends Record<string, SchemaColRefToken>, TMeasures extends Record<string, SchemaViewAggregateMetric>>(input: {
+    from: SchemaViewRelNodeInput<string>;
+    groupBy: TGroupBy;
+    measures: TMeasures;
+  }) => SchemaViewAggregateNodeInput<Extract<keyof TGroupBy | keyof TMeasures, string>>;
 }
 
-interface SchemaDslHelpers<TContext> {
-  table: {
-    <TColumns extends string>(input: {
-      from: SchemaDataEntityHandle;
-      columns: Record<TColumns, TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken>;
-      constraints?: TableConstraints;
-    }): DslTableDefinition<TColumns>;
+interface SchemaDslRelColHelpers {
+  <TColumns extends string, TColumn extends TColumns>(
+    entity: SchemaDataEntityHandle<TColumns>,
+    column: TColumn,
+  ): SchemaColRefToken;
+  <TColumns extends string, TColumn extends TColumns>(
+    table: SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns, string, string>,
+    column: TColumn,
+  ): SchemaColRefToken;
+}
+
+interface SchemaDslViewRelHelpers extends SchemaDslRelHelpers {
+  col: SchemaDslRelColHelpers;
+  expr: SchemaDslRelExprHelpers;
+  agg: SchemaDslAggHelpers;
+}
+
+interface SchemaTypedColumnBuilder<
+  TSourceColumns extends string,
+  TColumnMetadata extends Partial<Record<TSourceColumns, DataEntityColumnMetadata<any>>> = DataEntityReadMetadataMap<
+    TSourceColumns,
+    Record<TSourceColumns, unknown>
+  >,
+> {
+  id: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "text">>(
+      sourceColumn: TSourceColumn,
+      options?: Omit<
+        SchemaTypedColumnBuilderOptions,
+        "primaryKey" | "nullable" | "enum" | "enumFrom" | "enumMap"
+      >,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: Omit<
+        SchemaTypedColumnBuilderOptions,
+        "primaryKey" | "nullable" | "enum" | "enumFrom" | "enumMap"
+      > & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
   };
-  view: (input: {
-    rel: (context: TContext) => SchemaViewRelNodeInput | unknown;
-    columns: Record<string, SchemaColumnLensDefinition | SchemaColRefToken>;
-    constraints?: TableConstraints;
-  }) => DslViewDefinition<TContext>;
+  string: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "text">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  integer: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "integer">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  real: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "real">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  blob: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "blob">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  boolean: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "boolean">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  timestamp: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "timestamp">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  date: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "date">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  datetime: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "datetime">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+  json: {
+    <TSourceColumn extends CompatibleColumnName<TSourceColumns, TColumnMetadata, "json">>(
+      sourceColumn: TSourceColumn,
+      options?: SchemaTypedColumnBuilderOptions,
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+    <TSourceColumn extends TSourceColumns>(
+      sourceColumn: TSourceColumn,
+      options: SchemaTypedColumnBuilderOptions & { coerce: SchemaValueCoercion },
+    ): SchemaTypedColumnDefinition<TSourceColumn>;
+  };
+}
+
+interface SchemaVirtualColHelper<TColumns extends string> {
+  <TColumn extends TColumns>(column: TColumn): RelExpr;
+}
+
+interface SchemaVirtualExprHelpers {
+  literal: (value: string | number | boolean | null) => RelExpr;
+  eq: (left: RelExpr, right: RelExpr) => RelExpr;
+  neq: (left: RelExpr, right: RelExpr) => RelExpr;
+  gt: (left: RelExpr, right: RelExpr) => RelExpr;
+  gte: (left: RelExpr, right: RelExpr) => RelExpr;
+  lt: (left: RelExpr, right: RelExpr) => RelExpr;
+  lte: (left: RelExpr, right: RelExpr) => RelExpr;
+  add: (left: RelExpr, right: RelExpr) => RelExpr;
+  subtract: (left: RelExpr, right: RelExpr) => RelExpr;
+  multiply: (left: RelExpr, right: RelExpr) => RelExpr;
+  divide: (left: RelExpr, right: RelExpr) => RelExpr;
+  and: (...args: RelExpr[]) => RelExpr;
+  or: (...args: RelExpr[]) => RelExpr;
+  not: (input: RelExpr) => RelExpr;
+}
+
+interface SchemaVirtualCalcHelpers {
+  string: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  integer: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  real: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  blob: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  boolean: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  timestamp: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  date: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  datetime: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+  json: (
+    expr: RelExpr,
+    options?: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap">,
+  ) => SchemaCalculatedColumnDefinition;
+}
+
+export interface SchemaDslHelpers<TContext> {
+  table: {
+    <
+      TSourceColumns extends string,
+      TColumns extends string,
+      TRow extends Partial<Record<TSourceColumns, unknown>> = Record<TSourceColumns, unknown>,
+      TColumnMetadata extends Partial<Record<TSourceColumns, DataEntityColumnMetadata<any>>> = DataEntityReadMetadataMap<
+        TSourceColumns,
+        TRow
+      >,
+    >(input: {
+      from: SchemaDataEntityHandle<TSourceColumns, TRow, TColumnMetadata>;
+      columns: Record<TColumns, DslTableColumnInput<TSourceColumns>>;
+      constraints?: TableConstraints;
+    }): DslTableDefinition<TColumns, TSourceColumns>;
+    <
+      TSourceColumns extends string,
+      TMappedColumns extends string,
+      TVirtualColumns extends string = never,
+      TRow extends Partial<Record<TSourceColumns, unknown>> = Record<TSourceColumns, unknown>,
+      TColumnMetadata extends Partial<Record<TSourceColumns, DataEntityColumnMetadata<any>>> = DataEntityReadMetadataMap<
+        TSourceColumns,
+        TRow
+      >,
+    >(
+      from: SchemaDataEntityHandle<TSourceColumns, TRow, TColumnMetadata>,
+      input: {
+        columns: (helpers: { col: SchemaTypedColumnBuilder<TSourceColumns, TColumnMetadata> }) => Record<
+          TMappedColumns,
+          DslTableColumnInput<TSourceColumns>
+        >;
+        virtuals?: (helpers: {
+          col: SchemaVirtualColHelper<TMappedColumns>;
+          expr: SchemaVirtualExprHelpers;
+          calc: SchemaVirtualCalcHelpers;
+        }) => Record<TVirtualColumns, SchemaCalculatedColumnDefinition>;
+        constraints?: TableConstraints;
+      },
+    ): DslTableDefinition<TMappedColumns, TSourceColumns, TVirtualColumns>;
+  };
+  view: {
+    <TRelColumns extends string, TColumns extends string>(input: {
+      rel: (helpers: SchemaDslViewRelHelpers, context: TContext) => SchemaViewRelNodeInput<TRelColumns> | unknown;
+      columns:
+        | ((helpers: {
+            col: SchemaTypedColumnBuilder<
+              TRelColumns,
+              DataEntityReadMetadataMap<TRelColumns, Record<TRelColumns, unknown>>
+            >;
+          }) => Record<
+            TColumns,
+            DslViewColumnInput<TRelColumns>
+          >)
+        | Record<TColumns, DslViewColumnInput<TRelColumns>>;
+      constraints?: TableConstraints;
+    }): DslViewDefinition<TContext, TRelColumns>;
+    <TColumns extends string>(input: {
+      rel: (context: TContext) => SchemaViewRelNodeInput<string> | unknown;
+      columns: Record<TColumns, DslViewColumnInput<string>>;
+      constraints?: TableConstraints;
+    }): DslViewDefinition<TContext, string>;
+  };
   col: {
     (ref: string): SchemaColRefToken;
     <TColumns extends string, TColumn extends TColumns>(
@@ -265,16 +649,26 @@ interface SchemaDslHelpers<TContext> {
       column: TColumn,
     ): SchemaColRefToken;
     <TColumns extends string, TColumn extends TColumns>(
-      table: SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns>,
+      table: SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns, string, string>,
       column: TColumn,
     ): SchemaColRefToken;
+    id: SchemaTypedColumnBuilder<string>["id"];
+    string: SchemaTypedColumnBuilder<string>["string"];
+    integer: SchemaTypedColumnBuilder<string>["integer"];
+    real: SchemaTypedColumnBuilder<string>["real"];
+    blob: SchemaTypedColumnBuilder<string>["blob"];
+    boolean: SchemaTypedColumnBuilder<string>["boolean"];
+    timestamp: SchemaTypedColumnBuilder<string>["timestamp"];
+    date: SchemaTypedColumnBuilder<string>["date"];
+    datetime: SchemaTypedColumnBuilder<string>["datetime"];
+    json: SchemaTypedColumnBuilder<string>["json"];
   };
-  expr: SchemaDslExprHelpers;
+  expr: SchemaDslRelExprHelpers;
   agg: SchemaDslAggHelpers;
   rel: SchemaDslRelHelpers;
 }
 
-interface SchemaDslDefinition<TContext> {
+export interface SchemaDslDefinition<TContext> {
   tables: Record<string, DslTableDefinition | DslViewDefinition<TContext> | TableDefinition>;
 }
 
@@ -284,6 +678,7 @@ export interface NormalizedPhysicalTableBinding {
   entity: string;
   columnBindings: Record<string, NormalizedColumnBinding>;
   columnToSource: Record<string, string>;
+  adapter?: ProviderAdapter<unknown>;
 }
 
 export interface NormalizedViewTableBinding<TContext = unknown> {
@@ -293,9 +688,23 @@ export interface NormalizedViewTableBinding<TContext = unknown> {
   columnToSource: Record<string, string>;
 }
 
-export interface NormalizedColumnBinding {
+export interface NormalizedSourceColumnBinding {
+  kind: "source";
   source: string;
+  definition?: TableColumnDefinition;
+  coerce?: SchemaValueCoercion;
 }
+
+export interface NormalizedCalculatedColumnBinding {
+  kind: "expr";
+  expr: RelExpr;
+  definition?: TableColumnDefinition;
+  coerce?: SchemaValueCoercion;
+}
+
+export type NormalizedColumnBinding =
+  | NormalizedSourceColumnBinding
+  | NormalizedCalculatedColumnBinding;
 
 export type NormalizedTableBinding<TContext = unknown> =
   | NormalizedPhysicalTableBinding
@@ -316,11 +725,17 @@ export type TableColumnName<
 
 export type SqlTypeValue<TType extends SqlScalarType> = TType extends "integer"
   ? number
+  : TType extends "real"
+    ? number
+    : TType extends "blob"
+      ? Uint8Array
   : TType extends "boolean"
     ? boolean
-    : TType extends "timestamp"
+    : TType extends "timestamp" | "date" | "datetime"
       ? TimestampValue
-      : string;
+      : TType extends "json"
+        ? unknown
+        : string;
 
 type ColumnEnumValue<TColumn extends ColumnDefinition> = TColumn extends {
   type: "text";
@@ -379,14 +794,16 @@ export function getNormalizedColumnBindings(
   }
 
   return Object.fromEntries(
-    Object.entries(binding.columnToSource).map(([column, source]) => [column, { source }]),
+    Object.entries(binding.columnToSource).map(([column, source]) => [column, { kind: "source", source }]),
   );
 }
 
 export function getNormalizedColumnSourceMap(
   binding: Pick<NormalizedPhysicalTableBinding | NormalizedViewTableBinding, "columnBindings" | "columnToSource">,
 ): Record<string, string> {
-  const entries = Object.entries(getNormalizedColumnBindings(binding));
+  const entries = Object.entries(getNormalizedColumnBindings(binding)).flatMap(([column, columnBinding]) =>
+    isNormalizedSourceColumnBinding(columnBinding) ? [[column, columnBinding] as const] : [],
+  );
   return Object.fromEntries(entries.map(([column, columnBinding]) => [column, columnBinding.source]));
 }
 
@@ -394,14 +811,133 @@ export function resolveNormalizedColumnSource(
   binding: Pick<NormalizedPhysicalTableBinding | NormalizedViewTableBinding, "columnBindings" | "columnToSource">,
   logicalColumn: string,
 ): string {
-  return getNormalizedColumnBindings(binding)[logicalColumn]?.source ?? logicalColumn;
+  const bindingByColumn = getNormalizedColumnBindings(binding)[logicalColumn];
+  return isNormalizedSourceColumnBinding(bindingByColumn) ? bindingByColumn.source : logicalColumn;
+}
+
+export function coerceValue(value: unknown, coerce: SchemaValueCoercion): unknown {
+  if (typeof coerce === "function") {
+    return coerce(value);
+  }
+
+  switch (coerce) {
+    case "isoTimestamp":
+      if (value == null) {
+        return value;
+      }
+      if (value instanceof Date) {
+        return value.toISOString();
+      }
+      if (typeof value === "string") {
+        return value;
+      }
+      throw new Error(`Built-in coercion "${coerce}" only supports Date or string values.`);
+  }
+}
+
+export function normalizeProviderRowValue(
+  value: unknown,
+  binding: NormalizedColumnBinding | undefined,
+  fallbackDefinition?: TableColumnDefinition,
+): unknown {
+  if (!binding) {
+    return value;
+  }
+
+  const definition = resolveColumnDefinition(binding.definition ?? fallbackDefinition ?? "text");
+  const coerced = binding.coerce ? coerceValue(value, binding.coerce) : value;
+
+  if (coerced == null) {
+    if (definition.nullable === false) {
+      throw new Error(`Column ${describeNormalizedColumnBinding(binding)} is non-nullable but provider returned null.`);
+    }
+    return null;
+  }
+
+  switch (definition.type) {
+    case "text":
+      if (typeof coerced !== "string") {
+        throw new Error(`Column ${describeNormalizedColumnBinding(binding)} must be a string.`);
+      }
+      if (definition.enum && !definition.enum.includes(coerced)) {
+        throw new Error(
+          `Column ${describeNormalizedColumnBinding(binding)} must be one of ${definition.enum.join(", ")}.`,
+        );
+      }
+      return coerced;
+    case "integer":
+      if (typeof coerced !== "number" || !Number.isFinite(coerced) || !Number.isInteger(coerced)) {
+        throw new Error(`Column ${describeNormalizedColumnBinding(binding)} must be an integer.`);
+      }
+      return coerced;
+    case "real":
+      if (typeof coerced !== "number" || !Number.isFinite(coerced)) {
+        throw new Error(`Column ${describeNormalizedColumnBinding(binding)} must be a finite number.`);
+      }
+      return coerced;
+    case "blob":
+      if (!(coerced instanceof Uint8Array)) {
+        throw new Error(`Column ${describeNormalizedColumnBinding(binding)} must be a Uint8Array.`);
+      }
+      return coerced;
+    case "boolean":
+      if (typeof coerced !== "boolean") {
+        throw new Error(`Column ${describeNormalizedColumnBinding(binding)} must be a boolean.`);
+      }
+      return coerced;
+    case "timestamp":
+    case "date":
+    case "datetime":
+      if (!(typeof coerced === "string" || coerced instanceof Date)) {
+        throw new Error(
+          `Column ${describeNormalizedColumnBinding(binding)} must be a ${definition.type} string or Date.`,
+        );
+      }
+      return coerced;
+    case "json":
+      return coerced;
+  }
+}
+
+export function mapProviderRowsToLogical(
+  rows: QueryRow[],
+  selectedLogicalColumns: string[],
+  binding: NormalizedPhysicalTableBinding | null,
+  tableDefinition?: TableDefinition,
+): QueryRow[] {
+  if (!binding) {
+    return rows;
+  }
+
+  return rows.map((row) => {
+    const out: QueryRow = {};
+    for (const logical of selectedLogicalColumns) {
+      const columnBinding = getNormalizedColumnBindings(binding)[logical];
+      const source = isNormalizedSourceColumnBinding(columnBinding) ? columnBinding.source : logical;
+      const fallbackDefinition = tableDefinition?.columns[logical];
+      out[logical] = normalizeProviderRowValue(row[source] ?? null, columnBinding, fallbackDefinition);
+    }
+    return out;
+  });
+}
+
+export function isNormalizedSourceColumnBinding(
+  binding: NormalizedColumnBinding | undefined,
+): binding is NormalizedSourceColumnBinding {
+  return !!binding && binding.kind === "source";
+}
+
+function describeNormalizedColumnBinding(binding: NormalizedColumnBinding): string {
+  return binding.kind === "source" ? binding.source : "<expr>";
 }
 
 function buildColumnSourceMapFromBindings(
   columnBindings: Record<string, NormalizedColumnBinding>,
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(columnBindings).map(([column, binding]) => [column, binding.source]),
+    Object.entries(columnBindings).flatMap(([column, binding]) =>
+      isNormalizedSourceColumnBinding(binding) ? [[column, binding.source] as const] : [],
+    ),
   );
 }
 
@@ -435,6 +971,7 @@ function normalizeDslSchema<TContext>(
     }
     return entity.entity;
   };
+  const viewRelHelpers = buildSchemaDslViewRelHelpers();
 
   for (const [tableName, rawTable] of Object.entries(built.tables)) {
     if (isDslTableDefinition(rawTable)) {
@@ -445,9 +982,26 @@ function normalizeDslSchema<TContext>(
           preserveQualifiedRef: false,
           resolveTableToken,
           resolveEntityToken,
+          entity: rawTable.from,
         });
         normalizedColumns[columnName] = normalized.definition;
-        columnBindings[columnName] = { source: normalized.source };
+        columnBindings[columnName] = {
+          kind: "source",
+          source: normalized.source,
+          definition: normalized.definition,
+          ...(normalized.coerce ? { coerce: normalized.coerce } : {}),
+        };
+      }
+
+      const virtualColumns = (rawTable.virtuals ?? {}) as Record<string, SchemaCalculatedColumnDefinition>;
+      for (const [columnName, rawColumn] of Object.entries(virtualColumns)) {
+        normalizedColumns[columnName] = rawColumn.definition;
+        columnBindings[columnName] = {
+          kind: "expr",
+          expr: rawColumn.expr,
+          definition: rawColumn.definition,
+          ...(rawColumn.coerce ? { coerce: rawColumn.coerce } : {}),
+        };
       }
 
       tables[tableName] = {
@@ -455,6 +1009,7 @@ function normalizeDslSchema<TContext>(
         columns: normalizedColumns,
         ...(rawTable.constraints ? { constraints: rawTable.constraints } : {}),
       };
+      const adapter = getDataEntityAdapter(rawTable.from);
 
       bindings[tableName] = {
         kind: "physical",
@@ -462,6 +1017,7 @@ function normalizeDslSchema<TContext>(
         entity: rawTable.from.entity,
         columnBindings,
         columnToSource: buildColumnSourceMapFromBindings(columnBindings),
+        ...(adapter ? { adapter } : {}),
       };
       continue;
     }
@@ -476,7 +1032,12 @@ function normalizeDslSchema<TContext>(
           resolveEntityToken,
         });
         normalizedColumns[columnName] = normalized.definition;
-        columnBindings[columnName] = { source: normalized.source };
+        columnBindings[columnName] = {
+          kind: "source",
+          source: normalized.source,
+          definition: normalized.definition,
+          ...(normalized.coerce ? { coerce: normalized.coerce } : {}),
+        };
       }
 
       tables[tableName] = {
@@ -488,7 +1049,7 @@ function normalizeDslSchema<TContext>(
       bindings[tableName] = {
         kind: "view",
         rel: (context: unknown) => {
-          const definition = rawTable.rel(context as TContext);
+          const definition = rawTable.rel(context as TContext, viewRelHelpers);
           return resolveViewRelDefinition(definition, resolveTableToken, resolveEntityToken);
         },
         columnBindings,
@@ -519,7 +1080,9 @@ function attachIdentityBindingsIfMissing(schema: SchemaDefinition): void {
         kind: "physical",
         ...(table.provider ? { provider: table.provider } : {}),
         entity: tableName,
-        columnBindings: Object.fromEntries(columns.map((column) => [column, { source: column }])),
+        columnBindings: Object.fromEntries(
+          columns.map((column) => [column, { kind: "source", source: column }]),
+        ),
         columnToSource: Object.fromEntries(columns.map((column) => [column, column])),
       };
     }
@@ -534,7 +1097,9 @@ function attachIdentityBindingsIfMissing(schema: SchemaDefinition): void {
       kind: "physical",
       ...(table.provider ? { provider: table.provider } : {}),
       entity: tableName,
-      columnBindings: Object.fromEntries(columns.map((column) => [column, { source: column }])),
+      columnBindings: Object.fromEntries(
+        columns.map((column) => [column, { kind: "source", source: column }]),
+      ),
       columnToSource: Object.fromEntries(columns.map((column) => [column, column])),
     };
   }
@@ -544,16 +1109,30 @@ function attachIdentityBindingsIfMissing(schema: SchemaDefinition): void {
 
 function normalizeColumnLens(
   columnName: string,
-  rawColumn: TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken,
+  rawColumn: DslTableColumnInput | DslViewColumnInput,
   options: {
     preserveQualifiedRef: boolean;
     resolveTableToken: (token: SchemaDslTableToken<string>) => string;
     resolveEntityToken: (entity: SchemaDataEntityHandle<string>) => string;
+    entity?: SchemaDataEntityHandle<string>;
   },
 ): {
   source: string;
   definition: TableColumnDefinition;
+  coerce?: SchemaValueCoercion;
 } {
+  if (isSchemaTypedColumnDefinition(rawColumn)) {
+    const source = options.entity
+      ? resolveEntityColumnSource(rawColumn.sourceColumn, options.entity)
+      : rawColumn.sourceColumn;
+    assertColumnCompatibility(rawColumn.sourceColumn, rawColumn.definition, rawColumn.coerce, options.entity);
+    return {
+      source,
+      definition: rawColumn.definition,
+      ...(rawColumn.coerce ? { coerce: rawColumn.coerce } : {}),
+    };
+  }
+
   if (isSchemaColRefToken(rawColumn)) {
     const ref = resolveColRefToken(
       rawColumn,
@@ -609,6 +1188,7 @@ function normalizeColumnLens(
         ? sourceRef
         : parseColumnSource(sourceRef),
       definition,
+      ...(rawColumn.coerce ? { coerce: rawColumn.coerce } : {}),
     };
   }
 
@@ -716,7 +1296,9 @@ function resolveViewRelDefinition(
         return {
           kind: "aggregate",
           from: resolveNode(node.from),
-          groupBy: node.groupBy.map(asRef),
+          groupBy: Object.fromEntries(
+            Object.entries(node.groupBy).map(([name, token]) => [name, asRef(token)]),
+          ),
           measures: Object.fromEntries(
             Object.entries(node.measures).map(([name, metric]) => [
               name,
@@ -740,46 +1322,374 @@ function parseColumnSource(ref: string): string {
   return idx >= 0 ? ref.slice(idx + 1) : ref;
 }
 
-function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
-  const createTableToken = <TColumns extends string>(): SchemaDslTableToken<TColumns> =>
-    ({
-      kind: "dsl_table_token",
-      __id: Symbol("schema_dsl_table"),
-    }) as SchemaDslTableToken<TColumns>;
+function resolveEntityColumnSource(
+  column: string,
+  entity: SchemaDataEntityHandle<string>,
+): string {
+  return entity.columns?.[column]?.source ?? column;
+}
 
-  const toTableToken = <TColumns extends string>(
-    table: SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns>,
-  ): SchemaDslTableToken<TColumns> =>
-    isDslTableDefinition(table) ? table.tableToken : table;
+function sourceTypeMatchesTargetType(
+  sourceType: SqlScalarType | undefined,
+  targetType: SqlScalarType,
+): boolean {
+  if (!sourceType) {
+    return true;
+  }
+  switch (targetType) {
+    case "real":
+      return sourceType === "real" || sourceType === "integer";
+    default:
+      return sourceType === targetType;
+  }
+}
+
+function assertColumnCompatibility(
+  logicalColumn: string,
+  definition: TableColumnDefinition,
+  coerce: SchemaValueCoercion | undefined,
+  entity: SchemaDataEntityHandle<string> | undefined,
+): void {
+  if (!entity || coerce) {
+    return;
+  }
+
+  const sourceMetadata = entity.columns?.[logicalColumn];
+  if (!sourceMetadata?.type) {
+    return;
+  }
+
+  const targetType = resolveColumnDefinition(definition).type;
+  if (!sourceTypeMatchesTargetType(sourceMetadata.type, targetType)) {
+    throw new Error(
+      `Column ${entity.entity}.${sourceMetadata.source} is exposed as ${sourceMetadata.type}, but the schema declared ${targetType}. Add a coerce function or align the declared type.`,
+    );
+  }
+}
+
+function createSchemaDslTableToken<TColumns extends string>(): SchemaDslTableToken<TColumns> {
+  return {
+    kind: "dsl_table_token",
+    __id: Symbol("schema_dsl_table"),
+  } as SchemaDslTableToken<TColumns>;
+}
+
+function toSchemaDslTableToken<TColumns extends string>(
+  table: SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns, string, string>,
+): SchemaDslTableToken<TColumns> {
+  return isDslTableDefinition(table) ? table.tableToken as SchemaDslTableToken<TColumns> : table;
+}
+
+function buildTypedColumnDefinition<TSourceColumn extends string>(
+  sourceColumn: TSourceColumn,
+  type: SqlScalarType,
+  options: SchemaTypedColumnBuilderOptions = {},
+): SchemaTypedColumnDefinition<TSourceColumn> {
+  const definition = { type } as ColumnDefinition;
+  if (options.nullable != null) {
+    definition.nullable = options.nullable;
+  }
+  if (options.primaryKey === true) {
+    definition.primaryKey = true;
+  } else if (options.unique === true) {
+    definition.unique = true;
+  }
+  if (options.enum) {
+    definition.enum = options.enum;
+  }
+  if (options.enumFrom) {
+    definition.enumFrom = options.enumFrom;
+  }
+  if (options.enumMap) {
+    definition.enumMap = options.enumMap;
+  }
+  if (options.physicalType) {
+    definition.physicalType = options.physicalType;
+  }
+  if (options.physicalDialect) {
+    definition.physicalDialect = options.physicalDialect;
+  }
+  if (options.foreignKey) {
+    definition.foreignKey = options.foreignKey;
+  }
+  if (options.description) {
+    definition.description = options.description;
+  }
+  return {
+    kind: "dsl_typed_column",
+    sourceColumn,
+    definition,
+    ...(options.coerce ? { coerce: options.coerce } : {}),
+  };
+}
+
+function buildTypedColumnBuilder<
+  TSourceColumns extends string,
+  TColumnMetadata extends Partial<Record<TSourceColumns, DataEntityColumnMetadata<any>>> = DataEntityReadMetadataMap<
+    TSourceColumns,
+    Record<TSourceColumns, unknown>
+  >,
+>(): SchemaTypedColumnBuilder<TSourceColumns, TColumnMetadata> {
+  const build = (type: SqlScalarType) =>
+    ((sourceColumn: TSourceColumns, options: SchemaTypedColumnBuilderOptions = {}) =>
+      buildTypedColumnDefinition(sourceColumn, type, options)) as never;
 
   return {
-    table<TColumns extends string>(input: {
-      from: SchemaDataEntityHandle;
-      columns: Record<TColumns, TableColumnDefinition | SchemaColumnLensDefinition | SchemaColRefToken>;
-      constraints?: TableConstraints;
-    }): DslTableDefinition<TColumns> {
-      return {
-        kind: "dsl_table",
-        tableToken: createTableToken<TColumns>(),
-        from: input.from,
-        columns: input.columns,
-        ...(input.constraints ? { constraints: input.constraints } : {}),
-      };
+    id: ((sourceColumn: TSourceColumns, options: SchemaTypedColumnBuilderOptions = {}) =>
+      buildTypedColumnDefinition(sourceColumn, "text", {
+        ...options,
+        nullable: false,
+        primaryKey: true,
+      })) as never,
+    string: build("text"),
+    integer: build("integer"),
+    real: build("real"),
+    blob: build("blob"),
+    boolean: build("boolean"),
+    timestamp: build("timestamp"),
+    date: build("date"),
+    datetime: build("datetime"),
+    json: build("json"),
+  } as SchemaTypedColumnBuilder<TSourceColumns, TColumnMetadata>;
+}
+
+function buildCalculatedColumnDefinition(
+  expr: RelExpr,
+  type: SqlScalarType,
+  options: Omit<SchemaTypedColumnBuilderOptions, "primaryKey" | "unique" | "enum" | "enumFrom" | "enumMap"> = {},
+): SchemaCalculatedColumnDefinition {
+  const definition = {
+    type,
+    ...(options.nullable != null ? { nullable: options.nullable } : {}),
+    ...(options.physicalType ? { physicalType: options.physicalType } : {}),
+    ...(options.physicalDialect ? { physicalDialect: options.physicalDialect } : {}),
+    ...(options.foreignKey ? { foreignKey: options.foreignKey } : {}),
+    ...(options.description ? { description: options.description } : {}),
+  } satisfies ColumnDefinition;
+
+  return {
+    kind: "dsl_calculated_column",
+    expr,
+    definition,
+    ...(options.coerce ? { coerce: options.coerce } : {}),
+  };
+}
+
+function buildVirtualExprHelpers(): SchemaVirtualExprHelpers {
+  const fn = (name: string, ...args: RelExpr[]): RelExpr => ({
+    kind: "function",
+    name,
+    args,
+  });
+
+  return {
+    literal(value) {
+      return { kind: "literal", value };
     },
-    view(input) {
-      return {
-        kind: "dsl_view",
-        rel: input.rel,
-        columns: input.columns,
-        ...(input.constraints ? { constraints: input.constraints } : {}),
-      };
+    eq(left, right) {
+      return fn("eq", left, right);
     },
+    neq(left, right) {
+      return fn("neq", left, right);
+    },
+    gt(left, right) {
+      return fn("gt", left, right);
+    },
+    gte(left, right) {
+      return fn("gte", left, right);
+    },
+    lt(left, right) {
+      return fn("lt", left, right);
+    },
+    lte(left, right) {
+      return fn("lte", left, right);
+    },
+    add(left, right) {
+      return fn("add", left, right);
+    },
+    subtract(left, right) {
+      return fn("subtract", left, right);
+    },
+    multiply(left, right) {
+      return fn("multiply", left, right);
+    },
+    divide(left, right) {
+      return fn("divide", left, right);
+    },
+    and(...args) {
+      return fn("and", ...args);
+    },
+    or(...args) {
+      return fn("or", ...args);
+    },
+    not(input) {
+      return fn("not", input);
+    },
+  };
+}
+
+function buildVirtualCalcHelpers(): SchemaVirtualCalcHelpers {
+  return {
+    string(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "text", options);
+    },
+    integer(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "integer", options);
+    },
+    real(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "real", options);
+    },
+    blob(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "blob", options);
+    },
+    boolean(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "boolean", options);
+    },
+    timestamp(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "timestamp", options);
+    },
+    date(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "date", options);
+    },
+    datetime(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "datetime", options);
+    },
+    json(expr, options = {}) {
+      return buildCalculatedColumnDefinition(expr, "json", options);
+    },
+  };
+}
+
+function buildSchemaDslViewRelHelpers(): SchemaDslViewRelHelpers {
+  return {
     col<TColumns extends string, TColumn extends TColumns>(
+      tableOrEntity:
+        | SchemaDataEntityHandle<TColumns>
+        | SchemaDslTableToken<TColumns>
+        | DslTableDefinition<TColumns, string, string>,
+      column: TColumn,
+    ): SchemaColRefToken {
+      if (isSchemaDataEntityHandle(tableOrEntity)) {
+        return {
+          kind: "dsl_col_ref",
+          entity: tableOrEntity,
+          column,
+        } as const;
+      }
+
+      return {
+        kind: "dsl_col_ref",
+        table: toSchemaDslTableToken(tableOrEntity),
+        column,
+      } as const;
+    },
+    expr: {
+      eq(left, right) {
+        return {
+          kind: "eq",
+          left,
+          right,
+        };
+      },
+    },
+    agg: {
+      count() {
+        return {
+          kind: "metric",
+          fn: "count",
+        };
+      },
+      countDistinct(column) {
+        return {
+          kind: "metric",
+          fn: "count",
+          column,
+          distinct: true,
+        };
+      },
+      sum(column) {
+        return {
+          kind: "metric",
+          fn: "sum",
+          column,
+        };
+      },
+      sumDistinct(column) {
+        return {
+          kind: "metric",
+          fn: "sum",
+          column,
+          distinct: true,
+        };
+      },
+      avg(column) {
+        return {
+          kind: "metric",
+          fn: "avg",
+          column,
+        };
+      },
+      avgDistinct(column) {
+        return {
+          kind: "metric",
+          fn: "avg",
+          column,
+          distinct: true,
+        };
+      },
+      min(column) {
+        return {
+          kind: "metric",
+          fn: "min",
+          column,
+        };
+      },
+      max(column) {
+        return {
+          kind: "metric",
+          fn: "max",
+          column,
+        };
+      },
+    },
+    scan<TColumns extends string>(
+      table: string | SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns, string, string>,
+    ): SchemaViewScanNodeInput<TColumns> {
+      return {
+        kind: "scan",
+        table: typeof table === "string" ? table : toSchemaDslTableToken(table),
+      } as const;
+    },
+    join(input) {
+      return {
+        kind: "join",
+        left: input.left,
+        right: input.right,
+        on: input.on,
+        type: input.type ?? "inner",
+      };
+    },
+    aggregate(input) {
+      return {
+        kind: "aggregate",
+        from: input.from,
+        groupBy: input.groupBy,
+        measures: input.measures,
+      };
+    },
+  };
+}
+
+function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
+  const typedColumnBuilder = buildTypedColumnBuilder<string>();
+  const viewRelHelpers = buildSchemaDslViewRelHelpers();
+  const compatCol = Object.assign(
+    function col<TColumns extends string, TColumn extends TColumns>(
       tableOrRef:
         | string
         | SchemaDataEntityHandle<TColumns>
         | SchemaDslTableToken<TColumns>
-        | DslTableDefinition<TColumns>,
+        | DslTableDefinition<TColumns, string, string>,
       column?: TColumn,
     ): SchemaColRefToken {
       if (typeof tableOrRef === "string") {
@@ -806,61 +1716,69 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
 
       return {
         kind: "dsl_col_ref",
-        table: toTableToken(tableOrRef),
+        table: toSchemaDslTableToken(tableOrRef),
         column,
       } as const;
     },
-    expr: {
-      eq(left, right) {
+    typedColumnBuilder,
+  );
+  const tableHelper = ((arg1: any, arg2?: any) => {
+    const from = isSchemaDataEntityHandle(arg1) ? arg1 : arg1.from;
+    const input = isSchemaDataEntityHandle(arg1)
+      ? arg2
+      : {
+          columns: () => arg1.columns,
+          ...(arg1.constraints ? { constraints: arg1.constraints } : {}),
+        };
+    if (!input) {
+      throw new Error("Schema DSL table(...) requires a config object.");
+    }
+
+    const columns = input.columns({ col: buildTypedColumnBuilder() });
+    const virtuals = input.virtuals?.({
+      col(column: string) {
         return {
-          kind: "eq",
-          left,
-          right,
+          kind: "column",
+          ref: { column },
         };
       },
-    },
-    agg: {
-      sum(column) {
-        return {
-          kind: "metric",
-          fn: "sum",
-          column,
-        };
-      },
-      count() {
-        return {
-          kind: "metric",
-          fn: "count",
-        };
-      },
-    },
-    rel: {
-      scan<TColumns extends string>(
-        table: string | SchemaDslTableToken<TColumns> | DslTableDefinition<TColumns>,
-      ): SchemaViewScanNodeInput {
-        return {
-          kind: "scan",
-          table: typeof table === "string" ? table : toTableToken(table),
-        } as const;
-      },
-      join(input) {
-        return {
-          kind: "join",
-          left: input.left,
-          right: input.right,
-          on: input.on,
-          type: input.type ?? "inner",
-        };
-      },
-      aggregate(input) {
-        return {
-          kind: "aggregate",
-          from: input.from,
-          groupBy: input.groupBy,
-          measures: input.measures,
-        };
-      },
-    },
+      expr: buildVirtualExprHelpers(),
+      calc: buildVirtualCalcHelpers(),
+    });
+
+    return {
+      kind: "dsl_table" as const,
+      tableToken: createSchemaDslTableToken(),
+      from,
+      columns,
+      ...(virtuals ? { virtuals } : {}),
+      ...(input.constraints ? { constraints: input.constraints } : {}),
+    };
+  }) as SchemaDslHelpers<TContext>["table"];
+
+  const viewHelper = ((input: any) => {
+    const rel = (context: TContext, helpers: SchemaDslViewRelHelpers) =>
+      input.rel.length <= 1
+        ? (input.rel as (context: TContext) => SchemaViewRelNodeInput<string> | unknown)(context)
+        : input.rel(helpers, context);
+    const columns = typeof input.columns === "function"
+      ? input.columns({ col: buildTypedColumnBuilder() })
+      : input.columns;
+    return {
+      kind: "dsl_view" as const,
+      rel,
+      columns,
+      ...(input.constraints ? { constraints: input.constraints } : {}),
+    };
+  }) as SchemaDslHelpers<TContext>["view"];
+
+  return {
+    table: tableHelper,
+    view: viewHelper,
+    col: compatCol,
+    expr: viewRelHelpers.expr,
+    agg: viewRelHelpers.agg,
+    rel: viewRelHelpers,
   };
 }
 
@@ -875,6 +1793,15 @@ function isDslTableDefinition(value: unknown): value is DslTableDefinition {
 
 function isDslViewDefinition<TContext>(value: unknown): value is DslViewDefinition<TContext> {
   return !!value && typeof value === "object" && (value as { kind?: unknown }).kind === "dsl_view";
+}
+
+function isSchemaTypedColumnDefinition(value: unknown): value is SchemaTypedColumnDefinition<string> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as { kind?: unknown }).kind === "dsl_typed_column" &&
+    typeof (value as { sourceColumn?: unknown }).sourceColumn === "string"
+  );
 }
 
 function isSchemaColRefToken(value: unknown): value is SchemaColRefToken {
@@ -1374,9 +2301,16 @@ function toSqlType(type: SqlScalarType): string {
       return "TEXT";
     case "integer":
       return "INTEGER";
+    case "real":
+      return "REAL";
+    case "blob":
+      return "BLOB";
     case "boolean":
       return "INTEGER";
     case "timestamp":
+    case "date":
+    case "datetime":
+    case "json":
       return "TEXT";
   }
 }
@@ -1386,6 +2320,15 @@ function renderColumnMetadataComment(column: ResolvedColumnDefinition): string {
 
   if (column.type === "timestamp") {
     attributes.push("format:iso8601");
+  }
+  if (column.type === "date") {
+    attributes.push("format:date");
+  }
+  if (column.type === "datetime") {
+    attributes.push("format:datetime");
+  }
+  if (column.type === "json") {
+    attributes.push("format:json");
   }
 
   if (column.description) {
@@ -1917,10 +2860,15 @@ function validateSchemaConstraints(schema: SchemaDefinition): void {
         );
         for (const valueType of valueTypes) {
           if (
-            (columnType === "text" && valueType !== "string") ||
-            (columnType === "integer" && valueType !== "number") ||
+            ((columnType === "text" ||
+              columnType === "timestamp" ||
+              columnType === "date" ||
+              columnType === "datetime" ||
+              columnType === "json") &&
+              valueType !== "string") ||
+            ((columnType === "integer" || columnType === "real") && valueType !== "number") ||
             (columnType === "boolean" && valueType !== "boolean") ||
-            (columnType === "timestamp" && valueType !== "string")
+            columnType === "blob"
           ) {
             throw new Error(
               `Invalid ${label} on ${tableName}: value type ${valueType} does not match column type ${columnType}.`,

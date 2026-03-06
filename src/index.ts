@@ -1,5 +1,29 @@
 export * from "./schema";
-export * from "./query-v1";
+export {
+  DEFAULT_QUERY_GUARDRAILS,
+  asProviderCompiledPlan,
+  createExecutableSchema,
+} from "./query-v1";
+export type {
+  ExecutableSchema,
+  ExecutableSchemaQueryInput,
+  ExecutableSchemaSessionInput,
+  ExplainResult,
+  QueryExecutionPlan,
+  QueryExecutionPlanScope,
+  QueryExecutionPlanStep,
+  QueryGuardrails,
+  QuerySession,
+  QuerySessionOptions,
+  QueryStepEvent,
+  QueryStepKind,
+  QueryStepOperation,
+  QueryStepPhase,
+  QueryStepRoute,
+  QueryStepState,
+  QueryStepStatus,
+  QuerySqlOrigin,
+} from "./query-v1";
 export * from "./constraints";
 export * from "./parser";
 export * from "./provider";

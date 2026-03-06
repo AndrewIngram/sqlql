@@ -62,7 +62,6 @@ import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "@/kv-provider";
 import {
   parseDownstreamRowsText,
   parseFacadeSchemaCode,
-  coerceSchemaEditorTextToCode,
 } from "@/validation";
 import schemaEditorSqlqlTypesText from "@/schema-editor-sqlql.d.ts.txt?raw";
 import { DOWNSTREAM_ROWS_SCHEMA, DOWNSTREAM_TABLE_NAMES } from "@/downstream-model";
@@ -659,10 +658,19 @@ function mapScalarTypeToPostgresType(type: SqlScalarType): string {
       return "TEXT";
     case "integer":
       return "INTEGER";
+    case "real":
+      return "DOUBLE PRECISION";
+    case "blob":
+      return "BYTEA";
     case "boolean":
       return "BOOLEAN";
+    case "date":
+      return "DATE";
+    case "datetime":
     case "timestamp":
       return "TIMESTAMP";
+    case "json":
+      return "JSONB";
   }
 }
 
@@ -1060,9 +1068,7 @@ export function App(): React.JSX.Element {
   const [postgresStructureTab, setPostgresStructureTab] = useState<PostgresStructureTab>("table");
   const [activeSchemaSourceTab, setActiveSchemaSourceTab] = useState<SchemaSourceTab>("schema");
 
-  const [schemaCodeText, setSchemaCodeText] = useState(
-    () => coerceSchemaEditorTextToCode(DEFAULT_FACADE_SCHEMA_CODE),
-  );
+  const [schemaCodeText, setSchemaCodeText] = useState(DEFAULT_FACADE_SCHEMA_CODE);
   const [providerCodeText, setProviderCodeText] = useState(DEFAULT_DB_PROVIDER_CODE);
   const [kvProviderCodeText, setKvProviderCodeText] = useState(DEFAULT_KV_PROVIDER_CODE);
   const [rowsJsonText, setRowsJsonText] = useState(
@@ -1664,7 +1670,7 @@ export function App(): React.JSX.Element {
 
     if (sourcePath === SCHEMA_MODEL_PATH && nextValue !== schemaCodeText) {
       markScenarioCustom();
-      setSchemaCodeText(coerceSchemaEditorTextToCode(nextValue));
+      setSchemaCodeText(nextValue);
     }
   };
 
@@ -2810,8 +2816,13 @@ export function App(): React.JSX.Element {
                                                   >
                                                     <option value="text">text</option>
                                                     <option value="integer">integer</option>
+                                                    <option value="real">real</option>
+                                                    <option value="blob">blob</option>
                                                     <option value="boolean">boolean</option>
                                                     <option value="timestamp">timestamp</option>
+                                                    <option value="date">date</option>
+                                                    <option value="datetime">datetime</option>
+                                                    <option value="json">json</option>
                                                   </select>
                                                 </TableCell>
                                                 <TableCell>

@@ -330,88 +330,98 @@ export const db = drizzle({ client });
 `.trim();
 
 export const DEFAULT_DB_PROVIDER_CODE = `
-import { createDataEntityHandle } from "sqlql";
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
-import type { db as generatedDb } from "${GENERATED_DB_MODULE_ID}";
-import { tables as generatedTables } from "${GENERATED_DB_MODULE_ID}";
+import { db, tables } from "${GENERATED_DB_MODULE_ID}";
 
-export const orders = createDataEntityHandle<"id" | "org_id" | "user_id" | "vendor_id" | "status" | "total_cents" | "created_at">({
-  provider: "dbProvider",
-  entity: "orders",
-});
-export const order_items = createDataEntityHandle<"id" | "org_id" | "user_id" | "order_id" | "product_id" | "quantity" | "line_total_cents">({
-  provider: "dbProvider",
-  entity: "order_items",
-});
-export const vendors = createDataEntityHandle<"id" | "org_id" | "name" | "tier">({
-  provider: "dbProvider",
-  entity: "vendors",
-});
-export const products = createDataEntityHandle<"id" | "org_id" | "sku" | "name" | "category" | "active">({
-  provider: "dbProvider",
-  entity: "products",
-});
-export const user_product_access = createDataEntityHandle<"id" | "user_id" | "product_id">({
-  provider: "dbProvider",
-  entity: "user_product_access",
-});
+export type QueryContext = { orgId: string; userId: string };
 
-type QueryContext = { orgId: string; userId: string };
+const providerTables = {
+  orders: {
+    table: tables.orders,
+    scope: (ctx: QueryContext) =>
+      and(
+        eq(tables.orders.org_id, ctx.orgId),
+        eq(tables.orders.user_id, ctx.userId),
+      ),
+  },
+  order_items: {
+    table: tables.order_items,
+    scope: (ctx: QueryContext) =>
+      and(
+        eq(tables.order_items.org_id, ctx.orgId),
+        eq(tables.order_items.user_id, ctx.userId),
+      ),
+  },
+  vendors: {
+    table: tables.vendors,
+    scope: (ctx: QueryContext) => eq(tables.vendors.org_id, ctx.orgId),
+  },
+  products: {
+    table: tables.products,
+    scope: (ctx: QueryContext) =>
+      and(
+        eq(tables.products.org_id, ctx.orgId),
+        eq(tables.products.active, true),
+      ),
+  },
+  user_product_access: {
+    table: tables.user_product_access,
+    scope: (ctx: QueryContext) => eq(tables.user_product_access.user_id, ctx.userId),
+  },
+};
 
 export function createProvider(runtime: {
-  db: typeof generatedDb;
-  tables: typeof generatedTables;
+  db: typeof db;
+  tables: typeof tables;
 }) {
-  return createDrizzleProvider<QueryContext>({
+  const runtimeProviderTables: typeof providerTables = {
+    orders: {
+      table: runtime.tables.orders,
+      scope: (ctx) =>
+        and(
+          eq(runtime.tables.orders.org_id, ctx.orgId),
+          eq(runtime.tables.orders.user_id, ctx.userId),
+        ),
+    },
+    order_items: {
+      table: runtime.tables.order_items,
+      scope: (ctx) =>
+        and(
+          eq(runtime.tables.order_items.org_id, ctx.orgId),
+          eq(runtime.tables.order_items.user_id, ctx.userId),
+        ),
+    },
+    vendors: {
+      table: runtime.tables.vendors,
+      scope: (ctx) => eq(runtime.tables.vendors.org_id, ctx.orgId),
+    },
+    products: {
+      table: runtime.tables.products,
+      scope: (ctx) =>
+        and(
+          eq(runtime.tables.products.org_id, ctx.orgId),
+          eq(runtime.tables.products.active, true),
+        ),
+    },
+    user_product_access: {
+      table: runtime.tables.user_product_access,
+      scope: (ctx) => eq(runtime.tables.user_product_access.user_id, ctx.userId),
+    },
+  };
+
+  return createDrizzleProvider<QueryContext, typeof runtimeProviderTables>({
     name: "dbProvider",
     db: runtime.db,
-    tables: {
-      orders: {
-        table: runtime.tables.orders,
-        scope: (ctx) =>
-          and(
-            eq(runtime.tables.orders.org_id, ctx.orgId),
-            eq(runtime.tables.orders.user_id, ctx.userId),
-          ),
-      },
-      order_items: {
-        table: runtime.tables.order_items,
-        scope: (ctx) =>
-          and(
-            eq(runtime.tables.order_items.org_id, ctx.orgId),
-            eq(runtime.tables.order_items.user_id, ctx.userId),
-          ),
-      },
-      vendors: {
-        table: runtime.tables.vendors,
-        scope: (ctx) => eq(runtime.tables.vendors.org_id, ctx.orgId),
-      },
-      products: {
-        table: runtime.tables.products,
-        scope: (ctx) =>
-          and(
-            eq(runtime.tables.products.org_id, ctx.orgId),
-            eq(runtime.tables.products.active, true),
-          ),
-      },
-      user_product_access: {
-        table: runtime.tables.user_product_access,
-        scope: (ctx) => eq(runtime.tables.user_product_access.user_id, ctx.userId),
-      },
-    },
+    tables: runtimeProviderTables,
   });
 }
+
+export const dbProvider = createProvider({ db, tables });
 `.trim();
 
 export const DEFAULT_KV_PROVIDER_CODE = `
-import { createDataEntityHandle } from "sqlql";
-import { createKvProvider, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
-
-export const product_view_counts = createDataEntityHandle<"product_id" | "view_count">({
-  provider: "kvProvider",
-  entity: "product_view_counts",
-});
+import { createKvProvider, playgroundKvRuntime, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
 
 type QueryContext = { orgId: string; userId: string };
 
@@ -456,104 +466,90 @@ export function createProvider(runtime: KvProviderFactoryRuntime) {
     },
   });
 }
+
+export const kvProvider = createProvider(playgroundKvRuntime);
 `.trim();
 
 export const DEFAULT_FACADE_SCHEMA_CODE = `
-import { defineSchema } from "sqlql";
-import { order_items, orders, products, user_product_access, vendors } from "${DB_PROVIDER_MODULE_ID}";
-import { product_view_counts } from "${KV_PROVIDER_MODULE_ID}";
+import { createExecutableSchema } from "sqlql";
+import { dbProvider, type QueryContext } from "${DB_PROVIDER_MODULE_ID}";
+import { kvProvider } from "${KV_PROVIDER_MODULE_ID}";
 
-export const schema = defineSchema(({ table, view, rel, expr, col }) => {
-  const myOrders = table({
-    from: orders,
-    columns: {
-      id: { source: col(orders, "id"), type: "text", nullable: false, primaryKey: true },
-      vendor_id: {
-        source: col(orders, "vendor_id"),
-        type: "text",
-        nullable: false,
+export const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
+  const myOrders = table(dbProvider.entities.orders, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      vendor_id: col.string("vendor_id", {
         foreignKey: {
           table: "vendors_for_org",
           column: "id",
         },
-      },
-      status: { source: col(orders, "status"), type: "text", nullable: false, enum: ["pending", "paid", "shipped"] as const },
-      total_cents: { source: col(orders, "total_cents"), type: "integer", nullable: false },
-      created_at: { source: col(orders, "created_at"), type: "timestamp", nullable: false },
-    },
+      }),
+      status: col.string("status", {
+        enum: ["pending", "paid", "shipped"] as const,
+      }),
+      total_cents: col.integer("total_cents"),
+      created_at: col.timestamp("created_at"),
+    }),
   });
 
-  const myOrderItems = table({
-    from: order_items,
-    columns: {
-      id: { source: col(order_items, "id"), type: "text", nullable: false, primaryKey: true },
-      order_id: {
-        source: col(order_items, "order_id"),
-        type: "text",
-        nullable: false,
+  const myOrderItems = table(dbProvider.entities.order_items, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      order_id: col.string("order_id", {
         foreignKey: {
           table: "my_orders",
           column: "id",
         },
-      },
-      product_id: {
-        source: col(order_items, "product_id"),
-        type: "text",
-        nullable: false,
+      }),
+      product_id: col.string("product_id", {
         foreignKey: {
           table: "active_products",
           column: "id",
         },
-      },
-      quantity: { source: col(order_items, "quantity"), type: "integer", nullable: false },
-      line_total_cents: { source: col(order_items, "line_total_cents"), type: "integer", nullable: false },
-    },
+      }),
+      quantity: col.integer("quantity"),
+      line_total_cents: col.integer("line_total_cents"),
+    }),
   });
 
-  const vendorsForOrg = table({
-    from: vendors,
-    columns: {
-      id: { source: col(vendors, "id"), type: "text", nullable: false, primaryKey: true },
-      name: { source: col(vendors, "name"), type: "text", nullable: false },
-      tier: { source: col(vendors, "tier"), type: "text", nullable: false, enum: ["standard", "preferred"] as const },
-    },
+  const vendorsForOrg = table(dbProvider.entities.vendors, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      name: col.string("name"),
+      tier: col.string("tier", {
+        enum: ["standard", "preferred"] as const,
+      }),
+    }),
   });
 
-  const productsForOrg = table({
-    from: products,
-    columns: {
-      id: { source: col(products, "id"), type: "text", nullable: false, primaryKey: true },
-      sku: { source: col(products, "sku"), type: "text", nullable: false },
-      name: { source: col(products, "name"), type: "text", nullable: false },
-      category: {
-        source: col(products, "category"),
-        type: "text",
-        nullable: false,
+  const productsForOrg = table(dbProvider.entities.products, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      sku: col.string("sku"),
+      name: col.string("name"),
+      category: col.string("category", {
         enum: ["hardware", "software", "services"] as const,
-      },
-    },
+      }),
+    }),
   });
 
-  const productAccessForUser = table({
-    from: user_product_access,
-    columns: {
-      product_id: {
-        source: col(user_product_access, "product_id"),
-        type: "text",
-        nullable: false,
+  const productAccessForUser = table(dbProvider.entities.user_product_access, {
+    columns: ({ col }) => ({
+      product_id: col.string("product_id", {
         foreignKey: {
           table: "products_for_org",
           column: "id",
         },
-      },
-    },
+      }),
+    }),
   });
 
   const activeProducts = view({
-    rel: () =>
-      rel.join({
-        left: rel.scan(productsForOrg),
-        right: rel.scan(productAccessForUser),
+    rel: ({ scan, join, col, expr }, _context) =>
+      join({
+        left: scan(productsForOrg),
+        right: scan(productAccessForUser),
         on: expr.eq(
           col(productsForOrg, "id"),
           col(productAccessForUser, "product_id"),
@@ -561,11 +557,11 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
         type: "inner",
       }),
     columns: {
-      id: { source: col(productsForOrg, "id"), type: "text", nullable: false, primaryKey: true },
-      sku: { source: col(productsForOrg, "sku"), type: "text", nullable: false },
-      name: { source: col(productsForOrg, "name"), type: "text", nullable: false },
+      id: { source: "products_for_org.id", type: "text", nullable: false, primaryKey: true },
+      sku: { source: "products_for_org.sku", type: "text", nullable: false },
+      name: { source: "products_for_org.name", type: "text", nullable: false },
       category: {
-        source: col(productsForOrg, "category"),
+        source: "products_for_org.category",
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
@@ -574,18 +570,18 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
   });
 
   const myOrderLines = view({
-    rel: () =>
-      rel.join({
-        left: rel.join({
-          left: rel.scan(myOrderItems),
-          right: rel.scan(productsForOrg),
+    rel: ({ scan, join, col, expr }, _context) =>
+      join({
+        left: join({
+          left: scan(myOrderItems),
+          right: scan(productsForOrg),
           on: expr.eq(
             col(myOrderItems, "product_id"),
             col(productsForOrg, "id"),
           ),
           type: "inner",
         }),
-        right: rel.scan(productAccessForUser),
+        right: scan(productAccessForUser),
         on: expr.eq(
           col(productsForOrg, "id"),
           col(productAccessForUser, "product_id"),
@@ -594,7 +590,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
       }),
     columns: {
       order_id: {
-        source: col(myOrderItems, "order_id"),
+        source: "my_order_items.order_id",
         type: "text",
         nullable: false,
         foreignKey: {
@@ -603,7 +599,7 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
         },
       },
       product_id: {
-        source: col(productsForOrg, "id"),
+        source: "products_for_org.id",
         type: "text",
         nullable: false,
         foreignKey: {
@@ -611,33 +607,29 @@ export const schema = defineSchema(({ table, view, rel, expr, col }) => {
           column: "id",
         },
       },
-      product_sku: { source: col(productsForOrg, "sku"), type: "text", nullable: false },
-      product_name: { source: col(productsForOrg, "name"), type: "text", nullable: false },
+      product_sku: { source: "products_for_org.sku", type: "text", nullable: false },
+      product_name: { source: "products_for_org.name", type: "text", nullable: false },
       product_category: {
-        source: col(productsForOrg, "category"),
+        source: "products_for_org.category",
         type: "text",
         nullable: false,
         enum: ["hardware", "software", "services"] as const,
       },
-      quantity: { source: col(myOrderItems, "quantity"), type: "integer", nullable: false },
-      line_total_cents: { source: col(myOrderItems, "line_total_cents"), type: "integer", nullable: false },
+      quantity: { source: "my_order_items.quantity", type: "integer", nullable: false },
+      line_total_cents: { source: "my_order_items.line_total_cents", type: "integer", nullable: false },
     },
   });
 
-  const productViewCounts = table({
-    from: product_view_counts,
-    columns: {
-      product_id: {
-        source: col(product_view_counts, "product_id"),
-        type: "text",
-        nullable: false,
+  const productViewCounts = table(kvProvider.entities.product_view_counts, {
+    columns: ({ col }) => ({
+      product_id: col.string("product_id", {
         foreignKey: {
           table: "active_products",
           column: "id",
         },
-      },
-      view_count: { source: col(product_view_counts, "view_count"), type: "integer", nullable: false },
-    },
+      }),
+      view_count: col.integer("view_count"),
+    }),
   });
 
   return {

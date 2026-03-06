@@ -11,7 +11,9 @@ import type { PhysicalPlan, PhysicalStep } from "./physical";
 import {
   collectRelTables,
   createSqlRel,
+  isRelProjectColumnMapping,
   type RelColumnRef,
+  type RelExpr,
   type RelJoinNode,
   type RelNode,
   type RelProjectNode,
@@ -26,10 +28,13 @@ import {
 } from "./provider";
 import type { ScanFilterClause, SchemaDefinition, SchemaViewRelNode } from "./schema";
 import {
+  getNormalizedColumnBindings,
   getNormalizedColumnSourceMap,
   getNormalizedTableBinding,
+  isNormalizedSourceColumnBinding,
   resolveNormalizedColumnSource,
   type ColumnDefinition,
+  type NormalizedPhysicalTableBinding,
 } from "./schema";
 
 export interface RelLoweringResult {
@@ -328,6 +333,13 @@ function expandRelViewsInternal<TContext>(
   switch (node.kind) {
     case "scan": {
       const binding = getNormalizedTableBinding(schema, node.table);
+      if (binding?.kind === "physical" && hasCalculatedColumns(binding)) {
+        const expanded = expandCalculatedScan(node, binding);
+        if (expanded) {
+          return expanded;
+        }
+      }
+
       if (!binding || binding.kind !== "view") {
         return {
           node,
@@ -426,10 +438,16 @@ function expandRelViewsInternal<TContext>(
         node: {
           ...node,
           input: input.node,
-          columns: node.columns.map((column) => ({
-            ...column,
-            source: resolveMappedColumnRef(column.source, input.aliases),
-          })),
+          columns: node.columns.map((column) =>
+            isRelProjectColumnMapping(column)
+              ? {
+                  ...column,
+                  source: resolveMappedColumnRef(column.source, input.aliases),
+                }
+              : {
+                  ...column,
+                  expr: mapRelExprRefs(column.expr, input.aliases),
+                }),
         },
         aliases: input.aliases,
       };
@@ -558,6 +576,133 @@ function mergeAliasMaps(...maps: Array<Map<string, ViewAliasColumnMap>>): Map<st
   return out;
 }
 
+function hasCalculatedColumns(binding: NormalizedPhysicalTableBinding): boolean {
+  return Object.values(getNormalizedColumnBindings(binding)).some(
+    (columnBinding) => !isNormalizedSourceColumnBinding(columnBinding),
+  );
+}
+
+function expandCalculatedScan(
+  node: RelScanNode,
+  binding: NormalizedPhysicalTableBinding,
+): ViewExpansionResult | null {
+  const columnBindings = getNormalizedColumnBindings(binding);
+  const referencedColumns = new Set<string>(node.select);
+  for (const clause of node.where ?? []) {
+    referencedColumns.add(clause.column);
+  }
+  for (const term of node.orderBy ?? []) {
+    referencedColumns.add(term.column);
+  }
+
+  const referencedCalculated = [...referencedColumns].filter((column) => {
+    const columnBinding = columnBindings[column];
+    return !!columnBinding && !isNormalizedSourceColumnBinding(columnBinding);
+  });
+  if (referencedCalculated.length === 0) {
+    return null;
+  }
+
+  const requiredSourceColumns = new Set<string>();
+  for (const column of referencedColumns) {
+    const columnBinding = columnBindings[column];
+    if (!columnBinding) {
+      requiredSourceColumns.add(column);
+      continue;
+    }
+    if (isNormalizedSourceColumnBinding(columnBinding)) {
+      requiredSourceColumns.add(column);
+      continue;
+    }
+    for (const dependency of collectExprColumns(columnBinding.expr)) {
+      requiredSourceColumns.add(dependency);
+    }
+  }
+
+  const alias = node.alias ?? node.table;
+  let current: RelNode = {
+    id: node.id,
+    kind: "scan",
+    convention: node.convention,
+    table: node.table,
+    ...(node.alias ? { alias: node.alias } : {}),
+    select: [...requiredSourceColumns],
+    output: [...requiredSourceColumns].map((column) => ({
+      name: `${alias}.${column}`,
+    })),
+  };
+
+  const projectedColumns = [...referencedColumns].map((column) => {
+    const columnBinding = columnBindings[column];
+    if (!columnBinding || isNormalizedSourceColumnBinding(columnBinding)) {
+      return {
+        kind: "column" as const,
+        source: { alias, column },
+        output: column,
+      };
+    }
+    return {
+      kind: "expr" as const,
+      expr: qualifyExprColumns(columnBinding.expr, alias),
+      output: column,
+    };
+  });
+
+  current = {
+    id: nextRelId("project"),
+    kind: "project",
+    convention: "local",
+    input: current,
+    columns: projectedColumns,
+    output: [...referencedColumns].map((column) => ({ name: column })),
+  };
+
+  if (node.where && node.where.length > 0) {
+    current = {
+      id: nextRelId("filter"),
+      kind: "filter",
+      convention: "local",
+      input: current,
+      where: node.where,
+      output: current.output,
+    };
+  }
+
+  if (node.orderBy && node.orderBy.length > 0) {
+    current = {
+      id: nextRelId("sort"),
+      kind: "sort",
+      convention: "local",
+      input: current,
+      orderBy: node.orderBy.map((term) => ({
+        source: { column: term.column },
+        direction: term.direction,
+      })),
+      output: current.output,
+    };
+  }
+
+  if (node.limit != null || node.offset != null) {
+    current = {
+      id: nextRelId("limit_offset"),
+      kind: "limit_offset",
+      convention: "local",
+      input: current,
+      ...(node.limit != null ? { limit: node.limit } : {}),
+      ...(node.offset != null ? { offset: node.offset } : {}),
+      output: current.output,
+    };
+  }
+
+  const aliasMap: ViewAliasColumnMap = Object.fromEntries(
+    [...referencedColumns].map((column) => [column, { alias, column }]),
+  );
+  return {
+    node: current,
+    aliases: new Map([[alias, aliasMap]]),
+  };
+}
+
 function mapViewColumnName(
   column: string,
   viewAliasMapping: ViewAliasColumnMap,
@@ -638,6 +783,67 @@ function resolveMappedColumnRef(
   }
 }
 
+function mapRelExprRefs(expr: RelExpr, aliases: Map<string, ViewAliasColumnMap>): RelExpr {
+  switch (expr.kind) {
+    case "literal":
+      return expr;
+    case "column":
+      return {
+        kind: "column",
+        ref: resolveMappedColumnRef(expr.ref, aliases),
+      };
+    case "function":
+      return {
+        kind: "function",
+        name: expr.name,
+        args: expr.args.map((arg) => mapRelExprRefs(arg, aliases)),
+      };
+  }
+}
+
+function qualifyExprColumns(expr: RelExpr, alias: string): RelExpr {
+  switch (expr.kind) {
+    case "literal":
+      return expr;
+    case "column":
+      return {
+        kind: "column",
+        ref: {
+          alias: expr.ref.alias ?? expr.ref.table ?? alias,
+          column: expr.ref.column,
+        },
+      };
+    case "function":
+      return {
+        kind: "function",
+        name: expr.name,
+        args: expr.args.map((arg) => qualifyExprColumns(arg, alias)),
+      };
+  }
+}
+
+function collectExprColumns(expr: RelExpr): Set<string> {
+  const columns = new Set<string>();
+
+  const visit = (current: RelExpr): void => {
+    switch (current.kind) {
+      case "literal":
+        return;
+      case "column":
+        columns.add(current.ref.column);
+        return;
+      case "function":
+        for (const arg of current.args) {
+          visit(arg);
+        }
+        return;
+    }
+  };
+
+  visit(expr);
+  return columns;
+}
+
 function toColumnName(ref: RelColumnRef): string {
   const alias = ref.alias ?? ref.table;
   return alias ? `${alias}.${ref.column}` : ref.column;
@@ -714,7 +920,10 @@ function compileSchemaViewRelForPlanner(node: SchemaViewRelNode, schema: SchemaD
     }
     case "aggregate": {
       const input = compileSchemaViewRelForPlanner(node.from, schema);
-      const groupBy = node.groupBy.map((column) => parseRelColumnRef(resolveViewRelRef(column)));
+      const groupBy = Object.entries(node.groupBy).map(([name, column]) => ({
+        name,
+        ref: parseRelColumnRef(resolveViewRelRef(column)),
+      }));
       const metrics = Object.entries(node.measures).map(([output, metric]) => ({
         fn: metric.fn,
         as: output,
@@ -725,10 +934,10 @@ function compileSchemaViewRelForPlanner(node: SchemaViewRelNode, schema: SchemaD
         kind: "aggregate",
         convention: "local",
         input,
-        groupBy,
+        groupBy: groupBy.map((entry) => entry.ref),
         metrics,
         output: [
-          ...groupBy.map((column) => ({ name: column.column })),
+          ...groupBy.map((column) => ({ name: column.name })),
           ...metrics.map((metric) => ({ name: metric.as })),
         ],
       };
@@ -845,10 +1054,13 @@ function normalizeRelForProvider(node: RelNode, schema: SchemaDefinition): RelNo
         return {
           ...current,
           input: visit(current.input),
-          columns: current.columns.map((column) => ({
-            ...column,
-            source: mapColumnRefForAlias(column.source, aliasToSource),
-          })),
+          columns: current.columns.map((column) =>
+            isRelProjectColumnMapping(column)
+              ? {
+                  ...column,
+                  source: mapColumnRefForAlias(column.source, aliasToSource),
+                }
+              : column),
         };
       case "join":
         return {
@@ -1793,18 +2005,21 @@ function tryLowerSimpleSelect(
       ? safeAggregateProjections.map((projection) =>
           projection.kind === "group" && projection.source
             ? {
+                kind: "column" as const,
                 source: {
                   column: projection.source.column,
                 },
                 output: projection.output,
               }
             : {
+                kind: "column" as const,
                 source: {
                   column: projection.metric!.as,
                 },
                 output: projection.output,
               })
       : safeProjections.map((projection) => ({
+          kind: "column" as const,
           source:
             projection.kind === "column"
               ? {

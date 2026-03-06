@@ -100,13 +100,7 @@ describe("playground/provider-pushdown", () => {
     }
 
     const customKvProviderCode = `
-import { createDataEntityHandle } from "sqlql";
-import { createKvProvider, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
-
-export const product_view_counts = createDataEntityHandle<"product_id" | "view_count">({
-  provider: "kvProvider",
-  entity: "product_view_counts",
-});
+import { createKvProvider, playgroundKvRuntime, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
 
 type QueryContext = { orgId: string; userId: string };
 
@@ -151,6 +145,8 @@ export function createProvider(runtime: KvProviderFactoryRuntime) {
     },
   });
 }
+
+export const kvProvider = createProvider(playgroundKvRuntime);
     `.trim();
 
     const compiled = await compilePlaygroundInput(

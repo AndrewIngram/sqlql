@@ -2,9 +2,11 @@ import {
   getNormalizedTableBinding,
 } from "./schema";
 import type {
+  PhysicalDialect,
   QueryRow,
   ScanFilterClause,
   SchemaDefinition,
+  SqlScalarType,
   TableAggregateRequest,
   TableScanRequest,
 } from "./schema";
@@ -30,8 +32,72 @@ export interface ProviderCompiledPlan {
 }
 
 declare const DATA_ENTITY_COLUMNS_BRAND: unique symbol;
+declare const DATA_ENTITY_ROW_BRAND: unique symbol;
+const DATA_ENTITY_ADAPTER_BRAND = Symbol("sqlql.data_entity.adapter");
 
-export interface DataEntityHandle<TColumns extends string = string> {
+export interface DataEntityColumnMetadata<TRead = unknown> {
+  source: string;
+  type?: SqlScalarType;
+  nullable?: boolean;
+  primaryKey?: boolean;
+  unique?: boolean;
+  enum?: readonly string[];
+  physicalType?: string;
+  physicalDialect?: PhysicalDialect;
+  readonly __read__?: TRead;
+}
+
+export type DataEntityShapeColumn = SqlScalarType | Omit<DataEntityColumnMetadata, "source">;
+export type DataEntityShape<TColumns extends string = string> = Record<TColumns, DataEntityShapeColumn>;
+
+type DataEntityColumnMetadataRecord<TColumns extends string = string> = Partial<
+  Record<TColumns, DataEntityColumnMetadata<any>>
+>;
+
+export type DataEntityReadMetadataMap<
+  TColumns extends string = string,
+  TRow extends Partial<Record<TColumns, unknown>> = Record<TColumns, unknown>,
+> = {
+  [K in TColumns]: DataEntityColumnMetadata<K extends keyof TRow ? TRow[K] : unknown>;
+};
+
+export type InferDataEntityShapeMetadata<
+  TColumns extends string,
+  TShape extends DataEntityShape<TColumns>,
+> = {
+  [K in TColumns]: TShape[K] extends SqlScalarType
+    ? DataEntityColumnMetadata<unknown> & {
+        source: K;
+        type: TShape[K];
+      }
+    : DataEntityColumnMetadata<unknown> & {
+        source: K;
+      } & Extract<TShape[K], Omit<DataEntityColumnMetadata, "source">>;
+};
+
+export type DataEntityColumnMap<
+  TColumns extends string = string,
+  TRow extends Partial<Record<TColumns, unknown>> = Record<TColumns, unknown>,
+  TColumnMetadata extends DataEntityColumnMetadataRecord<TColumns> = DataEntityReadMetadataMap<
+    TColumns,
+    TRow
+  >,
+> = {
+  [K in TColumns]: K extends keyof TColumnMetadata
+    ? TColumnMetadata[K] & {
+        readonly __read__?: K extends keyof TRow ? TRow[K] : unknown;
+      }
+    : DataEntityColumnMetadata<K extends keyof TRow ? TRow[K] : unknown>;
+};
+
+export interface DataEntityHandle<
+  TColumns extends string = string,
+  TRow extends Partial<Record<TColumns, unknown>> = Record<TColumns, unknown>,
+  TColumnMetadata extends DataEntityColumnMetadataRecord<TColumns> = DataEntityReadMetadataMap<
+    TColumns,
+    TRow
+  >,
+> {
   kind: "data_entity";
   /**
    * Source-neutral entity identifier. This can represent a SQL table, an ES index,
@@ -39,22 +105,81 @@ export interface DataEntityHandle<TColumns extends string = string> {
    */
   entity: string;
   /**
-   * Logical provider registration key expected in defineProviders(...).
+   * Logical provider name used for runtime routing.
    */
   provider: string;
+  columns?: DataEntityColumnMap<TColumns, TRow, TColumnMetadata>;
   readonly __columns__?: TColumns;
+  readonly [DATA_ENTITY_ROW_BRAND]?: TRow;
   readonly [DATA_ENTITY_COLUMNS_BRAND]?: TColumns;
+  readonly [DATA_ENTITY_ADAPTER_BRAND]?: ProviderAdapter<any>;
 }
 
-export function createDataEntityHandle<TColumns extends string = string>(input: {
+export function createDataEntityHandle<
+  TColumns extends string = string,
+  TRow extends Partial<Record<TColumns, unknown>> = Record<TColumns, unknown>,
+  TColumnMetadata extends DataEntityColumnMetadataRecord<TColumns> = DataEntityReadMetadataMap<
+    TColumns,
+    TRow
+  >,
+>(input: {
   entity: string;
   provider: string;
-}): DataEntityHandle<TColumns> {
-  return {
+  columns?: DataEntityColumnMap<TColumns, TRow, TColumnMetadata>;
+  adapter?: ProviderAdapter<any>;
+}): DataEntityHandle<TColumns, TRow, TColumnMetadata> {
+  const handle = {
     kind: "data_entity",
     entity: input.entity,
     provider: input.provider,
-  } as DataEntityHandle<TColumns>;
+    ...(input.columns ? { columns: input.columns } : {}),
+  } as DataEntityHandle<TColumns, TRow, TColumnMetadata>;
+
+  if (input.adapter) {
+    bindDataEntityHandleToAdapter(handle, input.adapter);
+  }
+
+  return handle;
+}
+
+export function bindDataEntityHandleToAdapter(
+  handle: DataEntityHandle<string>,
+  adapter: ProviderAdapter<any>,
+): DataEntityHandle<string> {
+  Object.defineProperty(handle, DATA_ENTITY_ADAPTER_BRAND, {
+    value: adapter,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return handle;
+}
+
+export function getDataEntityAdapter(
+  handle: DataEntityHandle<string>,
+): ProviderAdapter<any> | undefined {
+  return handle[DATA_ENTITY_ADAPTER_BRAND];
+}
+
+export function bindAdapterEntities<TContext, TAdapter extends ProviderAdapter<TContext>>(
+  adapter: TAdapter,
+): TAdapter {
+  const entities = adapter.entities;
+  if (!entities) {
+    return adapter;
+  }
+
+  for (const [entityName, handle] of Object.entries(entities)) {
+    if (!handle.provider || handle.provider.length === 0) {
+      handle.provider = adapter.name;
+    }
+    if (!handle.entity || handle.entity.length === 0) {
+      handle.entity = entityName;
+    }
+    bindDataEntityHandleToAdapter(handle, adapter);
+  }
+
+  return adapter;
 }
 
 export function isDataEntityHandle(value: unknown): value is DataEntityHandle<string> {
@@ -65,6 +190,39 @@ export function isDataEntityHandle(value: unknown): value is DataEntityHandle<st
     typeof (value as { entity?: unknown }).entity === "string" &&
     typeof (value as { provider?: unknown }).provider === "string"
   );
+}
+
+export function getDataEntityColumnMetadata(
+  entity: DataEntityHandle<string>,
+  column: string,
+): DataEntityColumnMetadata | undefined {
+  return entity.columns?.[column];
+}
+
+export function normalizeDataEntityShape<
+  TColumns extends string,
+  TShape extends DataEntityShape<TColumns>,
+>(
+  shape: TShape,
+): DataEntityColumnMap<TColumns, Record<TColumns, unknown>, InferDataEntityShapeMetadata<TColumns, TShape>> {
+  return Object.fromEntries(
+    Object.entries(shape).map(([column, definition]) => [
+      column,
+      typeof definition === "string"
+        ? {
+            source: column,
+            type: definition,
+          }
+        : {
+            source: column,
+            ...(definition as Omit<DataEntityColumnMetadata, "source">),
+          },
+    ]),
+  ) as DataEntityColumnMap<
+    TColumns,
+    Record<TColumns, unknown>,
+    InferDataEntityShapeMetadata<TColumns, TShape>
+  >;
 }
 
 export interface ProviderLookupManyRequest {
@@ -101,6 +259,7 @@ export type ProviderFragment =
   | AggregateProviderFragment;
 
 export interface ProviderAdapter<TContext = unknown> {
+  name: string;
   canExecute(fragment: ProviderFragment, context: TContext): MaybePromise<boolean | ProviderCapabilityReport>;
   compile(fragment: ProviderFragment, context: TContext): MaybePromise<ProviderCompiledPlan>;
   execute(plan: ProviderCompiledPlan, context: TContext): Promise<QueryRow[]>;
@@ -114,30 +273,6 @@ export interface ProviderAdapter<TContext = unknown> {
 
 export type ProvidersMap<TContext = unknown> = Record<string, ProviderAdapter<TContext>>;
 export type DataSourceAdapter<TContext = unknown> = ProviderAdapter<TContext>;
-
-export function defineProviders<TContext, TProviders extends ProvidersMap<TContext>>(
-  providers: TProviders,
-): TProviders {
-  for (const [providerName, adapter] of Object.entries(providers)) {
-    const entities = adapter.entities;
-    if (!entities) {
-      continue;
-    }
-
-    for (const [entityName, handle] of Object.entries(entities)) {
-      if (!handle.provider || handle.provider.length === 0) {
-        handle.provider = providerName;
-      }
-      if (!handle.entity || handle.entity.length === 0) {
-        handle.entity = entityName;
-      }
-    }
-
-    adapter.entities = entities;
-  }
-
-  return providers;
-}
 
 export function normalizeCapability(
   capability: boolean | ProviderCapabilityReport,

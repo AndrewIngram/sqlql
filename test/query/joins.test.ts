@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "../support/methods-provider";
+import { createMethodsProvider } from "../support/methods-provider";
 import { createArrayTableMethods, scanArrayRows } from "../../src/array-methods";
 
 import {
@@ -54,7 +54,9 @@ describe("query/joins", () => {
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
-        providers: providersFromMethods(methods),
+        providers: {
+          memory: createMethodsProvider(commerceSchema, methods),
+        },
       },
       async (harness) => {
         const sql = `

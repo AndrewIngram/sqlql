@@ -4,9 +4,17 @@ import {
   type ProviderFragment,
   type ProvidersMap,
 } from "./provider";
-import type { RelJoinNode, RelNode, RelProjectNode, RelScanNode } from "./rel";
+import {
+  isRelProjectColumnMapping,
+  type RelExpr,
+  type RelJoinNode,
+  type RelNode,
+  type RelProjectNode,
+  type RelScanNode,
+} from "./rel";
 import {
   getNormalizedColumnSourceMap,
+  mapProviderRowsToLogical,
   resolveNormalizedColumnSource,
   getNormalizedTableBinding,
   type NormalizedPhysicalTableBinding,
@@ -170,7 +178,12 @@ async function executeScan<TContext>(
 
   const compiled = await provider.compile(fragment, context.context);
   const rows = await provider.execute(compiled, context.context);
-  const projected = mapRowsToLogical(rows, scan.select, physicalBinding);
+  const projected = mapProviderRowsToLogical(
+    rows,
+    scan.select,
+    physicalBinding,
+    context.schema.tables[scan.table],
+  );
 
   const alias = scan.alias ?? scan.table;
   return projected.map((row) => prefixRow(row, alias));
@@ -275,7 +288,12 @@ async function maybeExecuteLookupJoin<TContext>(
     );
 
     const rightAlias = rightScan.alias ?? rightScan.table;
-    for (const row of mapRowsToLogical(lookedUp, rightScan.select, rightBinding?.kind === "physical" ? rightBinding : null)) {
+    for (const row of mapProviderRowsToLogical(
+      lookedUp,
+      rightScan.select,
+      rightBinding?.kind === "physical" ? rightBinding : null,
+      context.schema.tables[rightScan.table],
+    )) {
       rightRows.push(prefixRow(row, rightAlias));
     }
   }
@@ -444,7 +462,9 @@ async function executeProject<TContext>(
   return rows.map((row) => {
     const out: QueryRow = {};
     for (const mapping of project.columns) {
-      out[mapping.output] = readRowValue(row, toColumnKey(mapping.source)) ?? null;
+      out[mapping.output] = isRelProjectColumnMapping(mapping)
+        ? (readRowValue(row, toColumnKey(mapping.source)) ?? null)
+        : evaluateRelExpr(mapping.expr, row);
     }
     return out;
   });
@@ -606,6 +626,7 @@ function compileViewRelToExecutable(
     convention: "local",
     input: rel,
     columns: columns.map(([output, source]) => ({
+      kind: "column" as const,
       source: parseRef(source),
       output,
     })),
@@ -648,7 +669,10 @@ function compileSchemaViewRelNode(node: SchemaViewRelNode, schema: SchemaDefinit
     }
     case "aggregate": {
       const input = compileSchemaViewRelNode(node.from, schema);
-      const groupBy = node.groupBy.map((column) => parseRef(resolveSchemaColRef(column)));
+      const groupBy = Object.entries(node.groupBy).map(([name, column]) => ({
+        name,
+        ref: parseRef(resolveSchemaColRef(column)),
+      }));
       const metrics = Object.entries(node.measures).map(([output, metric]) => ({
         fn: metric.fn,
         as: output,
@@ -660,10 +684,10 @@ function compileSchemaViewRelNode(node: SchemaViewRelNode, schema: SchemaDefinit
         kind: "aggregate",
         convention: "local",
         input,
-        groupBy,
+        groupBy: groupBy.map((entry) => entry.ref),
         metrics,
         output: [
-          ...groupBy.map((column) => ({ name: column.column })),
+          ...groupBy.map((column) => ({ name: column.name })),
           ...metrics.map((metric) => ({ name: metric.as })),
         ],
       };
@@ -745,25 +769,6 @@ function mapOrderToSource(
     ...term,
     column: resolveNormalizedColumnSource(binding, term.column),
   }));
-}
-
-function mapRowsToLogical(
-  rows: QueryRow[],
-  selectedLogicalColumns: string[],
-  binding: NormalizedPhysicalTableBinding | null,
-): QueryRow[] {
-  if (!binding) {
-    return rows;
-  }
-
-  return rows.map((row) => {
-    const out: QueryRow = {};
-    for (const logical of selectedLogicalColumns) {
-      const source = resolveNormalizedColumnSource(binding, logical);
-      out[logical] = row[source] ?? null;
-    }
-    return out;
-  });
 }
 
 function findFirstScan(node: RelNode): RelScanNode | null {
@@ -856,6 +861,48 @@ function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): 
       return value != null;
     default:
       return false;
+  }
+}
+
+function evaluateRelExpr(expr: RelExpr, row: InternalRow): unknown {
+  switch (expr.kind) {
+    case "literal":
+      return expr.value;
+    case "column":
+      return readRowValue(row, toColumnKey(expr.ref)) ?? null;
+    case "function": {
+      const args = expr.args.map((arg) => evaluateRelExpr(arg, row));
+      switch (expr.name) {
+        case "eq":
+          return args[0] != null && args[0] === args[1];
+        case "neq":
+          return args[0] != null && args[0] !== args[1];
+        case "gt":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) > 0;
+        case "gte":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) >= 0;
+        case "lt":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) < 0;
+        case "lte":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) <= 0;
+        case "and":
+          return args.every(Boolean);
+        case "or":
+          return args.some(Boolean);
+        case "not":
+          return !args[0];
+        case "add":
+          return toFiniteNumber(args[0], "ADD") + toFiniteNumber(args[1], "ADD");
+        case "subtract":
+          return toFiniteNumber(args[0], "SUBTRACT") - toFiniteNumber(args[1], "SUBTRACT");
+        case "multiply":
+          return toFiniteNumber(args[0], "MULTIPLY") * toFiniteNumber(args[1], "MULTIPLY");
+        case "divide":
+          return toFiniteNumber(args[0], "DIVIDE") / toFiniteNumber(args[1], "DIVIDE");
+        default:
+          throw new UnsupportedRelExecutionError(`Unsupported computed expression function: ${expr.name}`);
+      }
+    }
   }
 }
 
@@ -972,7 +1019,10 @@ function compareNonNull(left: unknown, right: unknown): number {
   return leftString < rightString ? -1 : 1;
 }
 
-function toFiniteNumber(value: unknown, functionName: "SUM" | "AVG"): number {
+function toFiniteNumber(
+  value: unknown,
+  functionName: "SUM" | "AVG" | "ADD" | "SUBTRACT" | "MULTIPLY" | "DIVIDE",
+): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     throw new Error(`${functionName} expects numeric values.`);

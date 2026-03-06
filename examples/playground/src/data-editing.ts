@@ -23,12 +23,19 @@ export function defaultValueForColumn(column: TableColumnDefinition): unknown {
   switch (type) {
     case "text":
       return readColumnEnumValues(column)?.[0] ?? "";
+    case "date":
+    case "datetime":
     case "timestamp":
       return "";
     case "integer":
+    case "real":
       return 0;
     case "boolean":
       return false;
+    case "json":
+      return {};
+    case "blob":
+      return new Uint8Array();
   }
 }
 
@@ -55,6 +62,8 @@ export function coerceCellInput(column: TableColumnDefinition, raw: string): Coe
       return { ok: true, value: raw };
     }
 
+    case "date":
+    case "datetime":
     case "timestamp":
       return { ok: true, value: raw };
 
@@ -64,6 +73,14 @@ export function coerceCellInput(column: TableColumnDefinition, raw: string): Coe
         return { ok: false, error: "Expected an integer value." };
       }
 
+      return { ok: true, value: parsed };
+    }
+
+    case "real": {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed)) {
+        return { ok: false, error: "Expected a numeric value." };
+      }
       return { ok: true, value: parsed };
     }
 
@@ -79,6 +96,16 @@ export function coerceCellInput(column: TableColumnDefinition, raw: string): Coe
 
       return { ok: false, error: "Expected true/false." };
     }
+
+    case "json":
+      try {
+        return { ok: true, value: JSON.parse(raw) };
+      } catch {
+        return { ok: false, error: "Expected valid JSON." };
+      }
+
+    case "blob":
+      return { ok: false, error: "Blob editing is not supported in the playground yet." };
   }
 }
 

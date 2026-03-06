@@ -1,5 +1,7 @@
 import {
   type AnyColumn,
+  type InferSelectModel,
+  type Table,
   and,
   asc,
   desc,
@@ -16,8 +18,15 @@ import {
   type SQL,
 } from "drizzle-orm";
 import {
+  bindAdapterEntities,
   createDataEntityHandle,
+  type DataEntityColumnMetadata,
+  isRelProjectColumnMapping,
+  normalizeDataEntityShape,
+  type DataEntityShape,
   type DataEntityHandle,
+  type DataEntityReadMetadataMap,
+  type InferDataEntityShapeMetadata,
   type ProviderAdapter,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
@@ -27,6 +36,7 @@ import {
   type RelNode,
   type ScanFilterClause,
   type ScanOrderBy,
+  type SqlScalarType,
   type TableScanRequest,
 } from "sqlql";
 
@@ -38,14 +48,16 @@ export interface DrizzleQueryExecutor {
 
 export interface DrizzleProviderTableConfig<
   TContext,
+  TTable extends object = object,
   TColumn extends string = string,
 > {
-  table: object;
+  table: TTable;
   /**
    * Optional explicit column map. If omitted, columns are derived from the
    * Drizzle table object and exposed by both property key and DB column name.
    */
   columns?: DrizzleColumnMap<TColumn>;
+  shape?: DataEntityShape<TColumn>;
   scope?:
     | ((context: TContext) => SQL | SQL[] | undefined | Promise<SQL | SQL[] | undefined>)
     | undefined;
@@ -53,9 +65,9 @@ export interface DrizzleProviderTableConfig<
 
 export interface CreateDrizzleProviderOptions<
   TContext,
-  TTables extends Record<string, DrizzleProviderTableConfig<TContext, string>> = Record<
+  TTables extends Record<string, DrizzleProviderTableConfig<TContext>> = Record<
     string,
-    DrizzleProviderTableConfig<TContext, string>
+    DrizzleProviderTableConfig<TContext>
   >,
 > {
   name?: string;
@@ -71,37 +83,69 @@ interface DrizzleRelCompiledPlan {
 
 type DrizzleRelCompileStrategy = "basic" | "set_op" | "with";
 
-type InferDrizzleTableColumns<TConfig> = TConfig extends DrizzleProviderTableConfig<any, infer TColumn>
-  ? TColumn
+function requireColumnProjectMapping(
+  mapping: Extract<RelNode, { kind: "project" }>["columns"][number],
+): { source: { alias?: string; table?: string; column: string }; output: string } {
+  if (!isRelProjectColumnMapping(mapping)) {
+    throw new UnsupportedSingleQueryPlanError(
+      "Computed projections are not supported in Drizzle single-query pushdown.",
+    );
+  }
+  return mapping;
+}
+
+type InferDrizzleEntityRow<TConfig> = TConfig extends DrizzleProviderTableConfig<any, infer TTable, any>
+  ? TTable extends Table
+    ? InferSelectModel<TTable>
+    : Record<string, unknown>
+  : Record<string, unknown>;
+
+type InferDrizzleTableColumns<TConfig> = TConfig extends DrizzleProviderTableConfig<any, any, infer TColumn>
+  ? [TColumn] extends [string]
+    ? Extract<keyof InferDrizzleEntityRow<TConfig>, string> extends never
+      ? TColumn
+      : Extract<keyof InferDrizzleEntityRow<TConfig>, string>
+    : Extract<keyof InferDrizzleEntityRow<TConfig>, string>
   : string;
+
+type InferDrizzleEntityColumnMetadata<TConfig> = TConfig extends { shape: infer TShape }
+  ? InferDataEntityShapeMetadata<
+      InferDrizzleTableColumns<TConfig>,
+      Extract<TShape, DataEntityShape<InferDrizzleTableColumns<TConfig>>>
+    >
+  : DataEntityReadMetadataMap<InferDrizzleTableColumns<TConfig>, InferDrizzleEntityRow<TConfig>>;
 
 export function createDrizzleProvider<
   TContext,
-  TTables extends Record<string, DrizzleProviderTableConfig<TContext, string>> = Record<
+  TTables extends Record<string, DrizzleProviderTableConfig<TContext>> = Record<
     string,
-    DrizzleProviderTableConfig<TContext, string>
+    DrizzleProviderTableConfig<TContext>
   >,
 >(
   options: CreateDrizzleProviderOptions<TContext, TTables>,
 ): ProviderAdapter<TContext> & {
-  entities: { [K in keyof TTables]: DataEntityHandle<InferDrizzleTableColumns<TTables[K]>> };
+  entities: {
+    [K in keyof TTables]: DataEntityHandle<
+      InferDrizzleTableColumns<TTables[K]>,
+      InferDrizzleEntityRow<TTables[K]>,
+      InferDrizzleEntityColumnMetadata<TTables[K]>
+    >;
+  };
 } {
   const providerName = options.name ?? "drizzle";
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext, string>>;
+  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
   void dialect;
 
   const handles = {} as {
-    [K in keyof TTables]: DataEntityHandle<InferDrizzleTableColumns<TTables[K]>>;
+    [K in keyof TTables]: DataEntityHandle<
+      InferDrizzleTableColumns<TTables[K]>,
+      InferDrizzleEntityRow<TTables[K]>,
+      InferDrizzleEntityColumnMetadata<TTables[K]>
+    >;
   };
-  for (const tableName of Object.keys(options.tables) as Array<Extract<keyof TTables, string>>) {
-    handles[tableName] = createDataEntityHandle<InferDrizzleTableColumns<TTables[typeof tableName]>>({
-      entity: tableName,
-      provider: providerName,
-    });
-  }
-
-  return {
+  const adapter = {
+    name: providerName,
     entities: handles,
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
@@ -166,12 +210,43 @@ export function createDrizzleProvider<
     async lookupMany(request, context): Promise<QueryRow[]> {
       return lookupManyWithDrizzle(options, request, context);
     },
+  } satisfies ProviderAdapter<TContext> & {
+    entities: {
+      [K in keyof TTables]: DataEntityHandle<
+        InferDrizzleTableColumns<TTables[K]>,
+        InferDrizzleEntityRow<TTables[K]>,
+        InferDrizzleEntityColumnMetadata<TTables[K]>
+      >;
+    };
   };
+  for (const tableName of Object.keys(options.tables) as Array<Extract<keyof TTables, string>>) {
+    const tableConfig = options.tables[tableName];
+    if (!tableConfig) {
+      throw new Error(`Missing drizzle table config: ${tableName}`);
+    }
+    const entityColumns = tableConfig.shape
+      ? normalizeDataEntityShape(tableConfig.shape as DataEntityShape<InferDrizzleTableColumns<TTables[typeof tableName]>>)
+      : deriveEntityColumnsFromTable(tableConfig.table);
+    handles[tableName] = createDataEntityHandle<
+      InferDrizzleTableColumns<TTables[typeof tableName]>,
+      InferDrizzleEntityRow<TTables[typeof tableName]>,
+      InferDrizzleEntityColumnMetadata<TTables[typeof tableName]>
+    >({
+      entity: tableName,
+      provider: providerName,
+      adapter,
+      ...(entityColumns && Object.keys(entityColumns).length > 0
+        ? { columns: entityColumns as never }
+        : {}),
+    });
+  }
+
+  return bindAdapterEntities(adapter);
 }
 
 function inferDrizzleDialect<TContext>(
   db: DrizzleQueryExecutor,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
 ): "postgres" | "sqlite" {
   const tableDialects = new Set<"postgres" | "sqlite">();
   for (const tableConfig of Object.values(tableConfigs)) {
@@ -243,7 +318,7 @@ async function executeDrizzlePlan<TContext>(
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
 ): Promise<QueryRow[]> {
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext, string>>;
+  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
 
   switch (plan.kind) {
     case "rel": {
@@ -277,7 +352,7 @@ async function lookupManyWithDrizzle<TContext>(
   request: ProviderLookupManyRequest,
   context: TContext,
 ): Promise<QueryRow[]> {
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext, string>>;
+  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const tableConfig = tableConfigs[request.table];
   if (!tableConfig) {
     throw new Error(`Unknown drizzle table config: ${request.table}`);
@@ -366,7 +441,7 @@ export async function runDrizzleScan<TTable extends string, TColumn extends stri
 }
 
 function resolveColumns<TContext>(
-  tableConfig: DrizzleProviderTableConfig<TContext, string>,
+  tableConfig: DrizzleProviderTableConfig<TContext>,
   tableName: string,
 ): DrizzleColumnMap<string> {
   if (tableConfig.columns) {
@@ -401,6 +476,86 @@ function deriveColumnsFromTable(table: object): DrizzleColumnMap<string> {
   }
 
   return out;
+}
+
+function deriveEntityColumnsFromTable(table: object): DataEntityHandle<string>["columns"] {
+  const out: NonNullable<DataEntityHandle<string>["columns"]> = {};
+
+  for (const [propertyKey, raw] of Object.entries(table as Record<string, unknown>)) {
+    if (!looksLikeDrizzleColumn(raw)) {
+      continue;
+    }
+
+    const column = raw as AnyColumn;
+    const metadata: NonNullable<DataEntityHandle<string>["columns"]>[string] = {
+      source: readColumnName(column) ?? propertyKey,
+    };
+    const inferredType = inferSqlqlTypeFromDrizzleColumn(column);
+    if (inferredType) {
+      metadata.type = inferredType;
+    }
+    if (column.notNull) {
+      metadata.nullable = false;
+    }
+    if (column.primary) {
+      metadata.primaryKey = true;
+    } else if (column.isUnique) {
+      metadata.unique = true;
+    }
+    if (Array.isArray(column.enumValues) && column.enumValues.length > 0) {
+      metadata.enum = column.enumValues;
+    }
+    if (typeof column.dataType === "string") {
+      metadata.physicalType = column.dataType;
+    }
+    out[propertyKey] = metadata;
+  }
+
+  return out;
+}
+
+function inferSqlqlTypeFromDrizzleColumn(column: AnyColumn): SqlScalarType | undefined {
+  const dataType = String((column as { dataType?: unknown }).dataType ?? "").toLowerCase();
+  const sqlType = typeof column.getSQLType === "function" ? column.getSQLType().toLowerCase() : "";
+  const normalizedSqlType = sqlType.replace(/\s+/g, " ");
+
+  if (dataType === "boolean" || sqlType === "boolean") {
+    return "boolean";
+  }
+  if (dataType === "json" || normalizedSqlType.includes("json")) {
+    return "json";
+  }
+  if (dataType === "arraybuffer" || normalizedSqlType.includes("blob") || normalizedSqlType.includes("bytea")) {
+    return "blob";
+  }
+  if (normalizedSqlType.includes("datetime")) {
+    return "datetime";
+  }
+  if (normalizedSqlType === "date") {
+    return "date";
+  }
+  if (dataType === "date" || normalizedSqlType.includes("timestamp")) {
+    return "timestamp";
+  }
+  if (
+    normalizedSqlType.includes("real") ||
+    normalizedSqlType.includes("double") ||
+    normalizedSqlType.includes("float")
+  ) {
+    return "real";
+  }
+  if (
+    dataType === "number" ||
+    normalizedSqlType.includes("int") ||
+    normalizedSqlType.includes("numeric") ||
+    normalizedSqlType.includes("decimal")
+  ) {
+    return "integer";
+  }
+  if (dataType === "string" || sqlType.length > 0) {
+    return "text";
+  }
+  return undefined;
 }
 
 function looksLikeDrizzleColumn(value: unknown): value is AnyColumn {
@@ -499,7 +654,7 @@ function toSqlCondition<TColumn extends string>(
 
 function resolveDrizzleRelCompileStrategy(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
 ): DrizzleRelCompileStrategy | null {
   if (canCompileBasicRel(node, tableConfigs)) {
     return "basic";
@@ -529,7 +684,7 @@ function isStrategyAvailableOnDrizzleDb(
 
 function canCompileBasicRel(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
 ): boolean {
   switch (node.kind) {
     case "scan":
@@ -553,7 +708,7 @@ function canCompileBasicRel(
 
 function canCompileSetOpRel(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
 ): boolean {
   const wrapper = unwrapSetOpRel(node);
   if (!wrapper) {
@@ -568,7 +723,8 @@ function canCompileSetOpRel(
 
   const topProject = wrapper.project;
   if (topProject) {
-    for (const column of topProject.columns) {
+    for (const rawColumn of topProject.columns) {
+      const column = requireColumnProjectMapping(rawColumn);
       if (column.source.alias || column.source.table) {
         return false;
       }
@@ -589,7 +745,7 @@ function canCompileSetOpRel(
 
 function canCompileWithRel(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
 ): boolean {
   if (node.kind !== "with") {
     return false;
@@ -682,7 +838,7 @@ interface ScanBinding<TContext> {
   tableName: string;
   table: object;
   columns: DrizzleColumnMap<string>;
-  tableConfig: DrizzleProviderTableConfig<TContext, string>;
+  tableConfig: DrizzleProviderTableConfig<TContext>;
 }
 
 interface RegularJoinStep<TContext> {
@@ -749,7 +905,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
     offset: (value: number) => unknown;
   };
 }> {
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext, string>>;
+  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const plan = buildSingleQueryPlan(rel, tableConfigs);
   const selection = buildSingleQuerySelection(plan);
   const preferDistinctSelection =
@@ -973,7 +1129,7 @@ async function buildDrizzleRelBuilderForStrategy<TContext>(
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
 ): Promise<{ builder: DrizzleExecutableBuilder }> {
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext, string>>;
+  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const strategy = resolveDrizzleRelCompileStrategy(rel, tableConfigs);
   if (!strategy) {
     throw new UnsupportedSingleQueryPlanError(
@@ -1032,7 +1188,8 @@ async function buildDrizzleSetOpRelSingleQueryBuilder<TContext>(
   let builder = applySetOp.call(left, right) as DrizzleExecutableBuilder;
 
   if (wrapper.project) {
-    for (const mapping of wrapper.project.columns) {
+    for (const rawMapping of wrapper.project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       if ((mapping.source.alias || mapping.source.table) && mapping.source.column !== mapping.output) {
         throw new UnsupportedSingleQueryPlanError(
           "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
@@ -1129,7 +1286,8 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
 
   const selection: Record<string, unknown> = {};
   if (body.project) {
-    for (const mapping of body.project.columns) {
+    for (const rawMapping of body.project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       selection[mapping.output] = resolveWithBodyProjectionSource(
         mapping,
         source as Record<string, unknown>,
@@ -1235,11 +1393,12 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
 }
 
 function resolveWithBodyProjectionSource(
-  mapping: Extract<RelNode, { kind: "project" }>["columns"][number],
+  rawMapping: Extract<RelNode, { kind: "project" }>["columns"][number],
   source: Record<string, unknown>,
   windowExpressions: Map<string, unknown>,
   scanAlias: string,
 ): AnyColumn | unknown {
+  const mapping = requireColumnProjectMapping(rawMapping);
   if (windowExpressions.has(mapping.source.column)) {
     return windowExpressions.get(mapping.source.column)!;
   }
@@ -1310,11 +1469,12 @@ function resolveSingleQuerySortSource<TContext>(
         (column) => column.output === term.source.column,
       );
       if (projected) {
+        const projectedColumn = requireColumnProjectMapping(projected);
         return resolveColumnRefFromAliasMap(
           plan.joinPlan.aliases,
           toAliasColumnRef(
-            projected.source.alias ?? projected.source.table,
-            projected.source.column,
+            projectedColumn.source.alias ?? projectedColumn.source.table,
+            projectedColumn.source.column,
           ),
         );
       }
@@ -1374,7 +1534,7 @@ function ensureJoinMethodsAvailable<TContext>(
 
 function buildSingleQueryPlan<TContext>(
   rel: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
 ): SingleQueryPlan<TContext> {
   const pipeline = extractRelPipeline(rel);
   const joinPlan = buildJoinPlan(pipeline.base, tableConfigs);
@@ -1548,7 +1708,7 @@ function unwrapWithBodyRel(node: RelNode): WithBodyWrapper | null {
 
 function buildJoinPlan<TContext>(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
 ): JoinPlan<TContext> {
   if (node.kind === "scan") {
     const root = createScanBinding(node, tableConfigs);
@@ -1644,7 +1804,7 @@ function buildJoinPlan<TContext>(
 
 function createScanBinding<TContext>(
   scan: Extract<RelNode, { kind: "scan" }>,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext, string>>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
 ): ScanBinding<TContext> {
   const tableConfig = tableConfigs[scan.table];
   if (!tableConfig) {
@@ -1685,7 +1845,8 @@ function buildSingleQuerySelection<TContext>(
     }
 
     if (plan.pipeline.project) {
-      for (const mapping of plan.pipeline.project.columns) {
+      for (const rawMapping of plan.pipeline.project.columns) {
+        const mapping = requireColumnProjectMapping(rawMapping);
         const metricSource = metricSources.get(mapping.source.column);
         if (metricSource) {
           selection[mapping.output] = metricSource.as(mapping.output);
@@ -1721,7 +1882,8 @@ function buildSingleQuerySelection<TContext>(
   }
 
   if (plan.pipeline.project) {
-    for (const mapping of plan.pipeline.project.columns) {
+    for (const rawMapping of plan.pipeline.project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       selection[mapping.output] = resolveColumnRefFromAliasMap(
         plan.joinPlan.aliases,
         toAliasColumnRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
@@ -1886,7 +2048,7 @@ function toAliasColumnRef(
 
 interface DrizzleRelExecutionContext<TContext> {
   options: CreateDrizzleProviderOptions<TContext>;
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext, string>>;
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>;
   context: TContext;
   cteRows: Map<string, QueryRow[]>;
 }
@@ -1899,7 +2061,7 @@ async function executeDrizzleRel<TContext>(
 ): Promise<QueryRow[]> {
   const executionContext: DrizzleRelExecutionContext<TContext> = {
     options,
-    tableConfigs: options.tables as Record<string, DrizzleProviderTableConfig<TContext, string>>,
+    tableConfigs: options.tables as Record<string, DrizzleProviderTableConfig<TContext>>,
     context,
     cteRows: new Map<string, QueryRow[]>(),
   };
@@ -2005,7 +2167,8 @@ async function executeDrizzleRelProject<TContext>(
 
   return rows.map((row) => {
     const out: QueryRow = {};
-    for (const mapping of project.columns) {
+    for (const rawMapping of project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       out[mapping.output] = readRowValue(row, toColumnKey(mapping.source)) ?? null;
     }
     return out;

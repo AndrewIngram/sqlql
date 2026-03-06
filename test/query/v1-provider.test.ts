@@ -2,16 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDataEntityHandle,
-  createQuerySession,
-  defineProviders,
   defineSchema,
-  query,
   type ProviderAdapter,
   type ProviderFragment,
   type QueryRow,
   type ScanFilterClause,
   type TableScanRequest,
 } from "../../src";
+import { createExecutableSchemaFromProviders } from "../support/executable-schema";
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = rows.filter((row) => applyFilters(row, request.where ?? []));
@@ -134,7 +132,7 @@ describe("query/v1 provider runtime", () => {
     let canExecuteCalls = 0;
     let executeCalls = 0;
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
         canExecute(fragment: ProviderFragment) {
           canExecuteCalls += 1;
@@ -151,12 +149,10 @@ describe("query/v1 provider runtime", () => {
           executeCalls += 1;
           return [{ id: "o2" }];
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const rows = await query({
-      schema,
-      providers,
+    const rows = await executableSchema.query({
       context: {},
       sql: `
         SELECT id
@@ -187,7 +183,7 @@ describe("query/v1 provider runtime", () => {
 
     let sawRelCompile = false;
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "rel" || fragment.kind === "scan";
@@ -205,12 +201,10 @@ describe("query/v1 provider runtime", () => {
         async execute() {
           return [{ id: "o1" }];
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const rows = await query({
-      schema,
-      providers,
+    const rows = await executableSchema.query({
       context: {},
       sql: `
         SELECT id
@@ -260,7 +254,7 @@ describe("query/v1 provider runtime", () => {
 
     let capturedRel: unknown = null;
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "rel";
@@ -279,12 +273,10 @@ describe("query/v1 provider runtime", () => {
         async execute() {
           return [{ id: "o1" }];
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const rows = await query({
-      schema,
-      providers,
+    const rows = await executableSchema.query({
       context: {},
       sql: `
         SELECT id
@@ -312,6 +304,77 @@ describe("query/v1 provider runtime", () => {
     expect(scanNode?.select).toContain("total_cents");
     expect(scanNode?.where?.[0]?.column).toBe("total_cents");
     expect(scanNode?.where?.some((clause) => clause.column === "status" && clause.op === "in")).toBe(true);
+  });
+
+  it("maps typed table columns back to logical names and applies built-in coercions on provider scans", async () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+        createdAt: { source: "created_at", type: "timestamp", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, col }) => ({
+      tables: {
+        my_orders: table({
+          from: ordersEntity,
+          columns: {
+            id: col.id("id"),
+            totalCents: col.integer("totalCents"),
+            createdAt: col.string("createdAt", { coerce: "isoTimestamp" }),
+          },
+        }),
+      },
+    }));
+
+    let capturedScan: { request: TableScanRequest } | null = null;
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          capturedScan = fragment.kind === "scan" ? fragment : null;
+          return {
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute() {
+          return [
+            {
+              id: "o1",
+              total_cents: 1500,
+              created_at: new Date("2026-02-03T10:00:00.000Z"),
+            },
+          ];
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: "SELECT id, totalCents, createdAt FROM my_orders",
+    });
+
+    expect(capturedScan).not.toBeNull();
+    const capturedRequest = (capturedScan as unknown as { request: TableScanRequest }).request;
+    expect(capturedRequest.select).toEqual([
+      "id",
+      "total_cents",
+      "created_at",
+    ]);
+    expect(rows).toEqual([
+      {
+        id: "o1",
+        totalCents: 1500,
+        createdAt: "2026-02-03T10:00:00.000Z",
+      },
+    ]);
   });
 
   it("uses lookupMany for cross-provider lookup join paths", async () => {
@@ -345,7 +408,7 @@ describe("query/v1 provider runtime", () => {
 
     let lookupCalls = 0;
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       orders_provider: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -364,7 +427,7 @@ describe("query/v1 provider runtime", () => {
           }
           return scanRows(ordersRows, fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
       users_provider: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -396,12 +459,10 @@ describe("query/v1 provider runtime", () => {
               return out;
             });
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const rows = await query({
-      schema,
-      providers,
+    const rows = await executableSchema.query({
       context: {},
       sql: `
         SELECT o.id, u.email
@@ -450,7 +511,7 @@ describe("query/v1 provider runtime", () => {
       { id: "u3", email: "c@example.com" },
     ];
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       orders_provider: {
         canExecute() {
           return true;
@@ -469,7 +530,7 @@ describe("query/v1 provider runtime", () => {
           }
           return scanRows(ordersRows, fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
       users_provider: {
         canExecute() {
           return true;
@@ -492,13 +553,11 @@ describe("query/v1 provider runtime", () => {
           const keys = new Set(request.keys);
           return usersRows.filter((row) => keys.has(row.id));
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
     await expect(
-      query({
-        schema,
-        providers,
+      executableSchema.query({
         context: {},
         sql: `
           SELECT o.id, u.email
@@ -540,7 +599,7 @@ describe("query/v1 provider runtime", () => {
     ];
     const usersRows: QueryRow[] = [{ id: "u1", email: "ada@example.com" }];
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       orders_provider: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -559,7 +618,7 @@ describe("query/v1 provider runtime", () => {
           }
           return scanRows(ordersRows, fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
       users_provider: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -590,12 +649,10 @@ describe("query/v1 provider runtime", () => {
               return out;
             });
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const rows = await query({
-      schema,
-      providers,
+    const rows = await executableSchema.query({
       context: {},
       sql: `
         SELECT o.id, u.email
@@ -627,13 +684,15 @@ describe("query/v1 provider runtime", () => {
           },
         }),
         order_spend: view({
-          rel: () =>
-            rel.aggregate({
-              from: rel.scan("my_orders"),
-              groupBy: [col("my_orders.id")],
-              measures: {
-                spend: agg.sum(col("my_orders.total_cents")),
-              },
+            rel: () =>
+              rel.aggregate({
+                from: rel.scan("my_orders"),
+                groupBy: {
+                  order_id: col("my_orders.id"),
+                },
+                measures: {
+                  spend: agg.sum(col("my_orders.total_cents")),
+                },
             }),
           columns: {
             order_id: col("id"),
@@ -643,7 +702,7 @@ describe("query/v1 provider runtime", () => {
       },
     }));
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -670,12 +729,10 @@ describe("query/v1 provider runtime", () => {
             fragment.request,
           );
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const rows = await query({
-      schema,
-      providers,
+    const rows = await executableSchema.query({
       context: {},
       sql: `
         SELECT order_id, spend
@@ -702,7 +759,7 @@ describe("query/v1 provider runtime", () => {
       },
     });
 
-    const providers = defineProviders({
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -721,12 +778,10 @@ describe("query/v1 provider runtime", () => {
           }
           return scanRows([{ id: "o1" }], fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
-    const session = createQuerySession({
-      schema,
-      providers,
+    const session = executableSchema.createSession({
       context: {},
       sql: "SELECT id FROM orders",
     });

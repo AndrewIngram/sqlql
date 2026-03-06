@@ -1,17 +1,17 @@
-# Building a Schema (DSL Form, Drizzle Example)
+# Building a Schema (Executable Schema, Drizzle Example)
 
 This guide is DSL-first.
 
 You will build:
 
-1. physical entities exposed by a provider
+1. provider-backed physical entities exposed by an adapter
 2. scoped provider configuration (tenancy/user scope)
-3. a user-facing SQL schema built with `table(...)` and `view(...)`
+3. an executable SQL facade built with `table(...)` and `view(...)`
 
 ## Mental model
 
-- Provider config describes physical access and scope.
-- Schema DSL describes the user-facing facade (renames/transforms/views).
+- Provider config describes physical access, normalization, and scope.
+- The executable schema describes the user-facing facade (renames/transforms/views).
 - SQL queries run against the facade, not your physical tables.
 
 ## End-to-end example
@@ -45,27 +45,13 @@ const vendorsRaw = sqliteTable("vendors_raw", {
 const db = drizzle(sqlite);
 ```
 
-### 2) Create provider entities + scoped Drizzle provider
+### 2) Create scoped Drizzle provider
 
 ```ts
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
-import { createDataEntityHandle, defineProviders } from "sqlql";
 
 type QueryContext = { orgId: string; userId: string };
-
-// Physical entities exposed by this provider.
-const orders = createDataEntityHandle<
-  "id" | "org_id" | "user_id" | "vendor_id" | "status" | "total_cents" | "created_at"
->({
-  provider: "dbProvider",
-  entity: "orders",
-});
-
-const vendors = createDataEntityHandle<"id" | "org_id" | "name" | "tier">({
-  provider: "dbProvider",
-  entity: "vendors",
-});
 
 const dbProvider = createDrizzleProvider<QueryContext>({
   name: "dbProvider",
@@ -82,79 +68,71 @@ const dbProvider = createDrizzleProvider<QueryContext>({
     },
   },
 });
-
-const providers = defineProviders({ dbProvider });
 ```
 
-### 3) Build facade schema with DSL (`table`, `view`, typed `col`)
+`dbProvider.entities.orders` and `dbProvider.entities.vendors` are now typed, provider-owned entities that the schema can bind to directly.
+
+### 3) Build facade schema with `createExecutableSchema(...)`
 
 ```ts
-import { defineSchema } from "sqlql";
+import { createExecutableSchema } from "sqlql";
 
-const schema = defineSchema<QueryContext>(({ table, view, rel, expr, col, agg }) => {
-  const myOrders = table({
-    from: orders,
-    columns: {
-      id: { source: col(orders, "id"), type: "text", nullable: false, primaryKey: true },
-      vendor_id: {
-        source: col(orders, "vendor_id"),
-        type: "text",
-        nullable: false,
-        foreignKey: { table: "vendors_for_org", column: "id" },
-      },
-      status: {
-        source: col(orders, "status"),
-        type: "text",
-        nullable: false,
+const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
+  const myOrders = table(dbProvider.entities.orders, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      vendorId: col.string("vendor_id", {
+        foreignKey: { table: "vendorsForOrg", column: "id" },
+      }),
+      status: col.string("status", {
         enum: ["pending", "paid", "shipped"] as const,
-      },
-      total_cents: { source: col(orders, "total_cents"), type: "integer", nullable: false },
-      created_at: { source: col(orders, "created_at"), type: "timestamp", nullable: false },
-    },
+      }),
+      totalCents: col.integer("total_cents"),
+      createdAt: col.timestamp("created_at"),
+    }),
   });
 
-  const vendorsForOrg = table({
-    from: vendors,
-    columns: {
-      id: { source: col(vendors, "id"), type: "text", nullable: false, primaryKey: true },
-      name: { source: col(vendors, "name"), type: "text", nullable: false },
-      tier: {
-        source: col(vendors, "tier"),
-        type: "text",
-        nullable: false,
+  const vendorsForOrg = table(dbProvider.entities.vendors, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      name: col.string("name"),
+      tier: col.string("tier", {
         enum: ["standard", "preferred"] as const,
-      },
-    },
+      }),
+    }),
   });
 
   const myVendorSpend = view({
-    rel: () =>
-      rel.aggregate({
-        from: rel.join({
-          left: rel.scan(myOrders),
-          right: rel.scan(vendorsForOrg),
-          on: expr.eq(col(myOrders, "vendor_id"), col(vendorsForOrg, "id")),
+    rel: ({ scan, join, aggregate, col, expr, agg }) =>
+      aggregate({
+        from: join({
+          left: scan(myOrders),
+          right: scan(vendorsForOrg),
+          on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
           type: "inner",
         }),
-        groupBy: [col(vendorsForOrg, "id"), col(vendorsForOrg, "name")],
+        groupBy: {
+          vendorId: col(vendorsForOrg, "id"),
+          vendorName: col(vendorsForOrg, "name"),
+        },
         measures: {
-          spend_cents: agg.sum(col(myOrders, "total_cents")),
-          order_count: agg.count(),
+          spendCents: agg.sum(col(myOrders, "totalCents")),
+          orderCount: agg.count(),
         },
       }),
-    columns: {
-      vendor_id: { source: col(vendorsForOrg, "id"), type: "text", nullable: false },
-      vendor_name: { source: col(vendorsForOrg, "name"), type: "text", nullable: false },
-      spend_cents: { source: col("spend_cents"), type: "integer", nullable: false },
-      order_count: { source: col("order_count"), type: "integer", nullable: false },
-    },
+    columns: ({ col }) => ({
+      vendorId: col.id("vendorId"),
+      vendorName: col.string("vendorName"),
+      spendCents: col.integer("spendCents"),
+      orderCount: col.integer("orderCount"),
+    }),
   });
 
   return {
     tables: {
-      my_orders: myOrders,
-      vendors_for_org: vendorsForOrg,
-      my_vendor_spend: myVendorSpend,
+      myOrders,
+      vendorsForOrg,
+      myVendorSpend,
     },
   };
 });
@@ -163,16 +141,12 @@ const schema = defineSchema<QueryContext>(({ table, view, rel, expr, col, agg })
 ### 4) Query the facade
 
 ```ts
-import { query } from "sqlql";
-
-const rows = await query({
-  schema,
-  providers,
+const rows = await executableSchema.query({
   context: { orgId: "org_1", userId: "u1" },
   sql: `
-    SELECT vendor_name, spend_cents, order_count
-    FROM my_vendor_spend
-    ORDER BY spend_cents DESC
+    SELECT vendorName, spendCents, orderCount
+    FROM myVendorSpend
+    ORDER BY spendCents DESC
   `,
 });
 ```
@@ -180,13 +154,12 @@ const rows = await query({
 ## Why this pattern stays clean
 
 - Physical concerns stay in provider config (`table`, `scope`, backend APIs).
-- Facade concerns stay in schema (`table`, `view`, logical names).
-- Typed refs (`col(handleOrToken, ...)`) reduce ref/column drift.
+- Facade concerns stay in the executable schema (`table`, `view`, logical names).
+- Scoped typed builders (`columns: ({ col }) => ...`) reduce ref/column drift.
 
 ## Troubleshooting checklist
 
-- provider names on entity handles match `defineProviders` keys
-- provider `tables` keys match handle `entity` values
+- provider `tables` keys match the entities you bind in `table(provider.entities.someTable, ...)`
 - scoped columns exist on physical tables
 - facade FK references target facade table/column names
 - any unsupported query shape is either pushed down partially or handled by fallback/local execution

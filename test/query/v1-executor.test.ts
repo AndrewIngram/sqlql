@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  defineProviders,
+
   defineSchema,
   executeRelWithProviders,
   type ProviderAdapter,
@@ -11,6 +11,7 @@ import {
   type ScanFilterClause,
   type TableScanRequest,
 } from "../../src";
+import { finalizeProviders } from "../support/executable-schema";
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = rows.filter((row) => applyFilters(row, request.where ?? []));
@@ -136,7 +137,7 @@ describe("query/v1 local executor", () => {
       { id: "o3", org_id: "org_2", total_cents: 4000 },
     ];
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       memory: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -155,7 +156,7 @@ describe("query/v1 local executor", () => {
           }
           return scanRows(rows, fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
     const rel: RelNode = {
@@ -218,7 +219,7 @@ describe("query/v1 local executor", () => {
       right_items: [{ id: "b" }, { id: "c" }],
     };
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       memory: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -237,7 +238,7 @@ describe("query/v1 local executor", () => {
           }
           return scanRows(tableRows[fragment.table] ?? [], fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
     const rel: RelNode = {
@@ -309,7 +310,7 @@ describe("query/v1 local executor", () => {
       { id: "u3", email: "c@example.com", team: "enterprise" },
     ];
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       memory: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -328,7 +329,7 @@ describe("query/v1 local executor", () => {
           }
           return scanRows(rows, fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
     const rel: RelNode = {
@@ -431,7 +432,7 @@ describe("query/v1 local executor", () => {
       ],
     };
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       memory: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -450,7 +451,7 @@ describe("query/v1 local executor", () => {
           }
           return scanRows(tableRows[fragment.table] ?? [], fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
     const rel: RelNode = {
@@ -519,7 +520,7 @@ describe("query/v1 local executor", () => {
       { id: "e", team: "blue", score: 80 },
     ];
 
-    const providers = defineProviders({
+    const providers = finalizeProviders({
       memory: {
         canExecute(fragment: ProviderFragment) {
           return fragment.kind === "scan";
@@ -538,7 +539,7 @@ describe("query/v1 local executor", () => {
           }
           return scanRows(rows, fragment.request);
         },
-      } satisfies ProviderAdapter,
+      } satisfies Omit<ProviderAdapter, "name">,
     });
 
     const rel: RelNode = {

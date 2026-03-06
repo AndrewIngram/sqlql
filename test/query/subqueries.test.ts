@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "../support/methods-provider";
+import { createMethodsSession, queryWithMethods } from "../support/methods-provider";
 import { createArrayTableMethods } from "../../src/array-methods";
 
-import {
-  createQuerySession,
-  defineTableMethods,
-} from "../../src";
+import { defineTableMethods } from "../../src";
 import { commerceRows, commerceSchema } from "../support/commerce-fixture";
 import { withQueryHarness } from "../support/query-harness";
 
@@ -134,9 +131,9 @@ describe("query/subqueries", () => {
       ORDER BY o.id ASC
     `;
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
@@ -203,9 +200,9 @@ describe("query/subqueries", () => {
       teams: createArrayTableMethods(commerceRows.teams),
     });
 
-    const session = createQuerySession({
+    const session = createMethodsSession({
       schema: commerceSchema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: `
         SELECT id, (SELECT MAX(total_cents) FROM orders) AS max_total

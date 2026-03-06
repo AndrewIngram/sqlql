@@ -1,6 +1,13 @@
+import type { Selectable } from "kysely";
 import {
+  bindAdapterEntities,
   createDataEntityHandle,
+  isRelProjectColumnMapping,
+  normalizeDataEntityShape,
+  type DataEntityShape,
   type DataEntityHandle,
+  type DataEntityReadMetadataMap,
+  type InferDataEntityShapeMetadata,
   type MaybePromise,
   type ProviderAdapter,
   type ProviderCapabilityReport,
@@ -35,8 +42,13 @@ export type KyselyDatabaseLike = {
   with?: (name: string, expression: (db: KyselyDatabaseLike) => unknown) => KyselyDatabaseLike;
 };
 
-export interface KyselyProviderEntityConfig<TContext> {
+export interface KyselyProviderEntityConfig<
+  TContext,
+  TRow extends Record<string, unknown> = Record<string, unknown>,
+  TColumns extends string = Extract<keyof TRow, string>,
+> {
   table?: string;
+  shape?: DataEntityShape<TColumns>;
   /**
    * Applies mandatory scoped constraints to a query rooted at this entity alias.
    */
@@ -49,10 +61,27 @@ export interface KyselyProviderEntityConfig<TContext> {
   }) => MaybePromise<KyselyQueryBuilderLike>;
 }
 
-export interface CreateKyselyProviderOptions<TContext> {
+export interface CreateKyselyProviderOptions<
+  TContext,
+  TEntities extends Record<string, KyselyProviderEntityConfig<TContext, any, string>> = Record<
+    string,
+    KyselyProviderEntityConfig<TContext, any, string>
+  >,
+> {
   name?: string;
   db: unknown;
-  entities?: Record<string, KyselyProviderEntityConfig<TContext>>;
+  entities?: TEntities;
+}
+
+function requireColumnProjectMapping(
+  mapping: Extract<RelNode, { kind: "project" }>["columns"][number],
+): { source: { alias?: string; table?: string; column: string }; output: string } {
+  if (!isRelProjectColumnMapping(mapping)) {
+    throw new UnsupportedSingleQueryPlanError(
+      "Computed projections are not supported in Kysely single-query pushdown.",
+    );
+  }
+  return mapping;
 }
 
 interface KyselyRelCompiledPlan {
@@ -140,6 +169,46 @@ interface BaseBinding<TContext> {
   config: KyselyProviderEntityConfig<TContext>;
 }
 
+type InferKyselyEntityRow<
+  TDatabase,
+  TEntityName extends string,
+  TConfig,
+> = TEntityName extends keyof TDatabase
+  ? Selectable<Extract<TDatabase[TEntityName], Record<string, unknown>>>
+  : TConfig extends KyselyProviderEntityConfig<any, infer TRow, any>
+    ? TRow
+    : Record<string, unknown>;
+
+type InferKyselyEntityColumns<
+  TDatabase,
+  TEntityName extends string,
+  TConfig,
+> = TConfig extends { shape: infer TShape }
+  ? Extract<keyof Extract<TShape, DataEntityShape<string>>, string>
+  : Extract<keyof InferKyselyEntityRow<TDatabase, TEntityName, TConfig>, string>;
+
+type NormalizeKyselyEntityRow<
+  TDatabase,
+  TEntityName extends string,
+  TConfig,
+> = InferKyselyEntityRow<TDatabase, TEntityName, TConfig> & Partial<
+  Record<InferKyselyEntityColumns<TDatabase, TEntityName, TConfig>, unknown>
+>;
+
+type InferKyselyEntityColumnMetadata<
+  TDatabase,
+  TEntityName extends string,
+  TConfig,
+> = TConfig extends { shape: infer TShape }
+  ? InferDataEntityShapeMetadata<
+      InferKyselyEntityColumns<TDatabase, TEntityName, TConfig>,
+      Extract<TShape, DataEntityShape<InferKyselyEntityColumns<TDatabase, TEntityName, TConfig>>>
+    >
+  : DataEntityReadMetadataMap<
+      InferKyselyEntityColumns<TDatabase, TEntityName, TConfig>,
+      NormalizeKyselyEntityRow<TDatabase, TEntityName, TConfig>
+    >;
+
 function toRef(alias: string | undefined, column: string): { alias?: string; column: string } {
   if (alias) {
     return { alias, column };
@@ -147,26 +216,38 @@ function toRef(alias: string | undefined, column: string): { alias?: string; col
   return { column };
 }
 
-export function createKyselyProvider<TContext>(
-  options: CreateKyselyProviderOptions<TContext>,
+export function createKyselyProvider<
+  TContext,
+  TDatabase extends Record<string, Record<string, unknown>> = Record<string, Record<string, unknown>>,
+  TEntities extends Record<string, KyselyProviderEntityConfig<TContext, any, string>> = Record<
+    string,
+    KyselyProviderEntityConfig<TContext, any, string>
+  >,
+>(
+  options: CreateKyselyProviderOptions<TContext, TEntities>,
 ): ProviderAdapter<TContext> & {
-  entities: Record<string, DataEntityHandle>;
+  entities: {
+    [K in keyof TEntities]: DataEntityHandle<
+      InferKyselyEntityColumns<TDatabase, Extract<K, string>, TEntities[K]>,
+      NormalizeKyselyEntityRow<TDatabase, Extract<K, string>, TEntities[K]>,
+      InferKyselyEntityColumnMetadata<TDatabase, Extract<K, string>, TEntities[K]>
+    >;
+  };
 } {
   const providerName = options.name ?? "kysely";
   const db = options.db as KyselyDatabaseLike;
   const entityConfigs = resolveEntityConfigs(options);
+  const entityOptions = (options.entities ?? {}) as TEntities;
 
-  const handles: Record<string, DataEntityHandle> = Object.fromEntries(
-    Object.keys(entityConfigs).map((entityName) => [
-      entityName,
-      createDataEntityHandle({
-        entity: entityName,
-        provider: providerName,
-      }),
-    ]),
-  );
-
-  return {
+  const handles = {} as {
+    [K in keyof TEntities]: DataEntityHandle<
+      InferKyselyEntityColumns<TDatabase, Extract<K, string>, TEntities[K]>,
+      NormalizeKyselyEntityRow<TDatabase, Extract<K, string>, TEntities[K]>,
+      InferKyselyEntityColumnMetadata<TDatabase, Extract<K, string>, TEntities[K]>
+    >;
+  };
+  const adapter = {
+    name: providerName,
     entities: handles,
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
@@ -246,7 +327,32 @@ export function createKyselyProvider<TContext>(
 
       return executeScan(db, entityConfigs, scanRequest, context);
     },
+  } satisfies ProviderAdapter<TContext> & {
+    entities: {
+      [K in keyof TEntities]: DataEntityHandle<
+        InferKyselyEntityColumns<TDatabase, Extract<K, string>, TEntities[K]>,
+        NormalizeKyselyEntityRow<TDatabase, Extract<K, string>, TEntities[K]>,
+        InferKyselyEntityColumnMetadata<TDatabase, Extract<K, string>, TEntities[K]>
+      >;
+    };
   };
+  for (const entityName of Object.keys(entityConfigs) as Array<Extract<keyof TEntities, string>>) {
+    const config = entityOptions[entityName];
+    handles[entityName] = createDataEntityHandle({
+      entity: entityName,
+      provider: providerName,
+      adapter,
+      ...(config?.shape
+        ? {
+            columns: normalizeDataEntityShape(
+              config.shape as DataEntityShape<InferKyselyEntityColumns<TDatabase, typeof entityName, TEntities[typeof entityName]>>,
+            ),
+          }
+        : {}),
+    }) as never;
+  }
+
+  return bindAdapterEntities(adapter);
 }
 
 function resolveEntityConfigs<TContext>(
@@ -383,7 +489,8 @@ function canCompileSetOpRel<TContext>(
 
   const topProject = wrapper.project;
   if (topProject) {
-    for (const column of topProject.columns) {
+    for (const rawColumn of topProject.columns) {
+      const column = requireColumnProjectMapping(rawColumn);
       if (column.source.alias || column.source.table) {
         return false;
       }
@@ -651,7 +758,8 @@ async function buildKyselySetOpRelSingleQueryBuilder<TContext>(
   let query = applySetOp.call(left, right) as KyselyQueryBuilderLike;
 
   if (wrapper.project) {
-    for (const mapping of wrapper.project.columns) {
+    for (const rawMapping of wrapper.project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       if ((mapping.source.alias || mapping.source.table) && mapping.source.column !== mapping.output) {
         throw new UnsupportedSingleQueryPlanError(
           "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
@@ -761,7 +869,8 @@ async function buildKyselyWithRelSingleQueryBuilder<TContext>(
   ];
 
   query = query.select((eb: any) =>
-    projection.map((mapping) => {
+    projection.map((rawMapping) => {
+      const mapping = requireColumnProjectMapping(rawMapping);
       const windowFn = windowByAlias.get(mapping.source.column);
       if (windowFn) {
         return buildWindowExpression(eb, windowFn, scanAlias).as(mapping.output);
@@ -1230,7 +1339,8 @@ function buildSelection<TContext>(plan: SingleQueryPlan<TContext>): SelectionEnt
       throw new UnsupportedSingleQueryPlanError("Non-aggregate rel fragment requires a project node.");
     }
 
-    return plan.pipeline.project.columns.map((mapping) => {
+    return plan.pipeline.project.columns.map((rawMapping) => {
+      const mapping = requireColumnProjectMapping(rawMapping);
       const source = resolveColumnRef(plan.joinPlan.aliases, {
         ...toRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
       });
@@ -1259,7 +1369,8 @@ function buildSelection<TContext>(plan: SingleQueryPlan<TContext>): SelectionEnt
       })),
     ];
 
-  return projection.map((mapping) => {
+  return projection.map((rawMapping) => {
+    const mapping = requireColumnProjectMapping(rawMapping);
     const metric = metricByAs.get(mapping.source.column);
     if (metric) {
       return {

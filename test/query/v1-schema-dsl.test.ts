@@ -18,20 +18,18 @@ describe("query/v1 schema dsl", () => {
       provider: "warehouse",
     });
 
-    const schema = defineSchema(({ table, col }) => ({
+    const schema = defineSchema(({ table }) => ({
       tables: {
-        my_vendors: table({
-          from: vendorsEntity,
-          columns: {
-            id: { source: col(vendorsEntity, "id"), type: "text", nullable: false, primaryKey: true },
-          },
+        my_vendors: table(vendorsEntity, {
+          columns: () => ({
+            id: { source: "id", type: "text", nullable: false, primaryKey: true },
+          }),
         }),
-        my_orders: table({
-          from: ordersEntity,
-          columns: {
-            id: { source: col(ordersEntity, "id"), type: "text", nullable: false, primaryKey: true },
+        my_orders: table(ordersEntity, {
+          columns: () => ({
+            id: { source: "id", type: "text", nullable: false, primaryKey: true },
             vendor_id: {
-              source: col(ordersEntity, "vendor_id"),
+              source: "vendor_id",
               type: "text",
               nullable: false,
               foreignKey: {
@@ -39,7 +37,7 @@ describe("query/v1 schema dsl", () => {
                 column: "id",
               },
             },
-          },
+          }),
         }),
       },
     }));

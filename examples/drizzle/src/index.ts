@@ -1,12 +1,10 @@
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { and, eq } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { createDrizzleProvider, type DrizzleProviderTableConfig } from "@sqlql/drizzle";
+import { createDrizzleProvider } from "@sqlql/drizzle";
 import { createSeededSqliteDatabase, type DemoContext } from "@sqlql/example-shared";
 import {
-  defineProviders,
-  defineSchema,
-  query,
+  createExecutableSchema,
 } from "sqlql";
 
 const vendorsRawTable = sqliteTable("vendors_raw", {
@@ -42,7 +40,7 @@ async function main(): Promise<void> {
       table: vendorsRawTable,
       scope: (context: DemoContext) => eq(vendorsRawTable.orgId, context.orgId),
     },
-  } satisfies Record<"orders_raw" | "vendors_raw", DrizzleProviderTableConfig<DemoContext, string>>;
+  };
 
   const dbProvider = createDrizzleProvider<DemoContext, typeof tableConfigs>({
     name: "dbProvider",
@@ -50,23 +48,21 @@ async function main(): Promise<void> {
     tables: tableConfigs,
   });
 
-  const schema = defineSchema<DemoContext>(({ table, view, col, expr, agg, rel }) => {
-    const myOrders = table({
-      from: dbProvider.entities.orders_raw,
-      columns: {
-        id: col(dbProvider.entities.orders_raw, "id"),
-        vendorId: col(dbProvider.entities.orders_raw, "vendor_id"),
-        totalCents: col(dbProvider.entities.orders_raw, "total_cents"),
-        createdAt: col(dbProvider.entities.orders_raw, "created_at"),
-      },
+  const executableSchema = createExecutableSchema<DemoContext>(({ table, view }) => {
+    const myOrders = table(dbProvider.entities.orders_raw, {
+      columns: ({ col }) => ({
+        id: col.id("id"),
+        vendorId: col.string("vendorId"),
+        totalCents: col.integer("totalCents"),
+        createdAt: col.string("createdAt"),
+      }),
     });
 
-    const vendorsForOrg = table({
-      from: dbProvider.entities.vendors_raw,
-      columns: {
-        id: col(dbProvider.entities.vendors_raw, "id"),
-        name: col(dbProvider.entities.vendors_raw, "name"),
-      },
+    const vendorsForOrg = table(dbProvider.entities.vendors_raw, {
+      columns: ({ col }) => ({
+        id: col.id("id"),
+        name: col.string("name"),
+      }),
     });
 
     return {
@@ -74,38 +70,35 @@ async function main(): Promise<void> {
         myOrders,
         vendorsForOrg,
         myVendorSpend: view({
-          rel: () =>
-            rel.aggregate({
-              from: rel.join({
-                left: rel.scan(myOrders),
-                right: rel.scan(vendorsForOrg),
+          rel: ({ scan, join, aggregate, col, expr, agg }) =>
+            aggregate({
+              from: join({
+                left: scan(myOrders),
+                right: scan(vendorsForOrg),
                 on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
                 type: "inner",
               }),
-              groupBy: [col(vendorsForOrg, "id"), col(vendorsForOrg, "name")],
+              groupBy: {
+                vendorId: col(vendorsForOrg, "id"),
+                vendorName: col(vendorsForOrg, "name"),
+              },
               measures: {
                 totalSpendCents: agg.sum(col(myOrders, "totalCents")),
                 orderCount: agg.count(),
               },
             }),
-          columns: {
-            vendorId: col("id"),
-            vendorName: col("name"),
-            totalSpendCents: col("totalSpendCents"),
-            orderCount: col("orderCount"),
-          },
+          columns: ({ col }) => ({
+            vendorId: col.id("vendorId"),
+            vendorName: col.string("vendorName"),
+            totalSpendCents: col.integer("totalSpendCents"),
+            orderCount: col.integer("orderCount"),
+          }),
         }),
       },
     };
   });
 
-  const providers = defineProviders({
-    dbProvider,
-  });
-
-  const rows = await query({
-    schema,
-    providers,
+  const rows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",
@@ -117,9 +110,7 @@ async function main(): Promise<void> {
     `,
   });
 
-  const orderRows = await query({
-    schema,
-    providers,
+  const orderRows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",

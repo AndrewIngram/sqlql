@@ -1,6 +1,12 @@
 import {
+  bindAdapterEntities,
   createDataEntityHandle,
+  isRelProjectColumnMapping,
+  normalizeDataEntityShape,
+  type DataEntityShape,
   type DataEntityHandle,
+  type DataEntityReadMetadataMap,
+  type InferDataEntityShapeMetadata,
   type ProviderAdapter,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
@@ -51,18 +57,51 @@ export type KnexLike = {
   queryBuilder: (...args: any[]) => KnexLikeQueryBuilder;
 };
 
-export interface ObjectionProviderEntityConfig<TContext> {
+export interface ObjectionProviderEntityConfig<
+  TContext,
+  TRow extends Record<string, unknown> = Record<string, unknown>,
+  TColumns extends string = Extract<keyof TRow, string>,
+> {
   table?: string;
+  shape?: DataEntityShape<TColumns>;
   /**
    * Builds the mandatory scoped root query for this entity.
    */
   base?: (context: TContext) => KnexLikeQueryBuilder;
 }
 
-export interface CreateObjectionProviderOptions<TContext> {
+export type ObjectionProviderShape<
+  TRowsByEntity extends Record<string, Record<string, unknown>>,
+  TContext = any,
+> = {
+  [K in keyof TRowsByEntity]: ObjectionProviderEntityConfig<
+    TContext,
+    TRowsByEntity[K],
+    Extract<keyof TRowsByEntity[K], string>
+  >;
+};
+
+export interface CreateObjectionProviderOptions<
+  TContext,
+  TEntities extends Record<string, ObjectionProviderEntityConfig<TContext, any, string>> = Record<
+    string,
+    ObjectionProviderEntityConfig<TContext, any, string>
+  >,
+> {
   name?: string;
   knex: KnexLike;
-  entities?: Record<string, ObjectionProviderEntityConfig<TContext>>;
+  entities?: TEntities;
+}
+
+function requireColumnProjectMapping(
+  mapping: Extract<RelNode, { kind: "project" }>["columns"][number],
+): { source: { alias?: string; table?: string; column: string }; output: string } {
+  if (!isRelProjectColumnMapping(mapping)) {
+    throw new UnsupportedSingleQueryPlanError(
+      "Computed projections are not supported in Objection single-query pushdown.",
+    );
+  }
+  return mapping;
 }
 
 interface ObjectionRelCompiledPlan {
@@ -181,25 +220,57 @@ async function executeQuery(query: KnexLikeQueryBuilder): Promise<QueryRow[]> {
   return (await (query as unknown as Promise<QueryRow[]>)) ?? [];
 }
 
-export function createObjectionProvider<TContext>(
-  options: CreateObjectionProviderOptions<TContext>,
+type InferObjectionEntityColumns<TConfig> = TConfig extends { shape: infer TShape }
+  ? Extract<keyof Extract<TShape, DataEntityShape<string>>, string>
+  : TConfig extends ObjectionProviderEntityConfig<any, infer TRow, any>
+    ? Extract<keyof TRow, string>
+    : string;
+
+type InferObjectionEntityRow<TConfig> = TConfig extends ObjectionProviderEntityConfig<any, infer TRow, any>
+  ? TRow
+  : Record<string, unknown>;
+
+type NormalizeObjectionEntityRow<TConfig> = InferObjectionEntityRow<TConfig> & Partial<
+  Record<InferObjectionEntityColumns<TConfig>, unknown>
+>;
+
+type InferObjectionEntityColumnMetadata<TConfig> = TConfig extends { shape: infer TShape }
+  ? InferDataEntityShapeMetadata<
+      InferObjectionEntityColumns<TConfig>,
+      Extract<TShape, DataEntityShape<InferObjectionEntityColumns<TConfig>>>
+    >
+  : DataEntityReadMetadataMap<InferObjectionEntityColumns<TConfig>, NormalizeObjectionEntityRow<TConfig>>;
+
+export function createObjectionProvider<
+  TContext,
+  TEntities extends Record<string, ObjectionProviderEntityConfig<TContext, any, string>> = Record<
+    string,
+    ObjectionProviderEntityConfig<TContext, any, string>
+  >,
+>(
+  options: CreateObjectionProviderOptions<TContext, TEntities>,
 ): ProviderAdapter<TContext> & {
-  entities: Record<string, DataEntityHandle>;
+  entities: {
+    [K in keyof TEntities]: DataEntityHandle<
+      InferObjectionEntityColumns<TEntities[K]>,
+      NormalizeObjectionEntityRow<TEntities[K]>,
+      InferObjectionEntityColumnMetadata<TEntities[K]>
+    >;
+  };
 } {
   const providerName = options.name ?? "objection";
   const entityConfigs = resolveEntityConfigs(options);
+  const entityOptions = (options.entities ?? {}) as TEntities;
 
-  const handles: Record<string, DataEntityHandle> = Object.fromEntries(
-    Object.keys(entityConfigs).map((entityName) => [
-      entityName,
-      createDataEntityHandle({
-        entity: entityName,
-        provider: providerName,
-      }),
-    ]),
-  );
-
-  return {
+  const handles = {} as {
+    [K in keyof TEntities]: DataEntityHandle<
+      InferObjectionEntityColumns<TEntities[K]>,
+      NormalizeObjectionEntityRow<TEntities[K]>,
+      InferObjectionEntityColumnMetadata<TEntities[K]>
+    >;
+  };
+  const adapter = {
+    name: providerName,
     entities: handles,
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
@@ -287,7 +358,28 @@ export function createObjectionProvider<TContext>(
 
       return executeScan(options.knex, entityConfigs, scanRequest, context);
     },
+  } satisfies ProviderAdapter<TContext> & {
+    entities: {
+      [K in keyof TEntities]: DataEntityHandle<
+        InferObjectionEntityColumns<TEntities[K]>,
+        NormalizeObjectionEntityRow<TEntities[K]>,
+        InferObjectionEntityColumnMetadata<TEntities[K]>
+      >;
+    };
   };
+  for (const entityName of Object.keys(entityConfigs) as Array<Extract<keyof TEntities, string>>) {
+    const config = entityOptions[entityName];
+    handles[entityName] = createDataEntityHandle({
+      entity: entityName,
+      provider: providerName,
+      adapter,
+      ...(config?.shape
+        ? { columns: normalizeDataEntityShape(config.shape as DataEntityShape<string>) }
+        : {}),
+    }) as never;
+  }
+
+  return bindAdapterEntities(adapter);
 }
 
 function resolveEntityConfigs<TContext>(
@@ -422,7 +514,8 @@ function canCompileSetOpRel<TContext>(
 
   const topProject = wrapper.project;
   if (topProject) {
-    for (const column of topProject.columns) {
+    for (const rawColumn of topProject.columns) {
+      const column = requireColumnProjectMapping(rawColumn);
       if (column.source.alias || column.source.table) {
         return false;
       }
@@ -700,7 +793,8 @@ async function buildObjectionSetOpRelSingleQueryBuilder<TContext>(
   let query = applySetOp.call(left, [right]) as KnexLikeQueryBuilder;
 
   if (wrapper.project) {
-    for (const mapping of wrapper.project.columns) {
+    for (const rawMapping of wrapper.project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       if ((mapping.source.alias || mapping.source.table) && mapping.source.column !== mapping.output) {
         throw new UnsupportedSingleQueryPlanError(
           "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
@@ -811,7 +905,7 @@ async function buildObjectionWithRelSingleQueryBuilder<TContext>(
   const projection: Array<{
     source: { alias?: string; table?: string; column: string };
     output: string;
-  }> = body.project?.columns ?? [
+  }> = (body.project?.columns.map((mapping) => requireColumnProjectMapping(mapping)) ?? [
     ...body.cteScan.select.map((column) => ({
       source: { column },
       output: column,
@@ -820,7 +914,7 @@ async function buildObjectionWithRelSingleQueryBuilder<TContext>(
       source: { column },
       output: column,
     })),
-  ];
+  ]);
 
   for (const mapping of projection) {
     if (!mapping.source.alias && !mapping.source.table && windowAliases.has(mapping.source.column)) {
@@ -1329,7 +1423,8 @@ function applySelection<TContext>(
       throw new UnsupportedSingleQueryPlanError("Non-aggregate rel fragment requires a project node.");
     }
 
-    for (const mapping of project.columns) {
+    for (const rawMapping of project.columns) {
+      const mapping = requireColumnProjectMapping(rawMapping);
       const source = resolveColumnRef(plan.joinPlan.aliases, {
         ...toRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
       });
@@ -1355,7 +1450,8 @@ function applySelection<TContext>(
       })),
     ];
 
-  for (const mapping of projection) {
+  for (const rawMapping of projection) {
+    const mapping = requireColumnProjectMapping(rawMapping);
     const metric = metricByAs.get(mapping.source.column);
     if (metric) {
       applyMetricSelection(query, plan.joinPlan.aliases, metric, mapping.output);

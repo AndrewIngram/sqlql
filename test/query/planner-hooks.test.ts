@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "../support/methods-provider";
+import { queryWithMethods } from "../support/methods-provider";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
@@ -9,7 +9,6 @@ import {
 import {
   defineSchema,
   defineTableMethods,
-  query,
   type TableAggregateRequest,
   type TableLookupRequest,
   type TableScanRequest,
@@ -59,9 +58,9 @@ describe("query/planner-hooks", () => {
       },
     });
 
-    const result = await query({
+    const result = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: `
         SELECT id
@@ -102,9 +101,9 @@ describe("query/planner-hooks", () => {
       },
     });
 
-    const result = await query({
+    const result = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: "SELECT id FROM orders WHERE status = 'paid'",
     });
@@ -150,9 +149,9 @@ describe("query/planner-hooks", () => {
       },
     });
 
-    const result = await query({
+    const result = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: "SELECT id FROM orders WHERE status = 'paid' AND total_cents > 1500 ORDER BY id ASC",
     });
@@ -203,9 +202,9 @@ describe("query/planner-hooks", () => {
       },
     });
 
-    const result = await query({
+    const result = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: `
         SELECT o.id, u.email
@@ -255,9 +254,9 @@ describe("query/planner-hooks", () => {
       },
     });
 
-    const result = await query({
+    const result = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: "SELECT SUM(total_cents) AS total FROM orders WHERE status = 'paid'",
     });

@@ -15,8 +15,6 @@ import {
 import {
   buildRowsJsonSchema,
   buildTableRowsJsonSchema,
-  coerceSchemaEditorTextToCode,
-  legacySchemaJsonToCode,
   parseDownstreamRowsText,
   parseFacadeSchemaCode,
   parseFacadeSchemaText,
@@ -36,33 +34,16 @@ describe("playground/validation", () => {
     expect(schemaResult.issues).toEqual([]);
   });
 
-  it("converts legacy JSON schema text to TypeScript module text", async () => {
-    const legacyJson = serializeJson(FACADE_SCHEMA);
-    const schemaCode = legacySchemaJsonToCode(legacyJson);
-    const schemaResult = await parseFacadeSchemaCode(schemaCode);
-
-    expect(schemaCode).toContain("export const schema = defineSchema(");
-    expect(schemaResult.ok).toBe(true);
-  });
-
-  it("coerces legacy JSON in schema editor path", async () => {
-    const legacyJson = serializeJson(FACADE_SCHEMA);
-    const coerced = coerceSchemaEditorTextToCode(legacyJson);
-    const schemaResult = await parseFacadeSchemaCode(coerced);
-
-    expect(coerced).toContain("export const schema = defineSchema(");
-    expect(schemaResult.ok).toBe(true);
-  });
-
-  it("rejects schema modules missing exported schema", async () => {
+  it("rejects schema modules missing exported executableSchema", async () => {
     const schemaResult = await parseFacadeSchemaCode("export const notSchema = 1;");
 
     expect(schemaResult.ok).toBe(false);
     expect(schemaResult.issues[0]?.message).toContain("SCHEMA_EXPORT_MISSING");
+    expect(schemaResult.issues[0]?.message).toContain("executableSchema");
   });
 
-  it("rejects schema modules with invalid schema shape", async () => {
-    const schemaResult = await parseFacadeSchemaCode("export const schema = { nope: true };");
+  it("rejects schema modules with invalid executable schema export", async () => {
+    const schemaResult = await parseFacadeSchemaCode("export const executableSchema = { nope: true };");
 
     expect(schemaResult.ok).toBe(false);
     expect(schemaResult.issues[0]?.message).toContain("SCHEMA_EXPORT_INVALID");
@@ -70,7 +51,7 @@ describe("playground/validation", () => {
 
   it("rejects schema modules that throw at runtime", async () => {
     const schemaResult = await parseFacadeSchemaCode(
-      'const fail = (): never => { throw new Error("boom"); }; fail(); export const schema = {};',
+      'const fail = (): never => { throw new Error("boom"); }; fail(); export const executableSchema = {};',
     );
 
     expect(schemaResult.ok).toBe(false);

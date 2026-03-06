@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "../support/methods-provider";
+import { queryWithMethods } from "../support/methods-provider";
 import { createArrayTableMethods, scanArrayRows } from "../../src/array-methods";
 
 import {
   defineSchema,
   defineTableMethods,
-  query,
   type TableMethodsForSchema,
   type TableScanRequest,
 } from "../../src";
@@ -60,9 +59,9 @@ describe("query/parallel", () => {
       },
     });
 
-    const rows = await query({
+    const rows = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: `
         SELECT id FROM a
@@ -116,9 +115,9 @@ describe("query/parallel", () => {
       },
     });
 
-    const rows = await query({
+    const rows = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: `
         WITH a_cte AS (SELECT id FROM a),
@@ -233,15 +232,15 @@ describe("query/parallel", () => {
       JOIN t3 ON t1.key = t3.key
     `;
 
-    const first = await query({
+    const first = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });
-    const second = await query({
+    const second = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql,
     });

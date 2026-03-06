@@ -1,8 +1,6 @@
 import Database from "better-sqlite3";
 
 import {
-  defineProviders,
-  query,
   toSqlDDL,
   type ProviderAdapter,
   type ProviderFragment,
@@ -13,6 +11,7 @@ import {
   type TableName,
   type TableScanRequest,
 } from "../../src";
+import { createExecutableSchemaFromProviders } from "./executable-schema";
 
 export type RowsByTable<TSchema extends SchemaDefinition> = {
   [TTable in TableName<TSchema>]: QueryRow<TSchema, TTable>[];
@@ -20,7 +19,7 @@ export type RowsByTable<TSchema extends SchemaDefinition> = {
 
 export interface QueryHarness<TSchema extends SchemaDefinition, TContext> {
   schema: TSchema;
-  providers: Record<string, ProviderAdapter<TContext>>;
+  executableSchema: ReturnType<typeof createExecutableSchemaFromProviders<TContext, TSchema>>;
   runSqlql: (sql: string, context: TContext) => Promise<QueryRow[]>;
   runSqlite: (sql: string) => QueryRow[];
   runAgainstBoth: (
@@ -42,29 +41,18 @@ export function createQueryHarness<
   const rowsByTable = options.rowsByTable as Record<string, QueryRow[]>;
   const controlDb = createControlDatabase(schema, options.rowsByTable);
 
-  const providers = options.providers ??
-    defineProviders({
-      memory: createMemoryProvider<TContext>(rowsByTable),
-    });
+  const providers = options.providers ?? {
+    memory: createMemoryProvider<TContext>(rowsByTable),
+  };
+  const executableSchema = createExecutableSchemaFromProviders(schema, providers);
 
   return {
     schema,
-    providers,
-    runSqlql: (sql, context) =>
-      query({
-        schema,
-        providers,
-        context,
-        sql,
-      }),
+    executableSchema,
+    runSqlql: (sql, context) => executableSchema.query({ context, sql }),
     runSqlite: (sql) => controlDb.prepare(sql).all() as QueryRow[],
     runAgainstBoth: async (sql, context) => {
-      const actual = await query({
-        schema,
-        providers,
-        context,
-        sql,
-      });
+      const actual = await executableSchema.query({ context, sql });
 
       const expected = controlDb.prepare(sql).all() as QueryRow[];
       return { actual, expected };
@@ -170,6 +158,7 @@ function createMemoryProvider<TContext>(
   rowsByTable: Record<string, QueryRow[]>,
 ): ProviderAdapter<TContext> {
   return {
+    name: "memory",
     canExecute(fragment) {
       return fragment.kind === "scan";
     },

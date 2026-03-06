@@ -2,13 +2,12 @@ import * as drizzleAdapterModule from "../../../packages/drizzle/src/index";
 import * as drizzleOrmModule from "drizzle-orm";
 import * as ts from "typescript";
 import {
-  createQuerySession,
   defaultSqlAstParser,
-  defineProviders,
   lowerSqlToRel,
   planPhysicalQuery,
   resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
+  type ExecutableSchema,
   type PhysicalPlan,
   type ProviderFragment,
   type ProviderAdapter,
@@ -53,7 +52,6 @@ import {
 } from "./pglite-runtime";
 import type { DownstreamRows, ExecutedProviderOperation, PlaygroundContext } from "./types";
 import {
-  coerceSchemaEditorTextToCode,
   parseDownstreamRowsText,
   parseFacadeSchemaCode,
 } from "./validation";
@@ -61,6 +59,7 @@ import {
 export interface PlaygroundCompileSuccess {
   ok: true;
   schema: SchemaDefinition;
+  schemaCode: string;
   downstreamRows: DownstreamRows;
   sql: string;
   modules: Record<string, string>;
@@ -458,8 +457,13 @@ function hasSqlNode(node: RelNode): boolean {
   }
 }
 
-interface ProviderFactoryModuleExports<TContext> {
-  createProvider?: (runtime: unknown) => ProviderAdapter<TContext>;
+interface ExecutableSchemaModuleExports<TContext> {
+  executableSchema?: ExecutableSchema<TContext, SchemaDefinition>;
+}
+
+interface ProviderModuleExports<TContext> {
+  dbProvider?: ProviderAdapter<TContext>;
+  kvProvider?: ProviderAdapter<TContext>;
 }
 
 interface DbProviderRuntimeInput {
@@ -547,18 +551,44 @@ function executePlaygroundModule(
   return moduleRecord.exports;
 }
 
-function readProviderFactoryOrThrow<TContext>(
+function readExecutableSchemaOrThrow<TContext>(
   moduleId: string,
   exportsRecord: Record<string, unknown>,
-): (runtime: unknown) => ProviderAdapter<TContext> {
-  const factory = (exportsRecord as ProviderFactoryModuleExports<TContext>).createProvider;
-  if (typeof factory !== "function") {
+): ExecutableSchema<TContext, SchemaDefinition> {
+  const executableSchema = (exportsRecord as ExecutableSchemaModuleExports<TContext>).executableSchema;
+  if (
+    !executableSchema ||
+    typeof executableSchema !== "object" ||
+    !("schema" in executableSchema) ||
+    typeof executableSchema.query !== "function" ||
+    typeof executableSchema.createSession !== "function"
+  ) {
     throw new Error(
-      `${moduleId} must export createProvider(runtime) returning a provider adapter.`,
+      `${moduleId} must export executableSchema created via createExecutableSchema(...).`,
     );
   }
 
-  return factory;
+  return executableSchema;
+}
+
+function readProviderExportOrThrow<TContext>(
+  moduleId: string,
+  exportsRecord: Record<string, unknown>,
+  exportName: "dbProvider" | "kvProvider",
+): ProviderAdapter<TContext> {
+  const provider = (exportsRecord as ProviderModuleExports<TContext>)[exportName];
+  if (
+    !provider ||
+    typeof provider !== "object" ||
+    typeof provider.name !== "string" ||
+    typeof provider.canExecute !== "function" ||
+    typeof provider.compile !== "function" ||
+    typeof provider.execute !== "function"
+  ) {
+    throw new Error(`${moduleId} must export ${exportName} as a provider adapter instance.`);
+  }
+
+  return provider;
 }
 
 function readKvInputRows(rows: DownstreamRows): KvInputRow[] {
@@ -573,9 +603,10 @@ function readKvInputRows(rows: DownstreamRows): KvInputRow[] {
     });
 }
 
-async function buildProvidersFromModules(
+async function buildExecutableSchemaFromModules(
   compiled: PlaygroundCompileSuccess,
 ): Promise<{
+  executableSchema: ExecutableSchema<PlaygroundContext, SchemaDefinition>;
   dbProvider: ProviderAdapter<PlaygroundContext>;
   kvProvider: ProviderAdapter<PlaygroundContext>;
 }> {
@@ -595,6 +626,10 @@ async function buildProvidersFromModules(
     "drizzle-orm": drizzleOrmModule,
     "@playground/kv-provider-core": {
       createKvProvider,
+      playgroundKvRuntime: {
+        rows: readKvInputRows(compiled.downstreamRows),
+        recordOperation: operationRecorder.record,
+      },
     },
     [GENERATED_DB_MODULE_ID]: {
       db: runtime.db,
@@ -603,6 +638,15 @@ async function buildProvidersFromModules(
   };
 
   const cache = new Map<string, Record<string, unknown>>();
+  const schemaModuleExports = executePlaygroundModule(
+    "__entry__",
+    {
+      __entry__: compiled.schemaCode,
+      ...compiled.modules,
+    },
+    staticModules,
+    cache,
+  );
   const dbProviderExports = executePlaygroundModule(
     DB_PROVIDER_MODULE_ID,
     compiled.modules,
@@ -616,25 +660,20 @@ async function buildProvidersFromModules(
     cache,
   );
 
-  const createDbProvider = readProviderFactoryOrThrow<PlaygroundContext>(
+  const executableSchema = readExecutableSchemaOrThrow<PlaygroundContext>("schema.ts", schemaModuleExports);
+  const dbProvider = readProviderExportOrThrow<PlaygroundContext>(
     DB_PROVIDER_MODULE_ID,
     dbProviderExports,
+    "dbProvider",
   );
-  const createKvProviderFactory = readProviderFactoryOrThrow<PlaygroundContext>(
+  const kvProvider = readProviderExportOrThrow<PlaygroundContext>(
     KV_PROVIDER_MODULE_ID,
     kvProviderExports,
+    "kvProvider",
   );
 
-  const dbProvider = createDbProvider({
-    db: runtime.db,
-    tables: runtimeDbTables,
-  } satisfies DbProviderRuntimeInput);
-  const kvProvider = createKvProviderFactory({
-    rows: readKvInputRows(compiled.downstreamRows),
-    recordOperation: operationRecorder.record,
-  });
-
   return {
+    executableSchema,
     dbProvider,
     kvProvider,
   };
@@ -686,13 +725,13 @@ export async function compilePlaygroundInput(
   sqlText: string,
   options: PlaygroundSchemaProgramOptions = {},
 ): Promise<PlaygroundCompileResult> {
-  const schemaCode = coerceSchemaEditorTextToCode(schemaCodeText);
-  const modules = options.modules ?? {
+  const modules = {
     [DB_PROVIDER_MODULE_ID]: DEFAULT_DB_PROVIDER_CODE,
     [GENERATED_DB_MODULE_ID]: DEFAULT_GENERATED_DB_FILE_CODE,
     [KV_PROVIDER_MODULE_ID]: DEFAULT_KV_PROVIDER_CODE,
+    ...(options.modules ?? {}),
   };
-  const schemaResult = await parseFacadeSchemaCode(schemaCode, {
+  const schemaResult = await parseFacadeSchemaCode(schemaCodeText, {
     modules,
   });
   if (!schemaResult.ok || !schemaResult.schema) {
@@ -772,6 +811,7 @@ export async function compilePlaygroundInput(
   return {
     ok: true,
     schema,
+    schemaCode: schemaCodeText,
     downstreamRows: parsedRows as DownstreamRows,
     sql: normalizedSql,
     modules: { ...modules },
@@ -786,24 +826,22 @@ export async function createSession(
   await reseedDownstreamDatabase(compiled.downstreamRows);
   operationRecorder.clear();
 
-  const { dbProvider, kvProvider } = await buildProvidersFromModules(compiled);
-  const providers = defineProviders({
-    dbProvider,
-    kvProvider,
-  });
+  const { executableSchema, dbProvider, kvProvider } = await buildExecutableSchemaFromModules(compiled);
+  const providers = {
+    [dbProvider.name]: dbProvider,
+    [kvProvider.name]: kvProvider,
+  };
 
-  const lowered = lowerSqlToRel(compiled.sql, compiled.schema);
+  const lowered = lowerSqlToRel(compiled.sql, executableSchema.schema);
   const physicalPlan = await planPhysicalQuery(
     lowered.rel,
-    compiled.schema,
+    executableSchema.schema,
     providers,
     context,
     compiled.sql,
   );
 
-  const session = createQuerySession({
-    schema: compiled.schema,
-    providers,
+  const session = executableSchema.createSession({
     context,
     sql: compiled.sql,
     options: {

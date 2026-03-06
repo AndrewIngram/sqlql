@@ -1,4 +1,5 @@
 import {
+  bindAdapterEntities,
   createDataEntityHandle,
   type DataEntityHandle,
   type ProviderAdapter,
@@ -176,10 +177,13 @@ function materializeEntityRows<TContext>(
 
 function inferEntityHandleColumns<TConfig extends KvEntityMappingConfig<any, string>>(
   mapping: TConfig,
+  provider: string,
+  adapter: ProviderAdapter<any>,
 ): DataEntityHandle<TConfig["columns"][number]> {
   return createDataEntityHandle<TConfig["columns"][number]>({
-    provider: "",
+    provider,
     entity: mapping.entity,
+    adapter,
   });
 }
 
@@ -193,27 +197,8 @@ export function createKvProvider<
 } {
   const providerName = options.name ?? KV_PROVIDER_NAME;
   const handles = {} as { [K in keyof TEntities]: DataEntityHandle<TEntities[K]["columns"][number]> };
-
-  const entityByName = new Map<string, KvEntityMappingConfig<TContext, string>>();
-  const entityByKey = options.entities;
-  for (const [entityKey, mapping] of Object.entries(entityByKey) as Array<
-    [keyof TEntities, TEntities[keyof TEntities]]
-  >) {
-    handles[entityKey] = inferEntityHandleColumns(mapping);
-    handles[entityKey].provider = providerName;
-    handles[entityKey].entity = mapping.entity;
-    entityByName.set(mapping.entity, mapping);
-  }
-
-  function getEntityMappingOrThrow(entity: string): KvEntityMappingConfig<TContext, string> {
-    const mapping = entityByName.get(entity);
-    if (!mapping) {
-      throw new Error(`Unknown KV entity ${entity}.`);
-    }
-    return mapping;
-  }
-
-  return {
+  const adapter = {
+    name: providerName,
     entities: handles,
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
@@ -317,5 +302,26 @@ export function createKvProvider<
 
       return selected;
     },
+  } satisfies ProviderAdapter<TContext> & {
+    entities: { [K in keyof TEntities]: DataEntityHandle<TEntities[K]["columns"][number]> };
   };
+
+  const entityByName = new Map<string, KvEntityMappingConfig<TContext, string>>();
+  const entityByKey = options.entities;
+  for (const [entityKey, mapping] of Object.entries(entityByKey) as Array<
+    [keyof TEntities, TEntities[keyof TEntities]]
+  >) {
+    handles[entityKey] = inferEntityHandleColumns(mapping, providerName, adapter);
+    entityByName.set(mapping.entity, mapping);
+  }
+
+  function getEntityMappingOrThrow(entity: string): KvEntityMappingConfig<TContext, string> {
+    const mapping = entityByName.get(entity);
+    if (!mapping) {
+      throw new Error(`Unknown KV entity ${entity}.`);
+    }
+    return mapping;
+  }
+
+  return bindAdapterEntities(adapter);
 }

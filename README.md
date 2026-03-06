@@ -6,8 +6,9 @@
 
 `sqlql` is a provider-first query runtime:
 
-- You define a logical SQL-facing schema.
-- You register one or more providers (Drizzle/Kysely/Objection/custom).
+- You define one or more providers (Drizzle/Kysely/Objection/custom).
+- Providers expose normalized entities that represent physical sources.
+- You build an executable logical SQL-facing schema from those entities.
 - `sqlql` plans query fragments across providers and local logical operators.
 
 The facade stays relational (`SELECT` over tables/views), while providers can be relational or non-relational.
@@ -23,24 +24,14 @@ Typical reasons to use `sqlql`:
 
 ## Examples
 
-### Example A (Primary): DSL Schema + Scoped Drizzle Provider
+### Example A (Primary): Executable Schema + Scoped Drizzle Provider
 
 ```ts
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
-import { createDataEntityHandle, defineProviders, defineSchema, query } from "sqlql";
+import { createExecutableSchema } from "sqlql";
 
 type QueryContext = { orgId: string; userId: string };
-
-const orders = createDataEntityHandle<"id" | "vendor_id" | "total_cents">({
-  provider: "dbProvider",
-  entity: "orders",
-});
-
-const vendors = createDataEntityHandle<"id" | "name">({
-  provider: "dbProvider",
-  entity: "vendors",
-});
 
 const dbProvider = createDrizzleProvider<QueryContext>({
   name: "dbProvider",
@@ -58,38 +49,61 @@ const dbProvider = createDrizzleProvider<QueryContext>({
   },
 });
 
-const providers = defineProviders({ dbProvider });
-
-const schema = defineSchema<QueryContext>(({ table, col }) => ({
-  tables: {
-    my_orders: table({
-      from: orders,
-      columns: {
-        id: { source: col(orders, "id"), type: "text", nullable: false, primaryKey: true },
-        vendor_id: { source: col(orders, "vendor_id"), type: "text", nullable: false },
-        total_cents: { source: col(orders, "total_cents"), type: "integer", nullable: false },
-      },
+const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
+  const myOrders = table(dbProvider.entities.orders, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      vendorId: col.string("vendor_id"),
+      totalCents: col.integer("total_cents"),
     }),
-    vendors_for_org: table({
-      from: vendors,
-      columns: {
-        id: { source: col(vendors, "id"), type: "text", nullable: false, primaryKey: true },
-        name: { source: col(vendors, "name"), type: "text", nullable: false },
-      },
-    }),
-  },
-}));
+  });
 
-const rows = await query({
-  schema,
-  providers,
+  const vendorsForOrg = table(dbProvider.entities.vendors, {
+    columns: ({ col }) => ({
+      id: col.id("id"),
+      name: col.string("name"),
+    }),
+  });
+
+  return {
+    tables: {
+      myOrders,
+      vendorsForOrg,
+      myVendorSpend: view({
+        rel: ({ scan, join, aggregate, col, expr, agg }) =>
+          aggregate({
+            from: join({
+              left: scan(myOrders),
+              right: scan(vendorsForOrg),
+              on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
+              type: "inner",
+            }),
+            groupBy: {
+              vendorId: col(vendorsForOrg, "id"),
+              vendorName: col(vendorsForOrg, "name"),
+            },
+            measures: {
+              totalSpendCents: agg.sum(col(myOrders, "totalCents")),
+              orderCount: agg.count(),
+            },
+          }),
+        columns: ({ col }) => ({
+          vendorId: col.id("vendorId"),
+          vendorName: col.string("vendorName"),
+          totalSpendCents: col.integer("totalSpendCents"),
+          orderCount: col.integer("orderCount"),
+        }),
+      }),
+    },
+  };
+});
+
+const rows = await executableSchema.query({
   context: { orgId: "org_1", userId: "u1" },
   sql: `
-    SELECT o.id, v.name, o.total_cents
-    FROM my_orders o
-    JOIN vendors_for_org v ON v.id = o.vendor_id
-    ORDER BY o.total_cents DESC
-    LIMIT 50
+    SELECT vendorName, totalSpendCents, orderCount
+    FROM myVendorSpend
+    ORDER BY totalSpendCents DESC
   `,
 });
 ```
@@ -98,12 +112,7 @@ const rows = await query({
 
 ```ts
 import { createKvProvider } from "@playground/kv-provider-core";
-import { createDataEntityHandle, defineSchema } from "sqlql";
-
-const productViewCounts = createDataEntityHandle<"product_id" | "view_count">({
-  provider: "kvProvider",
-  entity: "product_view_counts",
-});
+import { createExecutableSchema } from "sqlql";
 
 const kvProvider = createKvProvider({
   name: "kvProvider",
@@ -121,14 +130,13 @@ const kvProvider = createKvProvider({
   },
 });
 
-const schema = defineSchema(({ table, col }) => ({
+const executableSchema = createExecutableSchema(({ table }) => ({
   tables: {
-    product_view_counts: table({
-      from: productViewCounts,
-      columns: {
-        product_id: { source: col(productViewCounts, "product_id"), type: "text", nullable: false },
-        view_count: { source: col(productViewCounts, "view_count"), type: "integer", nullable: false },
-      },
+    productViewCounts: table(kvProvider.entities.product_view_counts, {
+      columns: ({ col }) => ({
+        productId: col.string("product_id"),
+        viewCount: col.integer("view_count"),
+      }),
     }),
   },
 }));
@@ -161,6 +169,6 @@ Execution behavior notes:
 
 ## Guides
 
-- [Building a schema (DSL form, Drizzle example)](./docs/building-a-schema.md)
+- [Building a schema (executable schema, Drizzle example)](./docs/building-a-schema.md)
 - [Creating a new adapter (progressive path)](./docs/creating-an-adapter.md)
 - [Building a non-relational adapter (Redis-style)](./docs/building-a-non-relational-adapter.md)

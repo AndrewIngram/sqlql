@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "./support/methods-provider";
+import { queryWithMethods } from "./support/methods-provider";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
@@ -10,7 +10,6 @@ import {
 import {
   defineSchema,
   defineTableMethods,
-  query,
   type QueryRow,
 } from "../src";
 
@@ -101,9 +100,9 @@ describe("array methods", () => {
       users: createArrayTableMethods(users),
     });
 
-    const joinRows = await query({
+    const joinRows = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: {},
       sql: `
         SELECT o.id, u.email
@@ -120,9 +119,9 @@ describe("array methods", () => {
       { id: "ord_2", email: "a@example.com" },
     ]);
 
-    const aggregateRows = await query({
+    const aggregateRows = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: {},
       sql: `
         SELECT o.user_id, COUNT(*) AS order_count, SUM(o.total_cents) AS total_cents

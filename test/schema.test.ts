@@ -6,6 +6,7 @@ import {
   defineSchema,
   defineTableMethods,
   getNormalizedTableBinding,
+  mapProviderRowsToLogical,
   resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
   toSqlDDL,
@@ -62,13 +63,13 @@ describe("defineSchema", () => {
           },
         }),
         my_order_stats: view({
-          rel: () =>
-            rel.aggregate({
-              from: rel.scan("my_orders"),
-              groupBy: [col("my_orders.id")],
-              measures: {
-                spend: agg.sum(col("my_orders.total_cents")),
-                rows: agg.count(),
+            rel: () =>
+              rel.aggregate({
+                from: rel.scan("my_orders"),
+                groupBy: { id: col("my_orders.id") },
+                measures: {
+                  spend: agg.sum(col("my_orders.total_cents")),
+                  rows: agg.count(),
               },
             }),
           columns: {
@@ -131,7 +132,10 @@ describe("defineSchema", () => {
                   right: rel.scan(vendorsForOrg),
                   on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
                 }),
-                groupBy: [col(vendorsForOrg, "id"), col(vendorsForOrg, "name")],
+                groupBy: {
+                  id: col(vendorsForOrg, "id"),
+                  name: col(vendorsForOrg, "name"),
+                },
                 measures: {
                   spend: agg.sum(col(myOrders, "totalCents")),
                 },
@@ -173,10 +177,10 @@ describe("defineSchema", () => {
         },
         type: "inner",
       },
-      groupBy: [
-        { kind: "dsl_col_ref", ref: "vendorsForOrg.id" },
-        { kind: "dsl_col_ref", ref: "vendorsForOrg.name" },
-      ],
+      groupBy: {
+        id: { kind: "dsl_col_ref", ref: "vendorsForOrg.id" },
+        name: { kind: "dsl_col_ref", ref: "vendorsForOrg.name" },
+      },
       measures: {
         spend: {
           kind: "metric",
@@ -217,6 +221,196 @@ describe("defineSchema", () => {
       columnToSource: {
         id: "id",
         status: "status",
+      },
+    });
+  });
+
+  it("supports typed column builders backed by entity metadata", () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        vendorId: { source: "vendor_id", type: "text", nullable: false },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+        createdAt: { source: "created_at", type: "timestamp", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, col }) => ({
+      tables: {
+        myOrders: table({
+          from: ordersEntity,
+          columns: {
+            id: col.id("id"),
+            vendorId: col.string("vendorId"),
+            totalCents: col.integer("totalCents"),
+            createdAt: col.string("createdAt", { coerce: "isoTimestamp" }),
+          },
+        }),
+      },
+    }));
+
+    const binding = getNormalizedTableBinding(schema, "myOrders");
+    expect(binding).toEqual({
+      kind: "physical",
+      provider: "warehouse",
+      entity: "orders_raw",
+      columnBindings: {
+        id: { source: "id", definition: { type: "text", nullable: false, primaryKey: true } },
+        vendorId: { source: "vendor_id", definition: { type: "text" } },
+        totalCents: { source: "total_cents", definition: { type: "integer" } },
+        createdAt: {
+          source: "created_at",
+          definition: { type: "text" },
+          coerce: "isoTimestamp",
+        },
+      },
+      columnToSource: {
+        id: "id",
+        vendorId: "vendor_id",
+        totalCents: "total_cents",
+        createdAt: "created_at",
+      },
+    });
+  });
+
+  it("fails fast when entity metadata and typed column declarations are incompatible", () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        createdAt: { source: "created_at", type: "timestamp", nullable: false },
+      },
+    });
+
+    expect(() =>
+      defineSchema(({ table, col }) => ({
+        tables: {
+          myOrders: table({
+            from: ordersEntity,
+            columns: {
+              createdAt: col.string("createdAt"),
+            },
+          }),
+        },
+      }))
+    ).toThrow(
+      "Column orders_raw.created_at is exposed as timestamp, but the schema declared text. Add a coerce function or align the declared type.",
+    );
+  });
+
+  it("validates coerced provider rows against richer schema scalar types", () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        totalCents: { source: "total_cents", type: "text", nullable: false },
+        payload: { source: "payload", type: "text", nullable: true },
+      },
+    });
+
+    const schema = defineSchema(({ table, col }) => ({
+      tables: {
+        myOrders: table(ordersEntity, {
+          columns: ({ col }) => ({
+            totalCents: col.integer("totalCents", { coerce: (value) => Number(value) }),
+            payload: col.json("payload", { coerce: (value) => JSON.parse(String(value)) }),
+          }),
+        }),
+      },
+    }));
+
+    const binding = getNormalizedTableBinding(schema, "myOrders");
+    expect(binding?.kind).toBe("physical");
+
+    const rows = mapProviderRowsToLogical(
+      [{ total_cents: "42", payload: '{"ok":true}' }],
+      ["totalCents", "payload"],
+      binding?.kind === "physical" ? binding : null,
+      schema.tables.myOrders,
+    );
+    expect(rows).toEqual([{ totalCents: 42, payload: { ok: true } }]);
+
+    expect(() =>
+      mapProviderRowsToLogical(
+        [{ total_cents: "nope", payload: '{"ok":true}' }],
+        ["totalCents", "payload"],
+        binding?.kind === "physical" ? binding : null,
+        schema.tables.myOrders,
+      )
+    ).toThrow("must be an integer");
+  });
+
+  it("supports the full aggregate helper surface in view DSL", () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        vendorId: { source: "vendor_id", type: "text", nullable: false },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, view }) => {
+      const myOrders = table(ordersEntity, {
+        columns: ({ col }) => ({
+          vendorId: col.string("vendorId"),
+          totalCents: col.integer("totalCents"),
+        }),
+      });
+
+      return {
+        tables: {
+          myOrders,
+          orderStats: view({
+            rel: ({ scan, aggregate, col, agg }) =>
+              aggregate({
+                from: scan(myOrders),
+                groupBy: {
+                  vendorId: col(myOrders, "vendorId"),
+                },
+                measures: {
+                  rowCount: agg.count(),
+                  distinctVendorCount: agg.countDistinct(col(myOrders, "vendorId")),
+                  totalSpend: agg.sum(col(myOrders, "totalCents")),
+                  totalSpendDistinct: agg.sumDistinct(col(myOrders, "totalCents")),
+                  avgSpend: agg.avg(col(myOrders, "totalCents")),
+                  avgSpendDistinct: agg.avgDistinct(col(myOrders, "totalCents")),
+                  minSpend: agg.min(col(myOrders, "totalCents")),
+                  maxSpend: agg.max(col(myOrders, "totalCents")),
+                },
+              }),
+            columns: ({ col }) => ({
+              vendorId: col.string("vendorId"),
+              rowCount: col.integer("rowCount"),
+              distinctVendorCount: col.integer("distinctVendorCount"),
+              totalSpend: col.integer("totalSpend"),
+              totalSpendDistinct: col.integer("totalSpendDistinct"),
+              avgSpend: col.real("avgSpend"),
+              avgSpendDistinct: col.real("avgSpendDistinct"),
+              minSpend: col.integer("minSpend"),
+              maxSpend: col.integer("maxSpend"),
+            }),
+          }),
+        },
+      };
+    });
+
+    const binding = getNormalizedTableBinding(schema, "orderStats");
+    expect(binding?.kind).toBe("view");
+    const rel = binding?.kind === "view" ? binding.rel({}) : null;
+    expect(rel).toMatchObject({
+      kind: "aggregate",
+      measures: {
+        rowCount: { fn: "count" },
+        distinctVendorCount: { fn: "count", distinct: true },
+        totalSpend: { fn: "sum" },
+        totalSpendDistinct: { fn: "sum", distinct: true },
+        avgSpend: { fn: "avg" },
+        avgSpendDistinct: { fn: "avg", distinct: true },
+        minSpend: { fn: "min" },
+        maxSpend: { fn: "max" },
       },
     });
   });

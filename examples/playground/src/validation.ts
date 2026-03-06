@@ -23,7 +23,18 @@ import {
   type SchemaValidationIssue,
 } from "./types";
 
-const sqlScalarTypeSchema = z.enum(["text", "integer", "boolean", "timestamp"]);
+const sqlScalarTypeSchema = z.enum([
+  "text",
+  "integer",
+  "real",
+  "blob",
+  "boolean",
+  "timestamp",
+  "date",
+  "datetime",
+  "json",
+]);
+const sqlScalarTypeValues = sqlScalarTypeSchema.options;
 const physicalDialectSchema = z.enum(["postgres", "sqlite"]);
 
 const DOWNSTREAM_INPUT_ROWS_SCHEMA: SchemaDefinition = defineSchema({
@@ -340,30 +351,6 @@ export function parseFacadeSchemaText(value: string): SchemaParseResult {
 
 export const parseSchemaText = parseFacadeSchemaText;
 
-export function legacySchemaJsonToCode(value: string): string {
-  const parsed = parseFacadeSchemaText(value);
-  if (!parsed.ok || !parsed.schema) {
-    return value;
-  }
-
-  return [
-    'import { defineSchema } from "sqlql";',
-    "",
-    "export const schema = defineSchema(",
-    `${JSON.stringify(parsed.schema, null, 2)}`,
-    ");",
-    "",
-  ].join("\n");
-}
-
-export function coerceSchemaEditorTextToCode(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.startsWith("{")) {
-    return legacySchemaJsonToCode(value);
-  }
-  return value;
-}
-
 function validatorForColumn(column: TableColumnDefinition): z.ZodType<unknown> {
   const type = readColumnType(column);
   const enumValues =
@@ -372,6 +359,8 @@ function validatorForColumn(column: TableColumnDefinition): z.ZodType<unknown> {
 
   switch (type) {
     case "text":
+    case "date":
+    case "datetime":
     case "timestamp":
       validator = z.string();
       if (type === "text" && enumValues && enumValues.length > 0) {
@@ -381,8 +370,17 @@ function validatorForColumn(column: TableColumnDefinition): z.ZodType<unknown> {
     case "integer":
       validator = z.number().finite();
       break;
+    case "real":
+      validator = z.number().finite();
+      break;
     case "boolean":
       validator = z.boolean();
+      break;
+    case "blob":
+      validator = z.instanceof(Uint8Array);
+      break;
+    case "json":
+      validator = z.unknown();
       break;
   }
 
@@ -533,7 +531,7 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
               anyOf: [
                 {
                   type: "string",
-                  enum: ["text", "integer", "boolean", "timestamp"],
+                  enum: sqlScalarTypeValues,
                 },
                 {
                   type: "object",
@@ -542,7 +540,7 @@ export const PLAYGROUND_SCHEMA_JSON_SCHEMA: Record<string, unknown> = {
                   properties: {
                     type: {
                       type: "string",
-                      enum: ["text", "integer", "boolean", "timestamp"],
+                      enum: sqlScalarTypeValues,
                     },
                     nullable: { type: "boolean" },
                     primaryKey: { type: "boolean" },

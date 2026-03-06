@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { providersFromMethods } from "../support/methods-provider";
+import { queryWithMethods } from "../support/methods-provider";
 import { createArrayTableMethods } from "../../src/array-methods";
-import { defineSchema, defineTableMethods, query } from "../../src";
+import { defineSchema, defineTableMethods } from "../../src";
 
 const EMPTY_CONTEXT = {} as const;
 
@@ -22,9 +22,9 @@ describe("query/v1-security", () => {
     });
 
     await expect(
-      query({
+      queryWithMethods({
         schema,
-        providers: providersFromMethods(methods),
+        methods,
         context: EMPTY_CONTEXT,
         sql: "SELECT secret FROM users",
       }),
@@ -48,9 +48,9 @@ describe("query/v1-security", () => {
     });
 
     await expect(
-      query({
+      queryWithMethods({
         schema,
-        providers: providersFromMethods(methods),
+        methods,
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM users WHERE role = 'admin'",
       }),
@@ -81,9 +81,9 @@ describe("query/v1-security", () => {
     });
 
     await expect(
-      query({
+      queryWithMethods({
         schema,
-        providers: providersFromMethods(methods),
+        methods,
         context: EMPTY_CONTEXT,
         sql: "SELECT o.id FROM orders o JOIN users u ON o.org_id = u.id",
       }),
@@ -107,9 +107,9 @@ describe("query/v1-security", () => {
     });
 
     await expect(
-      query({
+      queryWithMethods({
         schema,
-        providers: providersFromMethods(methods),
+        methods,
         context: EMPTY_CONTEXT,
         sql: "SELECT id FROM users ORDER BY created_at DESC",
       }),
@@ -132,9 +132,9 @@ describe("query/v1-security", () => {
       users: createArrayTableMethods([{ id: "u1", email: "a@example.com", secret: "hidden" }]),
     });
 
-    const rows = await query({
+    const rows = await queryWithMethods({
       schema,
-      providers: providersFromMethods(methods),
+      methods,
       context: EMPTY_CONTEXT,
       sql: "SELECT id, email FROM users WHERE id = 'u1'",
     });
