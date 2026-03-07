@@ -242,56 +242,47 @@ export function createExecutableSchemaFromProviders<
         return [
           tableName,
           table(adapter.entities[tableName], {
-            columns: () =>
+            columns: ({ col }) =>
               Object.fromEntries(
                 binding?.kind === "physical"
-                  ? Object.entries(binding.columnBindings).flatMap(([columnName, columnBinding]) =>
-                      isNormalizedSourceColumnBinding(columnBinding)
-                        ? [[
-                            columnName,
-                            {
-                              ...toLensDefinitionFromSource(
-                                columnName,
-                                columnBinding.definition ?? tableDefinition.columns[columnName] ?? "text",
-                                columnBinding.source,
-                              ),
-                              ...(columnBinding.coerce ? { coerce: columnBinding.coerce } : {}),
-                            },
-                          ] as const]
-                        : [],
-                    )
+                  ? Object.entries(binding.columnBindings).map(([columnName, columnBinding]) => {
+                      if (isNormalizedSourceColumnBinding(columnBinding)) {
+                        return [
+                          columnName,
+                          {
+                            ...toLensDefinitionFromSource(
+                              columnName,
+                              columnBinding.definition ?? tableDefinition.columns[columnName] ?? "text",
+                              columnBinding.source,
+                            ),
+                            ...(columnBinding.coerce ? { coerce: columnBinding.coerce } : {}),
+                          },
+                        ] as const;
+                      }
+
+                      if (columnBinding.kind !== "expr") {
+                        throw new Error(`Unsupported column binding kind for ${tableName}.${columnName}`);
+                      }
+
+                      const definition = columnBinding.definition ?? tableDefinition.columns[columnName] ?? "text";
+                      const methodName = getCalculatedColumnMethodName(definition);
+                      const calcMethod = (col as unknown as Record<string, (expr: any, options?: any) => unknown>)[
+                        methodName
+                      ];
+                      if (typeof calcMethod !== "function") {
+                        throw new Error(`Unsupported calculated column type for ${tableName}.${columnName}`);
+                      }
+
+                      return [
+                        columnName,
+                        calcMethod(columnBinding.expr, getCalculatedColumnOptions(columnBinding, definition)),
+                      ] as const;
+                    })
                   : Object.entries(tableDefinition.columns).map(([columnName, definition]) => [
                       columnName,
                       toLensDefinition(columnName, definition),
                     ]),
-              ),
-            ...(binding?.kind === "physical"
-              ? {
-                  virtuals: (({ calc }: { calc: any }) =>
-                    Object.fromEntries(
-                      Object.entries(binding.columnBindings).flatMap(([columnName, columnBinding]) => {
-                        if (isNormalizedSourceColumnBinding(columnBinding) || columnBinding.kind !== "expr") {
-                          return [];
-                        }
-
-                        const definition = columnBinding.definition ?? tableDefinition.columns[columnName] ?? "text";
-                        const methodName = getCalculatedColumnMethodName(definition);
-                        const calcMethod = calc[methodName];
-                        if (typeof calcMethod !== "function") {
-                          throw new Error(`Unsupported calculated column type for ${tableName}.${columnName}`);
-                        }
-
-                        return [[
-                          columnName,
-                          calcMethod(
-                            columnBinding.expr,
-                            getCalculatedColumnOptions(columnBinding, definition),
-                          ),
-                        ] as const];
-                      }),
-                    )) as any,
-                }
-              : {}),
+              ) as Record<string, any>,
             ...(tableDefinition.constraints ? { constraints: tableDefinition.constraints } : {}),
           }),
         ];

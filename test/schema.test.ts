@@ -53,7 +53,7 @@ describe("defineSchema", () => {
       provider: "regional",
     });
 
-    const schema = defineSchema(({ table, view, rel, col, expr: _expr, agg }) => ({
+    const schema = defineSchema(({ table, view }) => ({
       tables: {
         my_orders: table({
           from: ordersEntity,
@@ -63,9 +63,9 @@ describe("defineSchema", () => {
           },
         }),
         my_order_stats: view(
-          () =>
-            rel.aggregate({
-              from: rel.scan("my_orders"),
+          ({ scan, aggregate, col, agg }) =>
+            aggregate({
+              from: scan("my_orders"),
               groupBy: { order_id: col("my_orders.id") },
               measures: {
                 spend: agg.sum(col("my_orders.total_cents")),
@@ -94,7 +94,7 @@ describe("defineSchema", () => {
     });
   });
 
-  it("supports typed table tokens in col(...) and rel.scan(...)", () => {
+  it("supports typed table tokens in col(...) and scan(...)", () => {
     const ordersEntity = createDataEntityHandle({
       entity: "orders_raw",
       provider: "warehouse",
@@ -104,7 +104,7 @@ describe("defineSchema", () => {
       provider: "warehouse",
     });
 
-    const schema = defineSchema(({ table, view, rel, col, expr, agg }) => {
+    const schema = defineSchema(({ table, view }) => {
       const myOrders = table({
         from: ordersEntity,
         columns: {
@@ -127,11 +127,11 @@ describe("defineSchema", () => {
           myOrders,
           vendorsForOrg,
           spendByVendor: view(
-            () =>
-              rel.aggregate({
-                from: rel.join({
-                  left: rel.scan(myOrders),
-                  right: rel.scan(vendorsForOrg),
+            ({ scan, join, aggregate, col, expr, agg }) =>
+              aggregate({
+                from: join({
+                  left: scan(myOrders),
+                  right: scan(vendorsForOrg),
                   on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
                 }),
                 groupBy: {
@@ -195,19 +195,19 @@ describe("defineSchema", () => {
     });
   });
 
-  it("supports col(dataEntityHandle, column) typed references in table lenses", () => {
+  it("supports direct source mappings in table lenses", () => {
     const ordersEntity = createDataEntityHandle<"id" | "status">({
       entity: "orders_raw",
       provider: "warehouse",
     });
 
-    const schema = defineSchema(({ table, col }) => ({
+    const schema = defineSchema(({ table }) => ({
       tables: {
         myOrders: table({
           from: ordersEntity,
           columns: {
-            id: col(ordersEntity, "id"),
-            status: col(ordersEntity, "status"),
+            id: { source: "id" },
+            status: { source: "status" },
           },
         }),
       },
@@ -241,16 +241,15 @@ describe("defineSchema", () => {
       },
     });
 
-    const schema = defineSchema(({ table, col }) => ({
+    const schema = defineSchema(({ table }) => ({
       tables: {
-        myOrders: table({
-          from: ordersEntity,
-          columns: {
+        myOrders: table(ordersEntity, {
+          columns: ({ col }) => ({
             id: col.id("id"),
             vendorId: col.string("vendorId"),
             totalCents: col.integer("totalCents"),
             createdAt: col.string("createdAt", { coerce: "isoTimestamp" }),
-          },
+          }),
         }),
       },
     }));
@@ -364,13 +363,12 @@ describe("defineSchema", () => {
     });
 
     expect(() =>
-      defineSchema(({ table, col }) => ({
+      defineSchema(({ table }) => ({
         tables: {
-          myOrders: table({
-            from: ordersEntity,
-            columns: {
+          myOrders: table(ordersEntity, {
+            columns: ({ col }) => ({
               createdAt: col.string("createdAt"),
-            },
+            }),
           }),
         },
       }))

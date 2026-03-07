@@ -155,7 +155,7 @@ When a view only needs a provider entity as a private source, `scan(...)` can re
 
 ### 4) Use calculated columns on a base table
 
-`virtuals` attaches calculated columns directly to a physical facade table. They behave like any other logical column in `SELECT`, `WHERE`, and `ORDER BY`.
+Calculated columns can be declared directly in a table's `columns` mapping. They behave like any other logical column in `SELECT`, `WHERE`, and `ORDER BY`.
 
 ```ts
 const highValueOrders = await executableSchema.query({
@@ -196,7 +196,7 @@ If your database handle is already static for the lifetime of the provider, you 
 ## Why this pattern stays clean
 
 - Physical concerns stay in provider config (`table`, `scope`, backend APIs).
-- Facade concerns stay in the executable schema (`table`, `virtuals`, `view`, logical names).
+- Facade concerns stay in the executable schema (`table`, `view`, logical names).
 - Scoped typed builders (`columns: ({ col }) => ...`) reduce ref/column drift.
 
 ## Troubleshooting checklist

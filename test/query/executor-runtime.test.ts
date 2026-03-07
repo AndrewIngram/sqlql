@@ -438,12 +438,12 @@ describe("query/local executor", () => {
   });
 
   it("returns tagged execution errors for invalid executable view rels", async () => {
-    const schema = defineSchema(({ view, rel, col }) => ({
+    const schema = defineSchema(({ view }) => ({
       tables: {
         broken_view: view({
-          rel: () => rel.scan("missing_table"),
+          rel: ({ scan }) => scan("missing_table"),
           columns: {
-            id: col("missing_table.id"),
+            id: { source: "missing_table.id" },
           },
         }),
       },

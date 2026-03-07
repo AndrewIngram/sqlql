@@ -26,8 +26,10 @@ import {
   updateRowCell,
 } from "@/data-editing";
 import {
+  CONTEXT_MODULE_ID,
   buildQueryCatalog,
   DB_PROVIDER_MODULE_ID,
+  DEFAULT_CONTEXT_CODE,
   DEFAULT_DB_PROVIDER_CODE,
   DEFAULT_KV_PROVIDER_CODE,
   DEFAULT_QUERY_ID,
@@ -59,6 +61,7 @@ import { SqlPreviewLine } from "@/SqlPreviewLine";
 import { registerSqlCompletionProvider } from "@/sql-completion";
 import { configureSchemaTypescriptProject } from "@/schema-monaco";
 import {
+  PLAYGROUND_CONTEXT_FILE_URI,
   PLAYGROUND_DB_PROVIDER_FILE_URI,
   PLAYGROUND_GENERATED_DB_FILE_URI,
   PLAYGROUND_KV_PROVIDER_FILE_URI,
@@ -105,6 +108,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 const SCHEMA_MODEL_PATH = PLAYGROUND_SCHEMA_FILE_URI;
+const SCHEMA_CONTEXT_MODEL_PATH = PLAYGROUND_CONTEXT_FILE_URI;
 const SCHEMA_PROVIDER_MODEL_PATH = PLAYGROUND_DB_PROVIDER_FILE_URI;
 const SCHEMA_KV_PROVIDER_MODEL_PATH = PLAYGROUND_KV_PROVIDER_FILE_URI;
 const SCHEMA_GENERATED_MODEL_PATH = PLAYGROUND_GENERATED_DB_FILE_URI;
@@ -124,7 +128,7 @@ type SchemaTab = "diagram" | "ddl";
 type QueryTab = "result" | "explain";
 type PostgresWorkspaceMode = "data" | "structure";
 type PostgresStructureTab = "table" | "diagram" | "ddl";
-type SchemaSourceTab = "schema" | "provider" | "kv_provider" | "generated";
+type SchemaSourceTab = "schema" | "context" | "provider" | "kv_provider" | "generated";
 type DataSourceSection = "postgres" | "kv";
 
 interface EditableStructureColumn {
@@ -845,7 +849,6 @@ function buildGeneratedDbModuleCode(schema: SchemaDefinition): string {
   return `
 // Generated from the downstream Postgres model used by the playground.
 // This file is read-only in the editor.
-import { getPlaygroundDbRuntime } from "@playground/db-runtime";
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 ${tableDefinitions}
@@ -853,8 +856,6 @@ ${tableDefinitions}
 export const tables = {
 ${tableEntries}
 } as const;
-
-export const { db } = getPlaygroundDbRuntime({ tables });
 `.trim();
 }
 
@@ -1073,6 +1074,7 @@ export function App(): React.JSX.Element {
   const [schemaCodeText, setSchemaCodeText] = useState(DEFAULT_FACADE_SCHEMA_CODE);
   const [providerCodeText, setProviderCodeText] = useState(DEFAULT_DB_PROVIDER_CODE);
   const [kvProviderCodeText, setKvProviderCodeText] = useState(DEFAULT_KV_PROVIDER_CODE);
+  const contextCodeText = DEFAULT_CONTEXT_CODE;
   const [rowsJsonText, setRowsJsonText] = useState(
     defaultScenario ? serializeJson(defaultScenario.rows) : "{}\n",
   );
@@ -1189,14 +1191,17 @@ export function App(): React.JSX.Element {
   );
   const schemaProgramModules = useMemo(
     () => ({
+      [CONTEXT_MODULE_ID]: contextCodeText,
       [DB_PROVIDER_MODULE_ID]: providerCodeText,
       [GENERATED_DB_MODULE_ID]: generatedDbCodeText,
       [KV_PROVIDER_MODULE_ID]: kvProviderCodeText,
     }),
-    [generatedDbCodeText, kvProviderCodeText, providerCodeText],
+    [contextCodeText, generatedDbCodeText, kvProviderCodeText, providerCodeText],
   );
   const schemaEditorPath = useMemo(() => {
     switch (activeSchemaSourceTab) {
+      case "context":
+        return SCHEMA_CONTEXT_MODEL_PATH;
       case "provider":
         return SCHEMA_PROVIDER_MODEL_PATH;
       case "kv_provider":
@@ -1208,7 +1213,7 @@ export function App(): React.JSX.Element {
         return SCHEMA_MODEL_PATH;
     }
   }, [activeSchemaSourceTab]);
-  const schemaEditorReadOnly = activeSchemaSourceTab === "generated";
+  const schemaEditorReadOnly = activeSchemaSourceTab === "context" || activeSchemaSourceTab === "generated";
   const syncSchemaSourceModels = useCallback((): void => {
     const monaco = monacoRef.current;
     if (!monaco) {
@@ -1228,10 +1233,11 @@ export function App(): React.JSX.Element {
     };
 
     ensureModel(SCHEMA_MODEL_PATH, schemaCodeText);
+    ensureModel(SCHEMA_CONTEXT_MODEL_PATH, contextCodeText);
     ensureModel(SCHEMA_PROVIDER_MODEL_PATH, providerCodeText);
     ensureModel(SCHEMA_KV_PROVIDER_MODEL_PATH, kvProviderCodeText);
     ensureModel(SCHEMA_GENERATED_MODEL_PATH, generatedDbCodeText);
-  }, [generatedDbCodeText, kvProviderCodeText, providerCodeText, schemaCodeText]);
+  }, [contextCodeText, generatedDbCodeText, kvProviderCodeText, providerCodeText, schemaCodeText]);
   const queryCompatibilityById = useMemo(
     () => buildQueryCompatibilityMap(schemaParse, queryCatalog),
     [queryCatalog, schemaParse],
@@ -1651,6 +1657,10 @@ export function App(): React.JSX.Element {
       return;
     }
 
+    if (sourcePath === SCHEMA_CONTEXT_MODEL_PATH) {
+      return;
+    }
+
     if (sourcePath === SCHEMA_PROVIDER_MODEL_PATH) {
       if (nextValue !== providerCodeText) {
         markScenarioCustom();
@@ -1766,6 +1776,7 @@ export function App(): React.JSX.Element {
 
     if (
       uri === SCHEMA_MODEL_PATH ||
+      uri === SCHEMA_CONTEXT_MODEL_PATH ||
       uri === SCHEMA_PROVIDER_MODEL_PATH ||
       uri === SCHEMA_KV_PROVIDER_MODEL_PATH ||
       uri === SCHEMA_GENERATED_MODEL_PATH
@@ -3082,6 +3093,7 @@ export function App(): React.JSX.Element {
                         >
                           <TabsList className="gap-1">
                             <TabsTrigger value="schema">schema.ts</TabsTrigger>
+                            <TabsTrigger value="context">context.ts</TabsTrigger>
                             <TabsTrigger value="provider">db-provider.ts</TabsTrigger>
                             <TabsTrigger value="kv_provider">kv-provider.ts</TabsTrigger>
                             <TabsTrigger value="generated">generated-db.ts</TabsTrigger>
@@ -3180,6 +3192,7 @@ export function App(): React.JSX.Element {
                         >
                           <TabsList className="gap-1">
                             <TabsTrigger value="schema">schema.ts</TabsTrigger>
+                            <TabsTrigger value="context">context.ts</TabsTrigger>
                             <TabsTrigger value="provider">db-provider.ts</TabsTrigger>
                             <TabsTrigger value="kv_provider">kv-provider.ts</TabsTrigger>
                             <TabsTrigger value="generated">generated-db.ts</TabsTrigger>

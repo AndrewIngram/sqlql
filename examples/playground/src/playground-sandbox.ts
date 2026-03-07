@@ -25,6 +25,7 @@ import {
 } from "./playground-program-files";
 import {
   buildPlaygroundWorkspaceSnapshot,
+  PLAYGROUND_CONTEXT_FILE_PATH,
   PLAYGROUND_DB_PROVIDER_FILE_PATH,
   PLAYGROUND_GENERATED_DB_FILE_PATH,
   PLAYGROUND_KV_PROVIDER_FILE_PATH,
@@ -102,6 +103,14 @@ interface SqlqlRuntimeModule {
   planPhysicalQuery: typeof import("../../../src/index").planPhysicalQuery;
 }
 
+interface PlaygroundRuntimeModule {
+  getPlaygroundKvRuntime: () => {
+    rows: KvInputRow[];
+    recordOperation: typeof recordExecutedProviderOperation;
+  };
+  getPlaygroundDb: () => PlaygroundRuntimeContext["db"];
+}
+
 interface SandboxProviderRuntime<TContext> {
   sqlqlModule: SqlqlRuntimeModule;
   executableSchema: ExecutableSchema<TContext, SchemaDefinition>;
@@ -154,16 +163,6 @@ function extractSchemaExport(
   return executableSchema;
 }
 
-function readDbExportOrThrow(
-  exportsRecord: Record<string, unknown>,
-): PlaygroundRuntimeContext["db"] {
-  const db = exportsRecord.db as PlaygroundRuntimeContext["db"] | undefined;
-  if (!db || typeof db !== "object" || typeof db.select !== "function") {
-    throw new Error("[SCHEMA_EXEC_ERROR] generated-db.ts must export `db` as a Drizzle database instance.");
-  }
-  return db;
-}
-
 function readProviderExportOrThrow<TContext>(
   moduleId: string,
   exportsRecord: Record<string, unknown>,
@@ -211,10 +210,7 @@ async function buildExternalRuntimeModules(
         rows: readKvInputRows(downstreamRows),
         recordOperation: recordExecutedProviderOperation,
       }),
-      getPlaygroundDbRuntime: <TTables extends object>(input: { tables: TTables }) => ({
-        db: runtime.db,
-        tables: input.tables,
-      }),
+      getPlaygroundDb: () => runtime.db,
     },
   };
 }
@@ -259,12 +255,18 @@ function createProviderRuntime<TContext>(
   });
 
   const schemaModule = runtime.executeModule(PLAYGROUND_SCHEMA_FILE_PATH);
-  const generatedDbModule = runtime.executeModule(PLAYGROUND_GENERATED_DB_FILE_PATH);
+  runtime.executeModule(PLAYGROUND_CONTEXT_FILE_PATH);
+  runtime.executeModule(PLAYGROUND_GENERATED_DB_FILE_PATH);
   const dbProviderModule = runtime.executeModule(PLAYGROUND_DB_PROVIDER_FILE_PATH);
   const kvProviderModule = runtime.executeModule(PLAYGROUND_KV_PROVIDER_FILE_PATH);
   const sqlqlModule = runtime.executeModule(
     `${workspace.rootPath}/node_modules/sqlql/index.ts`,
   ) as unknown as SqlqlRuntimeModule;
+  const playgroundRuntimeModule = externalModules["@playground/runtime"] as PlaygroundRuntimeModule | undefined;
+  const db = playgroundRuntimeModule?.getPlaygroundDb();
+  if (!db || typeof db !== "object" || typeof db.select !== "function") {
+    throw new Error("[SCHEMA_EXEC_ERROR] Playground runtime must provide a Drizzle database instance.");
+  }
 
   return {
     sqlqlModule,
@@ -279,7 +281,7 @@ function createProviderRuntime<TContext>(
       kvProviderModule,
       "kvProvider",
     ),
-    db: readDbExportOrThrow(generatedDbModule),
+    db,
   };
 }
 

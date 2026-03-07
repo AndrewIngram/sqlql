@@ -43,9 +43,9 @@ async function main(): Promise<void> {
     },
   };
 
-  const dbProvider = createDrizzleProvider<RuntimeDemoContext, typeof tableConfigs>({
+  const dbProvider = createDrizzleProvider({
     name: "dbProvider",
-    db: (context) => context.db,
+    db: (context: RuntimeDemoContext) => context.db,
     tables: tableConfigs,
   });
 
