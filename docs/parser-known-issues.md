@@ -29,7 +29,7 @@ Current examples of intentionally unsupported syntax:
 
 ## 2) AST remains planner/executor-oriented
 
-The internal parser emits AST nodes shaped to match the v1 planner/executor pipeline
+The internal parser emits AST nodes shaped to match the current planner/executor pipeline
 (for example, function-style `NOT`/`EXISTS` nodes and specific window node structures).
 
 Impact:

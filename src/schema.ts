@@ -1683,7 +1683,7 @@ function buildSchemaDslViewRelHelpers(): SchemaDslViewRelHelpers {
 function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
   const typedColumnBuilder = buildTypedColumnBuilder<string>();
   const viewRelHelpers = buildSchemaDslViewRelHelpers();
-  const compatCol = Object.assign(
+  const schemaColHelper = Object.assign(
     function col<TColumns extends string, TColumn extends TColumns>(
       tableOrRef:
         | string
@@ -1775,7 +1775,7 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
   return {
     table: tableHelper,
     view: viewHelper,
-    col: compatCol,
+    col: schemaColHelper,
     expr: viewRelHelpers.expr,
     agg: viewRelHelpers.agg,
     rel: viewRelHelpers,

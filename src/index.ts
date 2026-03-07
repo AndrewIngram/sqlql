@@ -3,9 +3,8 @@ export {
   DEFAULT_QUERY_FALLBACK_POLICY,
   DEFAULT_QUERY_GUARDRAILS,
   SqlqlDiagnosticError,
-  asProviderCompiledPlan,
   createExecutableSchema,
-} from "./query-v1";
+} from "./query";
 export type {
   ExecutableSchema,
   ExecutableSchemaQueryInput,
@@ -26,7 +25,7 @@ export type {
   QueryStepState,
   QueryStepStatus,
   QuerySqlOrigin,
-} from "./query-v1";
+} from "./query";
 export * from "./constraints";
 export * from "./parser";
 export * from "./provider";

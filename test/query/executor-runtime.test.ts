@@ -149,7 +149,7 @@ function matchesLike(value: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
-describe("query/v1 local executor", () => {
+describe("query/local executor", () => {
   it("executes filter + aggregate nodes locally over provider scans", async () => {
     const schema = defineSchema({
       tables: {

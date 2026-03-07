@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  SqlqlDiagnosticError,
   createDataEntityHandle,
   defineSchema,
   type ProviderAdapter,
@@ -11,6 +10,12 @@ import {
   type TableScanRequest,
 } from "../../src";
 import { createExecutableSchemaFromProviders } from "../support/executable-schema";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = rows.filter((row) => applyFilters(row, request.where ?? []));
@@ -148,7 +153,7 @@ function matchesLike(value: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
-describe("query/v1 provider runtime", () => {
+describe("query/provider runtime", () => {
   it("routes same-provider queries through scan fragments", async () => {
     const schema = defineSchema({
       tables: {
@@ -941,7 +946,59 @@ describe("query/v1 provider runtime", () => {
         FROM orders o
         JOIN users u ON o.user_id = u.id
       `,
-    })).rejects.toBeInstanceOf(SqlqlDiagnosticError);
+    })).rejects.toMatchObject({
+      _tag: "SqlqlDiagnosticError",
+      diagnostics: expect.any(Array),
+      name: "SqlqlDiagnosticError",
+    });
+  });
+
+  it("surfaces tagged timeout errors through the Promise query API", async () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+          },
+        },
+      },
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return {
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return [];
+          }
+          await sleep(25);
+          return scanRows([{ id: "u1" }], fragment.request);
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    await expect(executableSchema.query({
+      context: {},
+      queryGuardrails: {
+        timeoutMs: 5,
+      },
+      sql: "SELECT id FROM users",
+    })).rejects.toMatchObject({
+      _tag: "SqlqlTimeoutError",
+      name: "SqlqlTimeoutError",
+      message: "Query timed out after 5ms.",
+    });
   });
 
   it("executes scalar expressions and missing operators locally when scan pushdown is the only provider capability", async () => {

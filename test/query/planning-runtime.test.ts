@@ -4,7 +4,7 @@ import { defineSchema } from "../../src";
 import { finalizeProviders } from "../support/executable-schema";
 import { lowerSqlToRel, planPhysicalQuery } from "../../src/planning";
 
-describe("query/v1 planning", () => {
+describe("query/planning", () => {
   it("lowers simple select/join into relational operators", () => {
     const schema = defineSchema({
       tables: {
