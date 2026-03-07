@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { defineSchema, type ProviderAdapter } from "../../src";
+import { defineSchema } from "../../src";
 import { finalizeProviders } from "../support/executable-schema";
 import { lowerSqlToRel, planPhysicalQuery } from "../../src/planning";
 

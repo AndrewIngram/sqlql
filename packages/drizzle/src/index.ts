@@ -20,7 +20,6 @@ import {
 import {
   bindAdapterEntities,
   createDataEntityHandle,
-  type DataEntityColumnMetadata,
   isRelProjectColumnMapping,
   normalizeDataEntityShape,
   type DataEntityShape,

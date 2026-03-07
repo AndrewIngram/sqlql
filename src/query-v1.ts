@@ -1091,7 +1091,7 @@ function explainInternal<TContext>(input: QueryInput<TContext>): ExplainResult {
 function collectExecutableProviders<TContext>(schema: SchemaDefinition): ProvidersMap<TContext> {
   const providers: ProvidersMap<TContext> = {};
 
-  for (const [tableName, table] of Object.entries(schema.tables)) {
+  for (const [tableName] of Object.entries(schema.tables)) {
     const binding = getNormalizedTableBinding(schema, tableName);
     if (!binding || binding.kind === "view") {
       continue;

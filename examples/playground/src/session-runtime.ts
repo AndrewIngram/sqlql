@@ -729,7 +729,7 @@ export async function compilePlaygroundInput(
     [DB_PROVIDER_MODULE_ID]: DEFAULT_DB_PROVIDER_CODE,
     [GENERATED_DB_MODULE_ID]: DEFAULT_GENERATED_DB_FILE_CODE,
     [KV_PROVIDER_MODULE_ID]: DEFAULT_KV_PROVIDER_CODE,
-    ...(options.modules ?? {}),
+    ...options.modules,
   };
   const schemaResult = await parseFacadeSchemaCode(schemaCodeText, {
     modules,

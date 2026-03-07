@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMethodsSession, queryWithMethods } from "../support/methods-provider";
+import { createMethodsSession } from "../support/methods-provider";
 import { createArrayTableMethods } from "../../src/array-methods";
 
 import { defineTableMethods } from "../../src";
