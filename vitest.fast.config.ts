@@ -19,7 +19,7 @@ export default defineConfig({
       "test/query/*runtime.test.ts",
       "test/query/session.test.ts",
       "test/providers/**/*.test.ts",
-      "examples/**/test/**/*.test.ts",
+      "examples/playground/test/**/*.test.ts",
     ],
     exclude: [...configDefaults.exclude, ...SLOW_PLAYGROUND_TEST_FILES],
     coverage: {

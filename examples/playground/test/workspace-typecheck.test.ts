@@ -15,6 +15,13 @@ import {
   PLAYGROUND_SCHEMA_FILE_PATH,
 } from "../src/playground-workspace";
 
+const PLAYGROUND_TYPED_FILE_PATHS = new Set<string>([
+  PLAYGROUND_SCHEMA_FILE_PATH,
+  PLAYGROUND_DB_PROVIDER_FILE_PATH,
+  PLAYGROUND_KV_PROVIDER_FILE_PATH,
+  PLAYGROUND_GENERATED_DB_FILE_PATH,
+]);
+
 function normalizePath(value: string): string {
   return value.replace(/\\/gu, "/");
 }
@@ -122,7 +129,7 @@ function collectWorkspaceDiagnostics(): string[] {
     .getPreEmitDiagnostics(program)
     .filter((diagnostic) => {
       const fileName = diagnostic.file ? normalizePath(diagnostic.file.fileName) : "";
-      return fileName.startsWith(workspace.rootPath);
+      return PLAYGROUND_TYPED_FILE_PATHS.has(fileName);
     })
     .map(formatDiagnostic);
 }

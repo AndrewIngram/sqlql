@@ -24,7 +24,7 @@ export default defineConfig({
       "test/query/*runtime.test.ts",
       "test/query/session.test.ts",
       "test/providers/**/*.test.ts",
-      "examples/**/test/**/*.test.ts",
+      "examples/playground/test/**/*.test.ts",
     ],
     coverage: {
       reporter: ["text", "html"],

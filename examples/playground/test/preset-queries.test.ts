@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_FACADE_SCHEMA_CODE,
@@ -10,37 +10,45 @@ import {
   compilePreparedPlaygroundQuery,
   createSession,
   preparePlaygroundInput,
+  type PlaygroundPreparedInputSuccess,
 } from "../src/session-runtime";
 
-describe("playground/preset-queries", () => {
-  it("compiles and executes every query preset against every scenario", { timeout: 15_000 }, async () => {
-    for (const scenario of SCENARIO_PRESETS) {
-      const prepared = await preparePlaygroundInput(
-        DEFAULT_FACADE_SCHEMA_CODE,
-        serializeJson(scenario.rows),
-      );
-      expect(prepared.ok, `[${scenario.id}] scenario preparation failed`).toBe(true);
-      if (!prepared.ok) {
-        continue;
-      }
+describe.each(SCENARIO_PRESETS)("playground/preset-queries [$id]", (scenario) => {
+  let prepared: PlaygroundPreparedInputSuccess | null = null;
 
-      let reseed = true;
-      for (const query of QUERY_PRESETS) {
-        const compiled = compilePreparedPlaygroundQuery(prepared, query.sql);
-
-        expect(compiled.ok, `[${scenario.id}] ${query.label} compile mismatch`).toBe(true);
-        if (!compiled.ok) {
-          continue;
-        }
-
-        const bundle = await createSession(compiled, scenario.context, { reseed });
-        reseed = false;
-        const rows = await bundle.session.runToCompletion();
-        expect(
-          Array.isArray(rows),
-          `[${scenario.id}] ${query.label} should return rows`,
-        ).toBe(true);
-      }
+  beforeAll(async () => {
+    const result = await preparePlaygroundInput(
+      DEFAULT_FACADE_SCHEMA_CODE,
+      serializeJson(scenario.rows),
+    );
+    expect(result.ok, `[${scenario.id}] scenario preparation failed`).toBe(true);
+    if (!result.ok) {
+      return;
     }
+    prepared = result;
   });
+
+  it.each(QUERY_PRESETS)(
+    "compiles and executes preset \"$label\" for scenario",
+    { timeout: 15_000 },
+    async (query) => {
+      expect(prepared, `[${scenario.id}] scenario preparation missing`).not.toBeNull();
+      if (!prepared) {
+        return;
+      }
+
+      const compiled = compilePreparedPlaygroundQuery(prepared, query.sql);
+      expect(compiled.ok, `[${scenario.id}] ${query.label} compile mismatch`).toBe(true);
+      if (!compiled.ok) {
+        return;
+      }
+
+      const bundle = await createSession(compiled, scenario.context);
+      const rows = await bundle.session.runToCompletion();
+      expect(
+        Array.isArray(rows),
+        `[${scenario.id}] ${query.label} should return rows`,
+      ).toBe(true);
+    },
+  );
 });
