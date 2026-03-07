@@ -1,3 +1,5 @@
+import type { PgliteDatabase } from "drizzle-orm/pglite";
+
 import type {
   SchemaDefinition,
   SqlScalarType,
@@ -7,6 +9,10 @@ import type {
 export interface PlaygroundContext {
   orgId: string;
   userId: string;
+}
+
+export interface PlaygroundRuntimeContext extends PlaygroundContext {
+  db: PgliteDatabase<Record<string, never>>;
 }
 
 export interface ExecutedSqlProviderOperation {

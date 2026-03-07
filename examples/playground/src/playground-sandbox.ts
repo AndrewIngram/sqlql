@@ -26,6 +26,7 @@ import {
 import {
   buildPlaygroundWorkspaceSnapshot,
   PLAYGROUND_DB_PROVIDER_FILE_PATH,
+  PLAYGROUND_GENERATED_DB_FILE_PATH,
   PLAYGROUND_KV_PROVIDER_FILE_PATH,
   PLAYGROUND_SCHEMA_FILE_PATH,
   type PlaygroundWorkspaceSnapshot,
@@ -42,6 +43,7 @@ import type {
   DownstreamRows,
   ExecutedProviderOperation,
   PlaygroundContext,
+  PlaygroundRuntimeContext,
   SchemaParseResult,
 } from "./types";
 
@@ -105,10 +107,11 @@ interface SandboxProviderRuntime<TContext> {
   executableSchema: ExecutableSchema<TContext, SchemaDefinition>;
   dbProvider: ProviderAdapter<TContext>;
   kvProvider: ProviderAdapter<TContext>;
+  db: PlaygroundRuntimeContext["db"];
 }
 
 const sessionStore = new Map<string, SessionRecord>();
-const providerRuntimeCache = new Map<string, Promise<SandboxProviderRuntime<PlaygroundContext>>>();
+const providerRuntimeCache = new Map<string, Promise<SandboxProviderRuntime<PlaygroundRuntimeContext>>>();
 let nextSessionId = 1;
 const MAX_PROVIDER_RUNTIME_CACHE_ENTRIES = 8;
 
@@ -130,13 +133,13 @@ function asErrorMessage(error: unknown): string {
 
 function extractSchemaExport(
   exportsRecord: Record<string, unknown>,
-): ExecutableSchema<PlaygroundContext, SchemaDefinition> {
+): ExecutableSchema<PlaygroundRuntimeContext, SchemaDefinition> {
   if (!("executableSchema" in exportsRecord)) {
     throw new Error(
       "[SCHEMA_EXPORT_MISSING] Schema module must export `executableSchema` via `export const executableSchema = createExecutableSchema(...)`.",
     );
   }
-  const executableSchema = (exportsRecord as ExecutableSchemaModuleExports<PlaygroundContext>).executableSchema;
+  const executableSchema = (exportsRecord as ExecutableSchemaModuleExports<PlaygroundRuntimeContext>).executableSchema;
   if (
     !executableSchema ||
     typeof executableSchema !== "object" ||
@@ -149,6 +152,16 @@ function extractSchemaExport(
     );
   }
   return executableSchema;
+}
+
+function readDbExportOrThrow(
+  exportsRecord: Record<string, unknown>,
+): PlaygroundRuntimeContext["db"] {
+  const db = exportsRecord.db as PlaygroundRuntimeContext["db"] | undefined;
+  if (!db || typeof db !== "object" || typeof db.select !== "function") {
+    throw new Error("[SCHEMA_EXEC_ERROR] generated-db.ts must export `db` as a Drizzle database instance.");
+  }
+  return db;
 }
 
 function readProviderExportOrThrow<TContext>(
@@ -215,7 +228,7 @@ function buildWorkspace(
 
 function setBoundedProviderRuntimeCacheEntry(
   key: string,
-  value: Promise<SandboxProviderRuntime<PlaygroundContext>>,
+  value: Promise<SandboxProviderRuntime<PlaygroundRuntimeContext>>,
 ): void {
   if (!providerRuntimeCache.has(key) && providerRuntimeCache.size >= MAX_PROVIDER_RUNTIME_CACHE_ENTRIES) {
     const oldestKey = providerRuntimeCache.keys().next().value;
@@ -246,6 +259,7 @@ function createProviderRuntime<TContext>(
   });
 
   const schemaModule = runtime.executeModule(PLAYGROUND_SCHEMA_FILE_PATH);
+  const generatedDbModule = runtime.executeModule(PLAYGROUND_GENERATED_DB_FILE_PATH);
   const dbProviderModule = runtime.executeModule(PLAYGROUND_DB_PROVIDER_FILE_PATH);
   const kvProviderModule = runtime.executeModule(PLAYGROUND_KV_PROVIDER_FILE_PATH);
   const sqlqlModule = runtime.executeModule(
@@ -265,12 +279,13 @@ function createProviderRuntime<TContext>(
       kvProviderModule,
       "kvProvider",
     ),
+    db: readDbExportOrThrow(generatedDbModule),
   };
 }
 
 async function getOrCreateProviderRuntime(
   compiled: SandboxCompiledInput,
-): Promise<SandboxProviderRuntime<PlaygroundContext>> {
+): Promise<SandboxProviderRuntime<PlaygroundRuntimeContext>> {
   const options = compiled.modules ? { modules: compiled.modules } : undefined;
   const cacheKey = createProviderRuntimeCacheKey(
     compiled.schemaCode,
@@ -283,12 +298,22 @@ async function getOrCreateProviderRuntime(
     cached = (async () => {
       const workspace = buildWorkspace(compiled.schemaCode, options);
       const externalModules = await buildExternalRuntimeModules(compiled.downstreamRows);
-      return createProviderRuntime<PlaygroundContext>(workspace, externalModules);
+      return createProviderRuntime<PlaygroundRuntimeContext>(workspace, externalModules);
     })();
     setBoundedProviderRuntimeCacheEntry(cacheKey, cached);
   }
 
   return cached;
+}
+
+function toRuntimeContext(
+  context: PlaygroundContext,
+  runtime: SandboxProviderRuntime<PlaygroundRuntimeContext>,
+): PlaygroundRuntimeContext {
+  return {
+    ...context,
+    db: runtime.db,
+  };
 }
 
 function normalizeSchemaError(message: string): SchemaParseResult {
@@ -353,7 +378,7 @@ export async function validateSchemaInSandbox(
   try {
     const workspace = buildWorkspace(schemaCode, options);
     const externalModules = await buildExternalRuntimeModules({});
-    const { executableSchema } = createProviderRuntime<PlaygroundContext>(workspace, externalModules);
+    const { executableSchema } = createProviderRuntime<PlaygroundRuntimeContext>(workspace, externalModules);
     return {
       ok: true,
       schema: defineSchema(executableSchema.schema),
@@ -390,9 +415,11 @@ export async function createSandboxSession(
   }
   clearExecutedProviderOperations();
 
-  const { sqlqlModule, executableSchema, dbProvider, kvProvider } = await getOrCreateProviderRuntime(
+  const runtime = await getOrCreateProviderRuntime(
     compiled,
   );
+  const runtimeContext = toRuntimeContext(context, runtime);
+  const { sqlqlModule, executableSchema, dbProvider, kvProvider } = runtime;
 
   const providers = {
     [dbProvider.name]: dbProvider,
@@ -403,12 +430,12 @@ export async function createSandboxSession(
     lowered.rel,
     executableSchema.schema,
     providers,
-    context,
+    runtimeContext,
     compiled.sql,
   );
 
   const session = executableSchema.createSession({
-    context,
+    context: runtimeContext,
     sql: compiled.sql,
     options: {
       maxConcurrency: 4,

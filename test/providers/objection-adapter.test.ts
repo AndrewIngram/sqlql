@@ -296,9 +296,9 @@ describe("objection adapter", () => {
       calls,
     );
 
-    const provider = createObjectionProvider<{ orgId: string }>({
+    const provider = createObjectionProvider<{ orgId: string; knex: typeof knex }>({
       name: "dbProvider",
-      knex,
+      knex: (context) => context.knex,
       entities: {
         orders: {
           table: "orders",
@@ -319,8 +319,9 @@ describe("objection adapter", () => {
         select: ["id", "user_id"],
       } satisfies TableScanRequest,
     };
-    const scanPlan = unwrapProviderOperationResult(await provider.compile(scanFragment, { orgId: "org_1" }));
-    const rows = unwrapProviderOperationResult(await provider.execute(scanPlan, { orgId: "org_1" }));
+    const scanContext = { orgId: "org_1", knex };
+    const scanPlan = unwrapProviderOperationResult(await provider.compile(scanFragment, scanContext));
+    const rows = unwrapProviderOperationResult(await provider.execute(scanPlan, scanContext));
     expect(rows).toEqual([{ id: "o1", user_id: "u1" }]);
 
     if (!provider.lookupMany) {
@@ -334,11 +335,49 @@ describe("objection adapter", () => {
         keys: ["o1"],
         select: ["id"],
       },
-      { orgId: "org_1" },
+      scanContext,
     );
 
     expect(calls.baseContexts).toEqual(["org_1", "org_1"]);
     expect(calls.whereIn.some((entry) => String(entry[0]) === "orders.id")).toBe(true);
+  });
+
+  it("fails clearly when a context-resolved knex binding is missing at runtime", async () => {
+    const calls: ObjectionCalls = {
+      where: [],
+      whereIn: [],
+      executeCount: 0,
+      baseContexts: [],
+    };
+    const knex = createMockKnex(new Map(), new Map(), calls);
+    const provider = createObjectionProvider<{ knex?: typeof knex }>({
+      name: "dbProvider",
+      knex: (context) => context.knex as typeof knex,
+      entities: {
+        orders: {
+          table: "orders",
+        },
+      },
+    });
+
+    const plan = unwrapProviderOperationResult(
+      await provider.compile(
+        {
+          kind: "scan",
+          provider: "dbProvider",
+          table: "orders",
+          request: {
+            table: "orders",
+            select: ["id"],
+          },
+        },
+        {},
+      ),
+    );
+
+    await expect(
+      Promise.resolve(provider.execute(plan, {})).then(unwrapProviderOperationResult),
+    ).rejects.toThrow("Objection provider runtime binding did not resolve to a valid knex instance.");
   });
 
   it("preserves scoped roots for both sides of joined rel fragments", async () => {

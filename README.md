@@ -31,11 +31,11 @@ import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
 import { createExecutableSchema } from "sqlql";
 
-type QueryContext = { orgId: string; userId: string };
+type QueryContext = { orgId: string; userId: string; db: typeof db };
 
 const dbProvider = createDrizzleProvider<QueryContext>({
   name: "dbProvider",
-  db,
+  db: (ctx) => ctx.db,
   tables: {
     orders: {
       table: tables.orders,
@@ -118,7 +118,7 @@ const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) 
 });
 
 const rows = await executableSchema.query({
-  context: { orgId: "org_1", userId: "u1" },
+  context: { orgId: "org_1", userId: "u1", db },
   sql: `
     SELECT vendorName, totalSpendCents, orderCount
     FROM myVendorSpend
@@ -127,7 +127,7 @@ const rows = await executableSchema.query({
 });
 
 const highValueOrders = await executableSchema.query({
-  context: { orgId: "org_1", userId: "u1" },
+  context: { orgId: "org_1", userId: "u1", db },
   sql: `
     SELECT orderId, vendorName, totalDollars, isLargeOrder
     FROM myOrderFacts
@@ -136,6 +136,8 @@ const highValueOrders = await executableSchema.query({
   `,
 });
 ```
+
+If your runtime handle is static, `db` can still be passed directly instead of using a context callback.
 
 ### Example B: Non-Relational Mapping Pattern
 

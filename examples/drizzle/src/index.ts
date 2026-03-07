@@ -26,11 +26,12 @@ async function main(): Promise<void> {
   const sqlite = createSeededSqliteDatabase();
 
   const db = drizzle(sqlite);
+  type RuntimeDemoContext = DemoContext & { db: typeof db };
 
   const tableConfigs = {
     orders_raw: {
       table: ordersRawTable,
-      scope: (context: DemoContext) =>
+      scope: (context: RuntimeDemoContext) =>
         and(
           eq(ordersRawTable.orgId, context.orgId),
           eq(ordersRawTable.userId, context.userId),
@@ -38,17 +39,17 @@ async function main(): Promise<void> {
     },
     vendors_raw: {
       table: vendorsRawTable,
-      scope: (context: DemoContext) => eq(vendorsRawTable.orgId, context.orgId),
+      scope: (context: RuntimeDemoContext) => eq(vendorsRawTable.orgId, context.orgId),
     },
   };
 
-  const dbProvider = createDrizzleProvider<DemoContext, typeof tableConfigs>({
+  const dbProvider = createDrizzleProvider<RuntimeDemoContext, typeof tableConfigs>({
     name: "dbProvider",
-    db,
+    db: (context) => context.db,
     tables: tableConfigs,
   });
 
-  const executableSchema = createExecutableSchema<DemoContext>(({ table, view }) => {
+  const executableSchema = createExecutableSchema<RuntimeDemoContext>(({ table, view }) => {
     const myOrders = table(dbProvider.entities.orders_raw, {
       columns: ({ col, expr }) => ({
         id: col.id("id"),
@@ -120,6 +121,7 @@ async function main(): Promise<void> {
     context: {
       orgId: "org_1",
       userId: "u1",
+      db,
     },
     sql: `
       SELECT id, totalDollars, isLargeOrder
@@ -133,6 +135,7 @@ async function main(): Promise<void> {
     context: {
       orgId: "org_1",
       userId: "u1",
+      db,
     },
     sql: `
       SELECT orderId, vendorName, totalDollars, isLargeOrder
@@ -145,6 +148,7 @@ async function main(): Promise<void> {
     context: {
       orgId: "org_1",
       userId: "u1",
+      db,
     },
     sql: `
       SELECT vendorName, totalSpendCents, orderCount

@@ -30,12 +30,14 @@ import {
   type DataEntityHandle,
   type DataEntityReadMetadataMap,
   type InferDataEntityShapeMetadata,
+  type MaybePromise,
   type ProviderAdapter,
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
   type ProviderFragment,
   type ProviderLookupManyRequest,
+  type ProviderRuntimeBinding,
   type QueryRow,
   type RelExpr,
   type RelNode,
@@ -77,7 +79,7 @@ export interface CreateDrizzleProviderOptions<
 > {
   name?: string;
   dialect?: "postgres" | "sqlite";
-  db: DrizzleQueryExecutor;
+  db: ProviderRuntimeBinding<TContext, DrizzleQueryExecutor>;
   tables: TTables;
 }
 
@@ -87,6 +89,48 @@ interface DrizzleRelCompiledPlan {
 }
 
 type DrizzleRelCompileStrategy = "basic" | "set_op" | "with";
+
+function isRuntimeBindingResolver<TContext, TValue>(
+  binding: ProviderRuntimeBinding<TContext, TValue>,
+): binding is (context: TContext) => MaybePromise<TValue> {
+  return typeof binding === "function";
+}
+
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function assertDrizzleDb(db: DrizzleQueryExecutor | null | undefined): DrizzleQueryExecutor {
+  if (!db || typeof db.select !== "function") {
+    throw new Error(
+      "Drizzle provider runtime binding did not resolve to a valid database instance. Check your context and db callback.",
+    );
+  }
+  return db;
+}
+
+function resolveDrizzleDbMaybeSync<TContext>(
+  options: CreateDrizzleProviderOptions<TContext>,
+  context: TContext,
+): MaybePromise<DrizzleQueryExecutor> {
+  if (!isRuntimeBindingResolver(options.db)) {
+    return assertDrizzleDb(options.db);
+  }
+
+  const db = options.db(context);
+  return isPromiseLike(db) ? db.then(assertDrizzleDb) : assertDrizzleDb(db);
+}
+
+async function resolveDrizzleDb<TContext>(
+  options: CreateDrizzleProviderOptions<TContext>,
+  context: TContext,
+): Promise<DrizzleQueryExecutor> {
+  return await Promise.resolve(resolveDrizzleDbMaybeSync(options, context));
+}
 
 function requireColumnProjectMapping(
   mapping: Extract<RelNode, { kind: "project" }>["columns"][number],
@@ -237,40 +281,50 @@ export function createDrizzleProvider<
     entities: handles,
     routeFamilies: ["scan", "lookup", "aggregate", "rel-core", "rel-advanced"] as const,
     capabilityAtoms: [...declaredAtoms],
-    canExecute(fragment): boolean | ProviderCapabilityReport {
+    canExecute(fragment, context): MaybePromise<boolean | ProviderCapabilityReport> {
       switch (fragment.kind) {
         case "scan":
           return !!tableConfigs[fragment.table];
         case "rel": {
-          const strategy = resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
           const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
           const missingAtoms = requiredAtoms.filter((atom) => !declaredAtoms.includes(atom));
-          if (strategy && !isStrategyAvailableOnDrizzleDb(strategy, options.db)) {
-            return {
-              supported: false,
-              routeFamily: inferRouteFamilyForFragment(fragment),
-              requiredAtoms,
-              missingAtoms,
-              reason: `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`,
-            };
-          }
-          return strategy
-            ? true
-            : {
+          const routeFamily = inferRouteFamilyForFragment(fragment);
+          const evaluateWithDb = (db: DrizzleQueryExecutor): boolean | ProviderCapabilityReport => {
+            const strategy = resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
+            if (strategy && !isStrategyAvailableOnDrizzleDb(strategy, db)) {
+              return {
                 supported: false,
-                routeFamily: inferRouteFamilyForFragment(fragment),
+                routeFamily,
                 requiredAtoms,
                 missingAtoms,
-                reason: hasSqlNode(fragment.rel)
-                  ? "rel fragment must not contain sql nodes."
-                  : "Rel fragment is not supported for single-query drizzle pushdown.",
+                reason: `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`,
               };
+            }
+            return strategy
+              ? true
+              : {
+                  supported: false,
+                  routeFamily,
+                  requiredAtoms,
+                  missingAtoms,
+                  reason: hasSqlNode(fragment.rel)
+                    ? "rel fragment must not contain sql nodes."
+                    : "Rel fragment is not supported for single-query drizzle pushdown.",
+                };
+          };
+
+          if (!isRuntimeBindingResolver(options.db)) {
+            return evaluateWithDb(options.db);
+          }
+
+          const db = resolveDrizzleDbMaybeSync(options, context);
+          return isPromiseLike(db) ? db.then(evaluateWithDb) : evaluateWithDb(db);
         }
         default:
           return false;
       }
     },
-    async compile(fragment) {
+    async compile(fragment, context) {
       switch (fragment.kind) {
         case "scan":
           return Result.ok({
@@ -283,7 +337,8 @@ export function createDrizzleProvider<
           if (!strategy) {
             return Result.err(new Error("Unsupported relational fragment for drizzle provider."));
           }
-          if (!isStrategyAvailableOnDrizzleDb(strategy, options.db)) {
+          const db = await resolveDrizzleDb(options, context);
+          if (!isStrategyAvailableOnDrizzleDb(strategy, db)) {
             return Result.err(
               new Error(
                 `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`,
@@ -353,7 +408,7 @@ export function createDrizzleProvider<
 }
 
 function inferDrizzleDialect<TContext>(
-  db: DrizzleQueryExecutor,
+  db: ProviderRuntimeBinding<TContext, DrizzleQueryExecutor>,
   tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
 ): "postgres" | "sqlite" {
   const tableDialects = new Set<"postgres" | "sqlite">();
@@ -375,6 +430,12 @@ function inferDrizzleDialect<TContext>(
   const fromTables = [...tableDialects][0];
   if (fromTables) {
     return fromTables;
+  }
+
+  if (isRuntimeBindingResolver(db)) {
+    throw new Error(
+      "Unable to infer drizzle dialect from a context-resolved db binding. Set options.dialect explicitly or use tables with declared dialects.",
+    );
   }
 
   const fromDb = normalizeDialectName(readDbDialectHint(db));
@@ -427,11 +488,12 @@ async function executeDrizzlePlan<TContext>(
   context: TContext,
 ): Promise<QueryRow[]> {
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
+  const db = await resolveDrizzleDb(options, context);
 
   switch (plan.kind) {
     case "rel": {
       const compiled = plan.payload as DrizzleRelCompiledPlan;
-      return executeDrizzleRelSingleQuery(compiled.rel, compiled.strategy, options, context);
+      return executeDrizzleRelSingleQuery(compiled.rel, compiled.strategy, options, context, db);
     }
     case "scan": {
       const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
@@ -442,7 +504,7 @@ async function executeDrizzlePlan<TContext>(
 
       const scope = tableConfig.scope ? await tableConfig.scope(context) : undefined;
       return runDrizzleScan({
-        db: options.db,
+        db,
         tableName: fragment.table,
         table: tableConfig.table,
         columns: resolveColumns(tableConfig, fragment.table),
@@ -461,6 +523,7 @@ async function lookupManyWithDrizzle<TContext>(
   context: TContext,
 ): Promise<QueryRow[]> {
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
+  const db = await resolveDrizzleDb(options, context);
   const tableConfig = tableConfigs[request.table];
   if (!tableConfig) {
     throw new Error(`Unknown drizzle table config: ${request.table}`);
@@ -477,7 +540,7 @@ async function lookupManyWithDrizzle<TContext>(
 
   const scope = tableConfig.scope ? await tableConfig.scope(context) : undefined;
   return runDrizzleScan({
-    db: options.db,
+    db,
     tableName: request.table,
     table: tableConfig.table,
     columns: resolveColumns(tableConfig, request.table),
@@ -1004,14 +1067,15 @@ async function executeDrizzleRelSingleQuery<TContext>(
   strategy: DrizzleRelCompileStrategy,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<QueryRow[]> {
   switch (strategy) {
     case "basic":
-      return executeDrizzleBasicRelSingleQuery(rel, options, context);
+      return executeDrizzleBasicRelSingleQuery(rel, options, context, db);
     case "set_op":
-      return executeDrizzleSetOpRelSingleQuery(rel, options, context);
+      return executeDrizzleSetOpRelSingleQuery(rel, options, context, db);
     case "with":
-      return executeDrizzleWithRelSingleQuery(rel, options, context);
+      return executeDrizzleWithRelSingleQuery(rel, options, context, db);
   }
 }
 
@@ -1019,15 +1083,17 @@ async function executeDrizzleBasicRelSingleQuery<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<QueryRow[]> {
-  const { builder } = await buildDrizzleBasicRelSingleQueryBuilder(rel, options, context);
-  return executeDrizzleQueryBuilder(builder, options.db);
+  const { builder } = await buildDrizzleBasicRelSingleQueryBuilder(rel, options, context, db);
+  return executeDrizzleQueryBuilder(builder, db);
 }
 
 async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<{
   builder: {
     execute: () => Promise<QueryRow[]>;
@@ -1043,7 +1109,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
     !!plan.pipeline.aggregate &&
     plan.pipeline.aggregate.metrics.length === 0 &&
     plan.pipeline.aggregate.groupBy.length > 0;
-  const db = options.db as {
+  const dbWithSelectDistinct = db as {
     select: (selection: Record<string, unknown>) => {
       from: (table: object) => {
         innerJoin: (table: object, on: SQL) => unknown;
@@ -1075,9 +1141,9 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
   };
 
   const selectFn =
-    preferDistinctSelection && typeof db.selectDistinct === "function"
-      ? db.selectDistinct.bind(db)
-      : db.select.bind(db);
+    preferDistinctSelection && typeof dbWithSelectDistinct.selectDistinct === "function"
+      ? dbWithSelectDistinct.selectDistinct.bind(dbWithSelectDistinct)
+      : dbWithSelectDistinct.select.bind(dbWithSelectDistinct);
 
   let builder = selectFn(selection).from(plan.joinPlan.root.table) as {
     innerJoin: (table: object, on: SQL) => unknown;
@@ -1106,6 +1172,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
         joinStep,
         options,
         context,
+        db,
       );
       whereClauses.push(sql`${leftColumn} in (${asDrizzleSubquerySql(subquery)})`);
       continue;
@@ -1206,18 +1273,20 @@ async function executeDrizzleSetOpRelSingleQuery<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<QueryRow[]> {
-  const { builder } = await buildDrizzleSetOpRelSingleQueryBuilder(rel, options, context);
-  return executeDrizzleQueryBuilder(builder, options.db);
+  const { builder } = await buildDrizzleSetOpRelSingleQueryBuilder(rel, options, context, db);
+  return executeDrizzleQueryBuilder(builder, db);
 }
 
 async function executeDrizzleWithRelSingleQuery<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<QueryRow[]> {
-  const { builder } = await buildDrizzleWithRelSingleQueryBuilder(rel, options, context);
-  return executeDrizzleQueryBuilder(builder, options.db);
+  const { builder } = await buildDrizzleWithRelSingleQueryBuilder(rel, options, context, db);
+  return executeDrizzleQueryBuilder(builder, db);
 }
 
 async function executeDrizzleQueryBuilder(
@@ -1259,6 +1328,7 @@ async function buildDrizzleRelBuilderForStrategy<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<{ builder: DrizzleExecutableBuilder }> {
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const strategy = resolveDrizzleRelCompileStrategy(rel, tableConfigs);
@@ -1269,11 +1339,11 @@ async function buildDrizzleRelBuilderForStrategy<TContext>(
   }
   switch (strategy) {
     case "basic":
-      return buildDrizzleBasicRelSingleQueryBuilder(rel, options, context);
+      return buildDrizzleBasicRelSingleQueryBuilder(rel, options, context, db);
     case "set_op":
-      return buildDrizzleSetOpRelSingleQueryBuilder(rel, options, context);
+      return buildDrizzleSetOpRelSingleQueryBuilder(rel, options, context, db);
     case "with":
-      return buildDrizzleWithRelSingleQueryBuilder(rel, options, context);
+      return buildDrizzleWithRelSingleQueryBuilder(rel, options, context, db);
   }
 }
 
@@ -1281,27 +1351,29 @@ async function buildSemiJoinSubquery<TContext>(
   joinStep: SemiJoinStep,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<{ subquery: DrizzleExecutableBuilder }> {
   if (joinStep.right.output.length !== 1) {
     throw new UnsupportedSingleQueryPlanError(
       "SEMI join subquery must project exactly one output column.",
     );
   }
-  return { subquery: (await buildDrizzleRelBuilderForStrategy(joinStep.right, options, context)).builder };
+  return { subquery: (await buildDrizzleRelBuilderForStrategy(joinStep.right, options, context, db)).builder };
 }
 
 async function buildDrizzleSetOpRelSingleQueryBuilder<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<{ builder: DrizzleExecutableBuilder }> {
   const wrapper = unwrapSetOpRel(rel);
   if (!wrapper) {
     throw new UnsupportedSingleQueryPlanError("Expected set-op relational shape.");
   }
 
-  const left = (await buildDrizzleRelBuilderForStrategy(wrapper.setOp.left, options, context)).builder;
-  const right = (await buildDrizzleRelBuilderForStrategy(wrapper.setOp.right, options, context)).builder;
+  const left = (await buildDrizzleRelBuilderForStrategy(wrapper.setOp.left, options, context, db)).builder;
+  const right = (await buildDrizzleRelBuilderForStrategy(wrapper.setOp.right, options, context, db)).builder;
   const methodName =
     wrapper.setOp.op === "union_all"
       ? "unionAll"
@@ -1373,11 +1445,12 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
   rel: RelNode,
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
+  db: DrizzleQueryExecutor,
 ): Promise<{ builder: DrizzleExecutableBuilder }> {
   if (rel.kind !== "with") {
     throw new UnsupportedSingleQueryPlanError(`Expected with node, received "${rel.kind}".`);
   }
-  const db = options.db as {
+  const dbWithCtes = db as {
     $with?: (name: string) => { as: (query: DrizzleExecutableBuilder) => unknown };
     with?: (...ctes: unknown[]) => {
       select: (selection: Record<string, unknown>) => {
@@ -1385,7 +1458,7 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
       };
     };
   };
-  if (typeof db.$with !== "function" || typeof db.with !== "function") {
+  if (typeof dbWithCtes.$with !== "function" || typeof dbWithCtes.with !== "function") {
     throw new UnsupportedSingleQueryPlanError(
       "Drizzle database instance does not support CTE builders required for WITH pushdown.",
     );
@@ -1394,8 +1467,8 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
   const cteBindings = new Map<string, unknown>();
   const cteRefs: unknown[] = [];
   for (const cte of rel.ctes) {
-    const query = (await buildDrizzleRelBuilderForStrategy(cte.query, options, context)).builder;
-    const cteRef = db.$with(cte.name).as(query);
+    const query = (await buildDrizzleRelBuilderForStrategy(cte.query, options, context, db)).builder;
+    const cteRef = dbWithCtes.$with(cte.name).as(query);
     cteBindings.set(cte.name, cteRef);
     cteRefs.push(cteRef);
   }
@@ -1442,7 +1515,7 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
     }
   }
 
-  let builder = db.with(...cteRefs).select(selection).from(source) as DrizzleExecutableBuilder;
+  let builder = dbWithCtes.with(...cteRefs).select(selection).from(source) as DrizzleExecutableBuilder;
 
   const whereClauses: SQL[] = [];
   for (const clause of body.cteScan.where ?? []) {
@@ -2274,6 +2347,7 @@ function toAliasColumnRef(
 
 interface DrizzleRelExecutionContext<TContext> {
   options: CreateDrizzleProviderOptions<TContext>;
+  db: DrizzleQueryExecutor;
   tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>;
   context: TContext;
   cteRows: Map<string, QueryRow[]>;
@@ -2285,8 +2359,10 @@ async function executeDrizzleRel<TContext>(
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
 ): Promise<QueryRow[]> {
+  const db = await resolveDrizzleDb(options, context);
   const executionContext: DrizzleRelExecutionContext<TContext> = {
     options,
+    db,
     tableConfigs: options.tables as Record<string, DrizzleProviderTableConfig<TContext>>,
     context,
     cteRows: new Map<string, QueryRow[]>(),
@@ -2352,7 +2428,7 @@ async function executeDrizzleRelScan<TContext>(
 
   const scope = tableConfig.scope ? await tableConfig.scope(context.context) : undefined;
   const rows = await runDrizzleScan({
-    db: context.options.db,
+    db: context.db,
     tableName: scan.table,
     table: tableConfig.table,
     columns: resolveColumns(tableConfig, scan.table),
