@@ -37,6 +37,7 @@ import {
   type ProviderFragment,
   type ProviderLookupManyRequest,
   type QueryRow,
+  type RelExpr,
   type RelNode,
   type ScanFilterClause,
   type ScanOrderBy,
@@ -779,7 +780,14 @@ function resolveDrizzleRelCompileStrategy(
   tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
 ): DrizzleRelCompileStrategy | null {
   if (canCompileBasicRel(node, tableConfigs)) {
-    return "basic";
+    try {
+      buildSingleQueryPlan(node, tableConfigs);
+      return "basic";
+    } catch (error) {
+      if (!(error instanceof UnsupportedSingleQueryPlanError)) {
+        throw error;
+      }
+    }
   }
   if (canCompileSetOpRel(node, tableConfigs)) {
     return "set_op";
@@ -1131,7 +1139,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
 
   for (const filterNode of plan.pipeline.filters) {
     for (const clause of filterNode.where ?? []) {
-      whereClauses.push(toSqlConditionFromRelFilterClause(clause, plan.joinPlan.aliases));
+      whereClauses.push(toSqlConditionFromRelFilterClause(clause, plan));
     }
   }
 
@@ -1587,20 +1595,9 @@ function resolveSingleQuerySortSource<TContext>(
   }
 
   if (!plan.pipeline.aggregate) {
-    if (plan.pipeline.project) {
-      const projected = plan.pipeline.project.columns.find(
-        (column) => column.output === term.source.column,
-      );
-      if (projected) {
-        const projectedColumn = requireColumnProjectMapping(projected);
-        return resolveColumnRefFromAliasMap(
-          plan.joinPlan.aliases,
-          toAliasColumnRef(
-            projectedColumn.source.alias ?? projectedColumn.source.table,
-            projectedColumn.source.column,
-          ),
-        );
-      }
+    const projected = resolveProjectedSelectionSource(term.source.column, plan);
+    if (projected) {
+      return projected;
     }
     return resolveColumnRefFromAliasMap(plan.joinPlan.aliases, {
       column: term.source.column,
@@ -2006,11 +2003,10 @@ function buildSingleQuerySelection<TContext>(
 
   if (plan.pipeline.project) {
     for (const rawMapping of plan.pipeline.project.columns) {
-      const mapping = requireColumnProjectMapping(rawMapping);
-      selection[mapping.output] = resolveColumnRefFromAliasMap(
-        plan.joinPlan.aliases,
-        toAliasColumnRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
-      );
+      const resolved = resolveProjectedSqlExpression(rawMapping, plan.joinPlan.aliases, true);
+      selection[rawMapping.output] = isRelProjectColumnMapping(rawMapping)
+        ? resolved
+        : (resolved as SQL).as(rawMapping.output);
     }
     return selection;
   }
@@ -2057,37 +2053,129 @@ function buildAggregateMetricSql<TContext>(
   }
 }
 
+function resolveProjectedSelectionSource<TContext>(
+  output: string,
+  plan: SingleQueryPlan<TContext>,
+): SQL | AnyColumn | null {
+  const mapping = plan.pipeline.project?.columns.find((column) => column.output === output);
+  if (!mapping) {
+    return null;
+  }
+
+  return resolveProjectedSqlExpression(mapping, plan.joinPlan.aliases, false);
+}
+
+function resolveProjectedSqlExpression<TContext>(
+  mapping: Extract<RelNode, { kind: "project" }>["columns"][number],
+  aliases: Map<string, ScanBinding<TContext>>,
+  allowSourceOnly: boolean,
+): SQL | AnyColumn {
+  if (isRelProjectColumnMapping(mapping)) {
+    const source = resolveColumnRefFromAliasMap(
+      aliases,
+      toAliasColumnRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
+    );
+    return allowSourceOnly ? source : sql`${source}`;
+  }
+
+  return buildSqlExpressionFromRelExpr(mapping.expr, aliases);
+}
+
+function buildSqlExpressionFromRelExpr<TContext>(
+  expr: RelExpr,
+  aliases: Map<string, ScanBinding<TContext>>,
+): SQL | AnyColumn {
+  switch (expr.kind) {
+    case "literal":
+      return sql`${expr.value}`;
+    case "column":
+      return resolveColumnRefFromAliasMap(
+        aliases,
+        toAliasColumnRef(expr.ref.alias ?? expr.ref.table, expr.ref.column),
+      );
+    case "function": {
+      const args = expr.args.map((arg) => buildSqlExpressionFromRelExpr(arg, aliases));
+      switch (expr.name) {
+        case "eq":
+          return sql`${args[0]} = ${args[1]}`;
+        case "neq":
+          return sql`${args[0]} <> ${args[1]}`;
+        case "gt":
+          return sql`${args[0]} > ${args[1]}`;
+        case "gte":
+          return sql`${args[0]} >= ${args[1]}`;
+        case "lt":
+          return sql`${args[0]} < ${args[1]}`;
+        case "lte":
+          return sql`${args[0]} <= ${args[1]}`;
+        case "add":
+          return sql`(${args[0]} + ${args[1]})`;
+        case "subtract":
+          return sql`(${args[0]} - ${args[1]})`;
+        case "multiply":
+          return sql`(${args[0]} * ${args[1]})`;
+        case "divide":
+          return sql`(${args[0]} / ${args[1]})`;
+        case "and":
+          return sql`(${sql.join(args.map((arg) => sql`${arg}`), sql` and `)})`;
+        case "or":
+          return sql`(${sql.join(args.map((arg) => sql`${arg}`), sql` or `)})`;
+        case "not":
+          return sql`not (${args[0]})`;
+        default:
+          throw new UnsupportedSingleQueryPlanError(
+            `Unsupported computed projection function "${expr.name}" in Drizzle single-query pushdown.`,
+          );
+      }
+    }
+  }
+}
+
+function resolveFilterSource<TContext>(
+  column: string,
+  plan: SingleQueryPlan<TContext>,
+): AnyColumn | SQL {
+  if (!plan.pipeline.aggregate) {
+    const projected = resolveProjectedSelectionSource(column, plan);
+    if (projected) {
+      return projected;
+    }
+  }
+
+  return resolveColumnRefFromFilterColumn(plan.joinPlan.aliases, column);
+}
+
 function toSqlConditionFromRelFilterClause<TContext>(
   clause: ScanFilterClause,
-  aliases: Map<string, ScanBinding<TContext>>,
+  plan: SingleQueryPlan<TContext>,
 ): SQL {
-  const source = resolveColumnRefFromFilterColumn(aliases, clause.column);
+  const source = resolveFilterSource(clause.column, plan);
   return toSqlConditionFromSource(clause, source);
 }
 
 function toSqlConditionFromSource(
   clause: ScanFilterClause,
-  source: AnyColumn,
+  source: AnyColumn | SQL,
 ): SQL {
   switch (clause.op) {
     case "eq":
-      return eq(source, clause.value as never);
+      return sql`${source} = ${clause.value as never}`;
     case "neq":
-      return ne(source, clause.value as never);
+      return sql`${source} <> ${clause.value as never}`;
     case "gt":
-      return gt(source, clause.value as never);
+      return sql`${source} > ${clause.value as never}`;
     case "gte":
-      return gte(source, clause.value as never);
+      return sql`${source} >= ${clause.value as never}`;
     case "lt":
-      return lt(source, clause.value as never);
+      return sql`${source} < ${clause.value as never}`;
     case "lte":
-      return lte(source, clause.value as never);
+      return sql`${source} <= ${clause.value as never}`;
     case "in": {
       const values = clause.values.filter((value) => value != null);
       if (values.length === 0) {
         return impossibleCondition();
       }
-      return inArray(source, values as never[]);
+      return sql`${source} in ${values as never[]}`;
     }
     case "not_in": {
       const values = clause.values.filter((value) => value != null);
@@ -2105,9 +2193,9 @@ function toSqlConditionFromSource(
     case "is_not_distinct_from":
       return sql`${source} is not distinct from ${clause.value as never}`;
     case "is_null":
-      return isNull(source);
+      return sql`${source} is null`;
     case "is_not_null":
-      return isNotNull(source);
+      return sql`${source} is not null`;
   }
 }
 
@@ -2306,8 +2394,11 @@ async function executeDrizzleRelProject<TContext>(
   return rows.map((row) => {
     const out: QueryRow = {};
     for (const rawMapping of project.columns) {
-      const mapping = requireColumnProjectMapping(rawMapping);
-      out[mapping.output] = readRowValue(row, toColumnKey(mapping.source)) ?? null;
+      if (isRelProjectColumnMapping(rawMapping)) {
+        out[rawMapping.output] = readRowValue(row, toColumnKey(rawMapping.source)) ?? null;
+        continue;
+      }
+      out[rawMapping.output] = evaluateRelExpr(rawMapping.expr, row);
     }
     return out;
   });
@@ -2548,6 +2639,48 @@ function prefixRow(row: QueryRow, alias: string): InternalRow {
     out[`${alias}.${column}`] = value;
   }
   return out;
+}
+
+function evaluateRelExpr(expr: RelExpr, row: Record<string, unknown>): unknown {
+  switch (expr.kind) {
+    case "literal":
+      return expr.value;
+    case "column":
+      return readRowValue(row, toColumnKey(expr.ref));
+    case "function": {
+      const args = expr.args.map((arg) => evaluateRelExpr(arg, row));
+      switch (expr.name) {
+        case "eq":
+          return args[0] != null && args[0] === args[1];
+        case "neq":
+          return args[0] != null && args[0] !== args[1];
+        case "gt":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) > 0;
+        case "gte":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) >= 0;
+        case "lt":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) < 0;
+        case "lte":
+          return args[0] != null && args[1] != null && compareNonNull(args[0], args[1]) <= 0;
+        case "add":
+          return toFiniteNumber(args[0], "SUM") + toFiniteNumber(args[1], "SUM");
+        case "subtract":
+          return toFiniteNumber(args[0], "SUM") - toFiniteNumber(args[1], "SUM");
+        case "multiply":
+          return toFiniteNumber(args[0], "SUM") * toFiniteNumber(args[1], "SUM");
+        case "divide":
+          return toFiniteNumber(args[0], "SUM") / toFiniteNumber(args[1], "SUM");
+        case "and":
+          return args.every(Boolean);
+        case "or":
+          return args.some(Boolean);
+        case "not":
+          return !args[0];
+        default:
+          throw new Error(`Unsupported rel expression function: ${expr.name}`);
+      }
+    }
+  }
 }
 
 function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): boolean {

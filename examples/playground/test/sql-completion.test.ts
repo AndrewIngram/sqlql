@@ -30,6 +30,7 @@ describe("playground/sql-completion", () => {
     expect(suggestions.context).toBe("alias_column");
     expect(suggestions.labels).toContain("id");
     expect(suggestions.labels).toContain("total_cents");
+    expect(suggestions.labels).toContain("total_dollars");
   });
 
   it("includes SQL functions in general context", () => {

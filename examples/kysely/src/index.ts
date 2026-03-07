@@ -55,55 +55,98 @@ async function main(): Promise<void> {
 
   const executableSchema = createExecutableSchema<DemoContext>(({ table, view }) => {
     const myOrders = table(ordersEntity, {
-      columns: ({ col }) => ({
+      columns: ({ col, expr }) => ({
         id: col.id("id"),
         vendorId: col.string("vendor_id"),
         totalCents: col.integer("total_cents"),
         createdAt: col.string("created_at"),
+        totalDollars: col.real(
+          expr.divide(col("totalCents"), expr.literal(100)),
+          { nullable: false },
+        ),
+        isLargeOrder: col.boolean(
+          expr.gte(col("totalCents"), expr.literal(3000)),
+          { nullable: false },
+        ),
       }),
     });
 
-    const vendorsForOrg = table(vendorsEntity, {
-      columns: ({ col }) => ({
-        id: col.id("id"),
-        name: col.string("name"),
-      }),
-    });
+    const myOrderFacts = view(
+      ({ scan, join, col, expr }) =>
+        join({
+          left: scan(myOrders),
+          right: scan(vendorsEntity),
+          on: expr.eq(col(myOrders, "vendorId"), col(vendorsEntity, "id")),
+          type: "inner",
+        }),
+      {
+        columns: ({ col }) => ({
+          orderId: col.id(myOrders, "id"),
+          vendorId: col.string(myOrders, "vendorId", { nullable: false }),
+          vendorName: col.string(vendorsEntity, "name", { nullable: false }),
+          totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+          totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
+          isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
+        }),
+      },
+    );
 
     return {
       tables: {
         myOrders,
-        vendorsForOrg,
-        myVendorSpend: view({
-          rel: ({ scan, join, aggregate, col, expr, agg }) =>
+        myOrderFacts,
+        myVendorSpend: view(
+          ({ scan, aggregate, col, agg }) =>
             aggregate({
-              from: join({
-                left: scan(myOrders),
-                right: scan(vendorsForOrg),
-                on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
-                type: "inner",
-              }),
+              from: scan(myOrderFacts),
               groupBy: {
-                vendorId: col(vendorsForOrg, "id"),
-                vendorName: col(vendorsForOrg, "name"),
+                vendorId: col(myOrderFacts, "vendorId"),
+                vendorName: col(myOrderFacts, "vendorName"),
               },
               measures: {
-                totalSpendCents: agg.sum(col(myOrders, "totalCents")),
+                totalSpendCents: agg.sum(col(myOrderFacts, "totalCents")),
                 orderCount: agg.count(),
               },
             }),
-          columns: ({ col }) => ({
-            vendorId: col.id("vendorId"),
-            vendorName: col.string("vendorName"),
-            totalSpendCents: col.integer("totalSpendCents"),
-            orderCount: col.integer("orderCount"),
-          }),
-        }),
+          {
+            columns: ({ col }) => ({
+              vendorId: col.id("vendorId"),
+              vendorName: col.string("vendorName"),
+              totalSpendCents: col.integer("totalSpendCents"),
+              orderCount: col.integer("orderCount"),
+            }),
+          },
+        ),
       },
     };
   });
 
-  const rows = await executableSchema.query({
+  const virtualRows = await executableSchema.query({
+    context: {
+      orgId: "org_1",
+      userId: "u1",
+    },
+    sql: `
+      SELECT id, totalDollars, isLargeOrder
+      FROM myOrders
+      WHERE totalDollars >= 20
+      ORDER BY totalDollars DESC
+    `,
+  });
+
+  const orderFactRows = await executableSchema.query({
+    context: {
+      orgId: "org_1",
+      userId: "u1",
+    },
+    sql: `
+      SELECT orderId, vendorName, totalDollars, isLargeOrder
+      FROM myOrderFacts
+      ORDER BY totalDollars DESC
+    `,
+  });
+
+  const spendRows = await executableSchema.query({
     context: {
       orgId: "org_1",
       userId: "u1",
@@ -115,24 +158,12 @@ async function main(): Promise<void> {
     `,
   });
 
-  const orderRows = await executableSchema.query({
-    context: {
-      orgId: "org_1",
-      userId: "u1",
-    },
-    sql: `
-      SELECT o.id, v.name, o.totalCents
-      FROM myOrders o
-      JOIN vendorsForOrg v ON o.vendorId = v.id
-      WHERE o.totalCents >= 2000
-      ORDER BY o.totalCents DESC
-    `,
-  });
-
-  console.log("myVendorSpend:");
-  console.log(rows);
-  console.log("joined rows:");
-  console.log(orderRows);
+  console.log("myOrders with virtual columns:");
+  console.log(virtualRows);
+  console.log("myOrderFacts view:");
+  console.log(orderFactRows);
+  console.log("myVendorSpend aggregate view:");
+  console.log(spendRows);
 
   await db.destroy();
   sqlite.close();

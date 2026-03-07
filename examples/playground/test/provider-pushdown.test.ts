@@ -27,10 +27,9 @@ describe("playground/provider-pushdown", () => {
     }
 
     const pushdownPresetIds = [
+      "orders_calculated_columns",
       "orders_with_vendors",
       "vendor_spend",
-      "items_with_products",
-      "top_products",
       "status_distinct",
       "paid_orders",
       "preferred_vendor_orders",
@@ -82,14 +81,18 @@ describe("playground/provider-pushdown", () => {
         ? snapshot.executedOperations[0].sql.toLowerCase()
         : "";
       if (
+        presetId === "orders_calculated_columns"
+      ) {
+        expect(sqlText).toContain("/");
+        expect(sqlText).toContain("order by");
+      }
+      if (
         presetId === "orders_with_vendors" ||
-        presetId === "vendor_spend" ||
-        presetId === "items_with_products" ||
-        presetId === "top_products"
+        presetId === "vendor_spend"
       ) {
         expect(sqlText).toContain(" join ");
       }
-      if (presetId === "vendor_spend" || presetId === "top_products") {
+      if (presetId === "vendor_spend") {
         expect(sqlText).toContain("group by");
       }
       if (presetId === "status_distinct") {

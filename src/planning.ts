@@ -31,12 +31,15 @@ import {
 } from "./provider";
 import type { ScanFilterClause, SchemaDefinition, SchemaViewRelNode } from "./schema";
 import {
+  createPhysicalBindingFromEntity,
+  createTableDefinitionFromEntity,
   getNormalizedColumnBindings,
   getNormalizedColumnSourceMap,
   getNormalizedTableBinding,
   isNormalizedSourceColumnBinding,
   resolveNormalizedColumnSource,
   type ColumnDefinition,
+  type NormalizedColumnBinding,
   type NormalizedPhysicalTableBinding,
 } from "./schema";
 
@@ -431,15 +434,22 @@ function expandRelViewsInternal<TContext>(
       const expandedView = expandRelViewsInternal(current, schema, context);
       current = expandedView.node;
 
-      const viewAliasMapping: ViewAliasColumnMap = {};
-      for (const [logicalColumn, source] of Object.entries(
-        getNormalizedColumnSourceMap(binding),
-      )) {
-        const resolved = resolveMappedColumnRef(
-          parseRelColumnRef(source),
-          expandedView.aliases,
+      const columnBindings = getNormalizedColumnBindings(binding);
+      const hasCalculatedViewColumns = Object.values(columnBindings).some(
+        (columnBinding) => !isNormalizedSourceColumnBinding(columnBinding),
+      );
+
+      let viewAliasMapping: ViewAliasColumnMap;
+      if (hasCalculatedViewColumns) {
+        current = buildPlannerViewProjection(alias, current, binding, expandedView.aliases);
+        viewAliasMapping = Object.fromEntries(
+          Object.keys(columnBindings).map((column) => [column, { alias, column }]),
         );
-        viewAliasMapping[logicalColumn] = resolved;
+      } else {
+        viewAliasMapping = {};
+        for (const [logicalColumn, source] of Object.entries(getNormalizedColumnSourceMap(binding))) {
+          viewAliasMapping[logicalColumn] = resolveViewSourceRef(source, expandedView.aliases);
+        }
       }
 
       if (node.where && node.where.length > 0) {
@@ -538,17 +548,45 @@ function expandRelViewsInternal<TContext>(
     }
     case "aggregate": {
       const input = expandRelViewsInternal(node.input, schema, context);
+      const groupBy = node.groupBy.map((column) => resolveMappedColumnRef(column, input.aliases));
+      const metrics = node.metrics.map((metric) => ({
+        ...metric,
+        ...(metric.column
+          ? { column: resolveMappedColumnRef(metric.column, input.aliases) }
+          : {}),
+      }));
+      const aggregateNode: RelNode = {
+        ...node,
+        input: input.node,
+        groupBy,
+        metrics,
+      };
+
+      const expectedOutputs = node.output.map((column) => column.name);
+      const actualOutputs = [
+        ...groupBy.map((column) => column.column),
+        ...metrics.map((metric) => metric.as),
+      ];
+
+      if (expectedOutputs.every((name, index) => name === actualOutputs[index])) {
+        return {
+          node: aggregateNode,
+          aliases: input.aliases,
+        };
+      }
+
       return {
         node: {
-          ...node,
-          input: input.node,
-          groupBy: node.groupBy.map((column) => resolveMappedColumnRef(column, input.aliases)),
-          metrics: node.metrics.map((metric) => ({
-            ...metric,
-            ...(metric.column
-              ? { column: resolveMappedColumnRef(metric.column, input.aliases) }
-              : {}),
+          id: nextRelId("project"),
+          kind: "project",
+          convention: "local",
+          input: aggregateNode,
+          columns: expectedOutputs.map((output, index) => ({
+            kind: "column" as const,
+            source: { column: actualOutputs[index] ?? output },
+            output,
           })),
+          output: node.output,
         },
         aliases: input.aliases,
       };
@@ -779,12 +817,84 @@ function expandCalculatedScan(
   }
 
   const aliasMap: ViewAliasColumnMap = Object.fromEntries(
-    [...referencedColumns].map((column) => [column, { alias, column }]),
+    [...referencedColumns].map((column) => [column, { column }]),
   );
   return {
     node: current,
     aliases: new Map([[alias, aliasMap]]),
   };
+}
+
+function buildPlannerViewProjection(
+  alias: string,
+  input: RelNode,
+  binding: Parameters<typeof getNormalizedColumnBindings>[0],
+  aliases: Map<string, ViewAliasColumnMap>,
+): RelNode {
+  const columnBindings = getNormalizedColumnBindings(binding);
+  const columns = Object.entries(columnBindings).map(([output, columnBinding]) => {
+    if (isNormalizedSourceColumnBinding(columnBinding)) {
+      return {
+        kind: "column" as const,
+        source: resolveViewSourceRef(columnBinding.source, aliases),
+        output: `${alias}.${output}`,
+      };
+    }
+
+    return {
+      kind: "expr" as const,
+      expr: rewriteViewBindingExprForPlanner(columnBinding.expr, columnBindings, aliases),
+      output: `${alias}.${output}`,
+    };
+  });
+
+  return {
+    id: nextRelId("view_project"),
+    kind: "project",
+    convention: "local",
+    input,
+    columns,
+    output: Object.keys(columnBindings).map((column) => ({ name: `${alias}.${column}` })),
+  };
+}
+
+function rewriteViewBindingExprForPlanner(
+  expr: RelExpr,
+  columnBindings: Record<string, NormalizedColumnBinding>,
+  aliases: Map<string, ViewAliasColumnMap>,
+): RelExpr {
+  switch (expr.kind) {
+    case "literal":
+      return expr;
+    case "function":
+      return {
+        kind: "function",
+        name: expr.name,
+        args: expr.args.map((arg) => rewriteViewBindingExprForPlanner(arg, columnBindings, aliases)),
+      };
+    case "column": {
+      if (!expr.ref.table && !expr.ref.alias) {
+        const binding = columnBindings[expr.ref.column];
+        if (binding && isNormalizedSourceColumnBinding(binding)) {
+          return {
+            kind: "column",
+            ref: resolveViewSourceRef(binding.source, aliases),
+          };
+        }
+        return expr;
+      }
+
+      return {
+        kind: "column",
+        ref: resolveMappedColumnRef(expr.ref, aliases),
+      };
+    }
+  }
+}
+
+function resolveViewSourceRef(source: string, aliases: Map<string, ViewAliasColumnMap>): RelColumnRef {
+  const ref = parseRelColumnRef(source);
+  return ref.alias || ref.table ? resolveMappedColumnRef(ref, aliases) : ref;
 }
 
 function mapViewColumnName(
@@ -1010,8 +1120,8 @@ function compileViewRelForPlanner(
 function compileSchemaViewRelForPlanner(node: SchemaViewRelNode, schema: SchemaDefinition): RelNode {
   switch (node.kind) {
     case "scan": {
-      const table = schema.tables[node.table];
-      if (!table) {
+      const table = schema.tables[node.table] ?? (node.entity ? createTableDefinitionFromEntity(node.entity) : undefined);
+      if (!table || (node.entity && Object.keys(table.columns).length === 0)) {
         throw new Error(`Unknown table in view rel scan: ${node.table}`);
       }
       const select = Object.keys(table.columns);
@@ -1020,6 +1130,7 @@ function compileSchemaViewRelForPlanner(node: SchemaViewRelNode, schema: SchemaD
         kind: "scan",
         convention: "local",
         table: node.table,
+        ...(node.entity ? { entity: node.entity } : {}),
         alias: node.table,
         select,
         output: select.map((column) => ({
@@ -1302,15 +1413,160 @@ function normalizeRelForProvider(node: RelNode, schema: SchemaDefinition): RelNo
     }
   };
 
-  return visit(node);
+  return simplifyProviderProjects(visit(node));
+}
+
+function simplifyProviderProjects(node: RelNode): RelNode {
+  switch (node.kind) {
+    case "scan":
+    case "sql":
+      return node;
+    case "filter":
+      return {
+        ...node,
+        input: simplifyProviderProjects(node.input),
+      };
+    case "project": {
+      const simplified: RelProjectNode = {
+        ...node,
+        input: simplifyProviderProjects(node.input),
+      };
+      return hoistProjectAcrossUnaryChain(simplified);
+    }
+    case "aggregate":
+      return {
+        ...node,
+        input: simplifyProviderProjects(node.input),
+      };
+    case "window":
+      return {
+        ...node,
+        input: simplifyProviderProjects(node.input),
+      };
+    case "sort":
+      return {
+        ...node,
+        input: simplifyProviderProjects(node.input),
+      };
+    case "limit_offset":
+      return {
+        ...node,
+        input: simplifyProviderProjects(node.input),
+      };
+    case "join":
+      return {
+        ...node,
+        left: simplifyProviderProjects(node.left),
+        right: simplifyProviderProjects(node.right),
+      };
+    case "set_op":
+      return {
+        ...node,
+        left: simplifyProviderProjects(node.left),
+        right: simplifyProviderProjects(node.right),
+      };
+    case "with":
+      return {
+        ...node,
+        ctes: node.ctes.map((cte) => ({
+          ...cte,
+          query: simplifyProviderProjects(cte.query),
+        })),
+        body: simplifyProviderProjects(node.body),
+      };
+  }
+}
+
+function hoistProjectAcrossUnaryChain(project: RelProjectNode): RelNode {
+  const unaryChain: Array<
+    Extract<RelNode, { kind: "filter" | "sort" | "limit_offset" }>
+  > = [];
+  let current = project.input;
+
+  while (
+    current.kind === "filter" ||
+    current.kind === "sort" ||
+    current.kind === "limit_offset"
+  ) {
+    unaryChain.push(current);
+    current = current.input;
+  }
+
+  if (current.kind !== "project") {
+    return project;
+  }
+
+  const mergedColumns = composeProjectMappings(project.columns, current.columns);
+  if (!mergedColumns) {
+    return project;
+  }
+
+  let rebuiltInput: RelNode = current.input;
+  for (let index = unaryChain.length - 1; index >= 0; index -= 1) {
+    const unary = unaryChain[index];
+    if (!unary) {
+      continue;
+    }
+    rebuiltInput = {
+      ...unary,
+      input: rebuiltInput,
+    };
+  }
+
+  return {
+    ...project,
+    input: rebuiltInput,
+    columns: mergedColumns,
+  };
+}
+
+function composeProjectMappings(
+  outer: RelProjectNode["columns"],
+  inner: RelProjectNode["columns"],
+): RelProjectNode["columns"] | null {
+  const innerByOutput = new Map(inner.map((mapping) => [mapping.output, mapping] as const));
+  const merged: RelProjectNode["columns"] = [];
+
+  for (const mapping of outer) {
+    if (!isRelProjectColumnMapping(mapping)) {
+      return null;
+    }
+
+    if (mapping.source.alias || mapping.source.table) {
+      return null;
+    }
+
+    const innerMapping = innerByOutput.get(mapping.source.column);
+    if (!innerMapping) {
+      return null;
+    }
+
+    if (isRelProjectColumnMapping(innerMapping)) {
+      merged.push({
+        kind: "column",
+        source: innerMapping.source,
+        output: mapping.output,
+      });
+      continue;
+    }
+
+    merged.push({
+      kind: "expr",
+      expr: innerMapping.expr,
+      output: mapping.output,
+    });
+  }
+
+  return merged;
 }
 
 function normalizeScanForProvider(node: RelScanNode, schema: SchemaDefinition): RelScanNode {
-  const binding = getNormalizedTableBinding(schema, node.table);
+  const binding = getNormalizedTableBinding(schema, node.table)
+    ?? (node.entity ? createPhysicalBindingFromEntity(node.entity) : undefined);
   if (!binding || binding.kind !== "physical") {
     return node;
   }
-  const table = schema.tables[node.table];
+  const table = schema.tables[node.table] ?? (node.entity ? createTableDefinitionFromEntity(node.entity) : undefined);
 
   const mapColumn = (column: string): string => resolveNormalizedColumnSource(binding, column);
   const mapClause = (clause: ScanFilterClause): ScanFilterClause => {
@@ -1324,6 +1580,7 @@ function normalizeScanForProvider(node: RelScanNode, schema: SchemaDefinition): 
   return {
     ...node,
     table: binding.entity,
+    ...(node.entity ? { entity: node.entity } : {}),
     select: node.select.map(mapColumn),
     ...(node.where
       ? {
@@ -1409,7 +1666,8 @@ function collectAliasToSourceMappings(node: RelNode, schema: SchemaDefinition): 
   const visit = (current: RelNode): void => {
     switch (current.kind) {
       case "scan": {
-        const binding = getNormalizedTableBinding(schema, current.table);
+        const binding = getNormalizedTableBinding(schema, current.table)
+          ?? (current.entity ? createPhysicalBindingFromEntity(current.entity) : undefined);
         if (binding?.kind !== "physical") {
           return;
         }
@@ -1502,14 +1760,17 @@ function resolveSingleProvider(
   const visit = (current: RelNode, scopedCteNames: Set<string>): boolean => {
     switch (current.kind) {
       case "scan": {
-        if (scopedCteNames.has(current.table) || !schema.tables[current.table]) {
+        if (scopedCteNames.has(current.table)) {
+          return true;
+        }
+        if (!schema.tables[current.table] && !current.entity) {
           return true;
         }
         const normalized = getNormalizedTableBinding(schema, current.table);
         if (normalized?.kind === "view") {
           return false;
         }
-        providers.add(resolveTableProvider(schema, current.table));
+        providers.add(current.entity?.provider ?? resolveTableProvider(schema, current.table));
         return true;
       }
       case "sql": {
@@ -1567,7 +1828,13 @@ function assignConventions(
 ): RelNode {
   switch (node.kind) {
     case "scan": {
-      if (cteNames.has(node.table) || !schema.tables[node.table]) {
+      if (cteNames.has(node.table)) {
+        return {
+          ...node,
+          convention: "local",
+        };
+      }
+      if (!schema.tables[node.table] && !node.entity) {
         return {
           ...node,
           convention: "local",
@@ -1580,7 +1847,7 @@ function assignConventions(
           convention: "local",
         };
       }
-      const provider = resolveTableProvider(schema, node.table);
+      const provider = node.entity?.provider ?? resolveTableProvider(schema, node.table);
       return {
         ...node,
         convention: `provider:${provider}`,
@@ -3611,8 +3878,8 @@ function resolveLookupJoinCandidate<TContext>(
     return null;
   }
 
-  const leftProvider = resolveTableProvider(schema, leftScan.table);
-  const rightProvider = resolveTableProvider(schema, rightScan.table);
+  const leftProvider = leftScan.entity?.provider ?? resolveTableProvider(schema, leftScan.table);
+  const rightProvider = rightScan.entity?.provider ?? resolveTableProvider(schema, rightScan.table);
   if (leftProvider === rightProvider) {
     return null;
   }

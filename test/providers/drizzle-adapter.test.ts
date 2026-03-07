@@ -644,4 +644,129 @@ describe("drizzle adapter", () => {
     ]);
     expect(calls.executeCount).toBe(1);
   });
+
+  it("pushes down calculated projection rel fragments with filter and sort", async () => {
+    const ordersTable = {
+      name: "orders",
+      id: { name: "id" },
+      total_cents: { name: "total_cents" },
+      _: { config: { dialect: "pg" } },
+    };
+
+    const { db, calls } = createRecordingDb(
+      new Map<object, TestRow[]>([
+        [
+          ordersTable,
+          [
+            {
+              id: "o1",
+              total_cents: 25000,
+              total_dollars: 250,
+              is_large_order: false,
+            },
+          ],
+        ],
+      ]),
+    );
+
+    const provider = createDrizzleProvider({
+      db,
+      tables: {
+        orders: { table: ordersTable },
+      },
+    });
+
+    const rel: RelNode = {
+      id: "project_1",
+      kind: "project",
+      convention: "provider:drizzle",
+      input: {
+        id: "sort_1",
+        kind: "sort",
+        convention: "provider:drizzle",
+        input: {
+          id: "filter_1",
+          kind: "filter",
+          convention: "provider:drizzle",
+          input: {
+            id: "scan_orders",
+            kind: "scan",
+            convention: "provider:drizzle",
+            table: "orders",
+            alias: "o",
+            select: ["id", "total_cents"],
+            output: [],
+          },
+          where: [
+            {
+              column: "total_dollars",
+              op: "gte",
+              value: 200,
+            },
+          ],
+          output: [],
+        },
+        orderBy: [
+          {
+            source: { column: "total_dollars" },
+            direction: "desc",
+          },
+          {
+            source: { column: "id" },
+            direction: "asc",
+          },
+        ],
+        output: [],
+      },
+      columns: [
+        { source: { alias: "o", column: "id" }, output: "id" },
+        { source: { alias: "o", column: "total_cents" }, output: "total_cents" },
+        {
+          kind: "expr",
+          expr: {
+            kind: "function",
+            name: "divide",
+            args: [
+              { kind: "column", ref: { alias: "o", column: "total_cents" } },
+              { kind: "literal", value: 100 },
+            ],
+          },
+          output: "total_dollars",
+        },
+        {
+          kind: "expr",
+          expr: {
+            kind: "function",
+            name: "gte",
+            args: [
+              { kind: "column", ref: { alias: "o", column: "total_cents" } },
+              { kind: "literal", value: 30000 },
+            ],
+          },
+          output: "is_large_order",
+        },
+      ],
+      output: [],
+    };
+
+    expect(provider.canExecute({ kind: "rel", provider: "drizzle", rel }, {})).toBe(true);
+
+    const plan = unwrapProviderOperationResult(
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "drizzle",
+          rel,
+        },
+        {},
+      ),
+    );
+    const rows = unwrapProviderOperationResult(await provider.execute(plan, {}));
+
+    expect(rows).toEqual([
+      { id: "o1", total_cents: 25000, total_dollars: 250, is_large_order: false },
+    ]);
+    expect(calls.whereConditions).toHaveLength(1);
+    expect(calls.orderByClauses).toHaveLength(1);
+  });
 });

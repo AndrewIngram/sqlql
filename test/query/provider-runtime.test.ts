@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDataEntityHandle,
   defineSchema,
+  getNormalizedTableBinding,
   type ProviderAdapter,
   type ProviderFragment,
   type QueryRow,
@@ -724,22 +725,24 @@ describe("query/provider runtime", () => {
             total_cents: { source: "total_cents", type: "integer", nullable: false },
           },
         }),
-        order_spend: view({
-            rel: () =>
-              rel.aggregate({
-                from: rel.scan("my_orders"),
-                groupBy: {
-                  order_id: col("my_orders.id"),
-                },
-                measures: {
-                  spend: agg.sum(col("my_orders.total_cents")),
-                },
+        order_spend: view(
+          () =>
+            rel.aggregate({
+              from: rel.scan("my_orders"),
+              groupBy: {
+                order_id: col("my_orders.id"),
+              },
+              measures: {
+                spend: agg.sum(col("my_orders.total_cents")),
+              },
             }),
-          columns: {
-            order_id: col("id"),
-            spend: col("spend"),
+          {
+            columns: ({ col }) => ({
+              order_id: col.string("order_id", { nullable: false }),
+              spend: col.integer("spend"),
+            }),
           },
-        }),
+        ),
       },
     }));
 
@@ -787,6 +790,781 @@ describe("query/provider runtime", () => {
     expect(rows).toEqual([
       { order_id: "o1", spend: 2000 },
       { order_id: "o2", spend: 700 },
+    ]);
+  });
+
+  it("executes calculated columns on physical tables with select, filter, and order by", async () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table }) => ({
+      tables: {
+        myOrders: table(ordersEntity, {
+          columns: ({ col, expr }) => ({
+            id: col.id("id"),
+            totalCents: col.integer("totalCents"),
+            totalDollars: col.real(
+              expr.divide(col("totalCents"), expr.literal(100)),
+              { nullable: false },
+            ),
+            isLargeOrder: col.boolean(
+              expr.gte(col("totalCents"), expr.literal(2000)),
+              { nullable: false },
+            ),
+          }),
+        }),
+      },
+    }));
+
+    expect(getNormalizedTableBinding(schema, "myOrders")).toMatchObject({
+      kind: "physical",
+      columnBindings: {
+        totalDollars: { kind: "expr" },
+      },
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return Result.ok([]);
+          }
+
+          return Result.ok(scanRows([
+            { id: "o1", total_cents: 1200 },
+            { id: "o2", total_cents: 3200 },
+            { id: "o3", total_cents: 2100 },
+          ], fragment.request));
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT id, totalDollars, isLargeOrder
+        FROM myOrders
+        WHERE totalDollars >= 12
+        ORDER BY totalDollars DESC
+      `,
+    });
+
+    expect(rows).toEqual([
+      { id: "o2", totalDollars: 32, isLargeOrder: true },
+      { id: "o3", totalDollars: 21, isLargeOrder: true },
+      { id: "o1", totalDollars: 12, isLargeOrder: false },
+    ]);
+  });
+
+  it("coerces pushed-down calculated table outputs back to declared logical types", async () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table }) => ({
+      tables: {
+        myOrders: table(ordersEntity, {
+          columns: ({ col, expr }) => ({
+            id: col.id("id"),
+            totalCents: col.integer("totalCents"),
+            totalDollars: col.real(
+              expr.divide(col("totalCents"), expr.literal(100)),
+              { nullable: false },
+            ),
+            isLargeOrder: col.boolean(
+              expr.gte(col("totalCents"), expr.literal(20000)),
+              { nullable: false },
+            ),
+          }),
+        }),
+      },
+    }));
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "rel";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute() {
+          return Result.ok([
+            {
+              id: "o1",
+              totalDollars: "250",
+              isLargeOrder: false,
+            },
+          ]);
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT id, totalDollars, isLargeOrder
+        FROM myOrders
+        WHERE totalDollars >= 200
+        ORDER BY totalDollars DESC, id
+      `,
+    });
+
+    expect(rows).toEqual([
+      {
+        id: "o1",
+        totalDollars: 250,
+        isLargeOrder: false,
+      },
+    ]);
+    expect(typeof rows[0]?.totalDollars).toBe("number");
+  });
+
+  it("coerces pushed-down aggregate and window outputs back to numeric query types", async () => {
+    const schema = defineSchema({
+      tables: {
+        my_orders: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            vendor_id: "text",
+            total_cents: { type: "integer", nullable: false },
+          },
+        },
+        vendors_for_org: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            name: "text",
+          },
+        },
+      },
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "rel";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute() {
+          return Result.ok([
+            {
+              vendor_name: "Acme",
+              spend_cents: "25000",
+              spend_rank: "1",
+            },
+          ]);
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        WITH vendor_totals AS (
+          SELECT
+            v.name AS vendor_name,
+            SUM(o.total_cents) AS spend_cents
+          FROM my_orders o
+          JOIN vendors_for_org v ON o.vendor_id = v.id
+          GROUP BY v.name
+        )
+        SELECT
+          vendor_name,
+          spend_cents,
+          DENSE_RANK() OVER (ORDER BY spend_cents DESC) AS spend_rank
+        FROM vendor_totals
+        ORDER BY spend_rank, vendor_name
+      `,
+    });
+
+    expect(rows).toEqual([
+      {
+        vendor_name: "Acme",
+        spend_cents: 25000,
+        spend_rank: 1,
+      },
+    ]);
+    expect(typeof rows[0]?.spend_cents).toBe("number");
+    expect(typeof rows[0]?.spend_rank).toBe("number");
+  });
+
+  it("executes views that scan data entities directly without intermediate facade tables", async () => {
+    const warehouseProvider = {
+      canExecute(fragment: ProviderFragment) {
+        return fragment.kind === "scan";
+      },
+      async compile(fragment: ProviderFragment) {
+        return Result.ok({
+          provider: "warehouse",
+          kind: fragment.kind,
+          payload: fragment,
+        });
+      },
+      async execute(plan) {
+        const fragment = plan.payload as ProviderFragment;
+        if (fragment.kind !== "scan") {
+          return Result.ok([]);
+        }
+
+        if (fragment.request.table === "orders_raw") {
+          return Result.ok(scanRows([
+            { id: "o1", vendor_id: "v1", total_cents: 1200 },
+            { id: "o2", vendor_id: "v1", total_cents: 800 },
+            { id: "o3", vendor_id: "v2", total_cents: 500 },
+          ], fragment.request));
+        }
+
+        if (fragment.request.table === "vendors_raw") {
+          return Result.ok(scanRows([
+            { id: "v1", name: "Acme" },
+            { id: "v2", name: "Bolt" },
+          ], fragment.request));
+        }
+
+        return Result.ok([]);
+      },
+    } satisfies Omit<ProviderAdapter, "name">;
+
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      adapter: warehouseProvider as unknown as ProviderAdapter,
+      columns: {
+        id: { source: "id", type: "text", nullable: false },
+        vendorId: { source: "vendor_id", type: "text", nullable: false },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+      },
+    });
+    const vendorsEntity = createDataEntityHandle({
+      entity: "vendors_raw",
+      provider: "warehouse",
+      adapter: warehouseProvider as unknown as ProviderAdapter,
+      columns: {
+        id: { source: "id", type: "text", nullable: false },
+        name: { source: "name", type: "text", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ view }) => ({
+      tables: {
+        spendByVendor: view(
+          ({ scan, join, aggregate, col, expr, agg }) =>
+            aggregate({
+              from: join({
+                left: scan(ordersEntity),
+                right: scan(vendorsEntity),
+                on: expr.eq(col(ordersEntity, "vendorId"), col(vendorsEntity, "id")),
+                type: "inner",
+              }),
+              groupBy: {
+                vendorName: col(vendorsEntity, "name"),
+              },
+              measures: {
+                spendCents: agg.sum(col(ordersEntity, "totalCents")),
+              },
+            }),
+          {
+            columns: ({ col }) => ({
+              vendorName: col.string("vendorName", { nullable: false }),
+              spendCents: col.integer("spendCents"),
+            }),
+          },
+        ),
+      },
+    }));
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: warehouseProvider,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT vendorName, spendCents
+        FROM spendByVendor
+        ORDER BY spendCents DESC, vendorName
+      `,
+    });
+
+    expect(rows).toEqual([
+      { vendorName: "Acme", spendCents: 2000 },
+      { vendorName: "Bolt", spendCents: 500 },
+    ]);
+  });
+
+  it("executes composed views that scan other views", async () => {
+    const orderItemsEntity = createDataEntityHandle({
+      entity: "order_items_raw",
+      provider: "warehouse",
+      columns: {
+        orderId: { source: "order_id", type: "text", nullable: false },
+        productId: { source: "product_id", type: "text", nullable: false },
+        quantity: { source: "quantity", type: "integer", nullable: false },
+        lineTotalCents: { source: "line_total_cents", type: "integer", nullable: false },
+      },
+    });
+    const productsEntity = createDataEntityHandle({
+      entity: "products_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        name: { source: "name", type: "text", nullable: false },
+      },
+    });
+    const accessEntity = createDataEntityHandle({
+      entity: "product_access_raw",
+      provider: "warehouse",
+      columns: {
+        productId: { source: "product_id", type: "text", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, view }) => {
+      const myOrderItems = table(orderItemsEntity, {
+        columns: ({ col, expr }) => ({
+          orderId: col.string("orderId"),
+          productId: col.string("productId"),
+          quantity: col.integer("quantity"),
+          lineTotalCents: col.integer("lineTotalCents"),
+          unitPriceCents: col.real(
+            expr.divide(col("lineTotalCents"), col("quantity")),
+            { nullable: false },
+          ),
+        }),
+      });
+
+      const productsForOrg = table(productsEntity, {
+        columns: ({ col }) => ({
+          id: col.id("id"),
+          name: col.string("name"),
+        }),
+      });
+
+      const productAccess = table(accessEntity, {
+        columns: ({ col }) => ({
+          productId: col.string("productId"),
+        }),
+      });
+
+      const activeProducts = view(
+        ({ scan, join, col, expr }) =>
+          join({
+            left: scan(productsForOrg),
+            right: scan(productAccess),
+            on: expr.eq(col(productsForOrg, "id"), col(productAccess, "productId")),
+            type: "inner",
+          }),
+        {
+          columns: ({ col }) => ({
+            id: col.id(productsForOrg, "id"),
+            name: col.string(productsForOrg, "name", { nullable: false }),
+          }),
+        },
+      );
+
+      const myOrderLines = view(
+        ({ scan, join, col, expr }) =>
+          join({
+            left: scan(myOrderItems),
+            right: scan(activeProducts),
+            on: expr.eq(col(myOrderItems, "productId"), col(activeProducts, "id")),
+            type: "inner",
+          }),
+        {
+          columns: ({ col }) => ({
+            orderId: col.string(myOrderItems, "orderId", { nullable: false }),
+            productId: col.string(activeProducts, "id", { nullable: false }),
+            productName: col.string(activeProducts, "name", { nullable: false }),
+            unitPriceCents: col.real(myOrderItems, "unitPriceCents", { nullable: false }),
+          }),
+        },
+      );
+
+      return {
+        tables: {
+          myOrderItems,
+          productsForOrg,
+          productAccess,
+          activeProducts,
+          myOrderLines,
+        },
+      };
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return Result.ok([]);
+          }
+
+          const rowsByTable: Record<string, QueryRow[]> = {
+            order_items_raw: [
+              { order_id: "o1", product_id: "p1", quantity: 2, line_total_cents: 3600 },
+              { order_id: "o1", product_id: "p2", quantity: 1, line_total_cents: 1200 },
+            ],
+            products_raw: [
+              { id: "p1", name: "Edge Router" },
+              { id: "p2", name: "Backup Service" },
+            ],
+            product_access_raw: [
+              { product_id: "p1" },
+              { product_id: "p2" },
+            ],
+          };
+
+          return Result.ok(scanRows(rowsByTable[fragment.table] ?? [], fragment.request));
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT orderId, productName, unitPriceCents
+        FROM myOrderLines
+        ORDER BY orderId ASC, productName ASC
+      `,
+    });
+
+    expect(rows).toEqual([
+      { orderId: "o1", productName: "Backup Service", unitPriceCents: 1200 },
+      { orderId: "o1", productName: "Edge Router", unitPriceCents: 1800 },
+    ]);
+  });
+
+  it("executes aggregate views built from derived views", async () => {
+    const orderItemsEntity = createDataEntityHandle({
+      entity: "order_items_raw",
+      provider: "warehouse",
+      columns: {
+        orderId: { source: "order_id", type: "text", nullable: false },
+        productId: { source: "product_id", type: "text", nullable: false },
+        quantity: { source: "quantity", type: "integer", nullable: false },
+        lineTotalCents: { source: "line_total_cents", type: "integer", nullable: false },
+      },
+    });
+    const productsEntity = createDataEntityHandle({
+      entity: "products_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        name: { source: "name", type: "text", nullable: false },
+      },
+    });
+    const accessEntity = createDataEntityHandle({
+      entity: "product_access_raw",
+      provider: "warehouse",
+      columns: {
+        productId: { source: "product_id", type: "text", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, view }) => {
+      const myOrderItems = table(orderItemsEntity, {
+        columns: ({ col }) => ({
+          orderId: col.string("orderId"),
+          productId: col.string("productId"),
+          quantity: col.integer("quantity"),
+          lineTotalCents: col.integer("lineTotalCents"),
+        }),
+      });
+
+      const productsForOrg = table(productsEntity, {
+        columns: ({ col }) => ({
+          id: col.id("id"),
+          name: col.string("name"),
+        }),
+      });
+
+      const productAccess = table(accessEntity, {
+        columns: ({ col }) => ({
+          productId: col.string("productId"),
+        }),
+      });
+
+      const activeProducts = view(
+        ({ scan, join, col, expr }) =>
+          join({
+            left: scan(productsForOrg),
+            right: scan(productAccess),
+            on: expr.eq(col(productsForOrg, "id"), col(productAccess, "productId")),
+            type: "inner",
+          }),
+        {
+          columns: ({ col }) => ({
+            id: col.id(productsForOrg, "id"),
+            name: col.string(productsForOrg, "name", { nullable: false }),
+          }),
+        },
+      );
+
+      const myOrderLines = view(
+        ({ scan, join, col, expr }) =>
+          join({
+            left: scan(myOrderItems),
+            right: scan(activeProducts),
+            on: expr.eq(col(myOrderItems, "productId"), col(activeProducts, "id")),
+            type: "inner",
+          }),
+        {
+          columns: ({ col }) => ({
+            productId: col.string(activeProducts, "id", { nullable: false }),
+            productName: col.string(activeProducts, "name", { nullable: false }),
+            quantity: col.integer(myOrderItems, "quantity", { nullable: false }),
+            lineTotalCents: col.integer(myOrderItems, "lineTotalCents", { nullable: false }),
+          }),
+        },
+      );
+
+      const productPerformance = view({
+        rel: ({ scan, aggregate, col, agg }) =>
+          aggregate({
+            from: scan(myOrderLines),
+            groupBy: {
+              productId: col(myOrderLines, "productId"),
+              productName: col(myOrderLines, "productName"),
+            },
+            measures: {
+              unitsSold: agg.sum(col(myOrderLines, "quantity")),
+              revenueCents: agg.sum(col(myOrderLines, "lineTotalCents")),
+            },
+          }),
+        columns: ({ col }) => ({
+          productId: col.id("productId"),
+          productName: col.string("productName"),
+          unitsSold: col.integer("unitsSold"),
+          revenueCents: col.integer("revenueCents"),
+        }),
+      });
+
+      return {
+        tables: {
+          myOrderItems,
+          productsForOrg,
+          productAccess,
+          activeProducts,
+          myOrderLines,
+          productPerformance,
+        },
+      };
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return Result.ok([]);
+          }
+
+          const rowsByTable: Record<string, QueryRow[]> = {
+            order_items_raw: [
+              { order_id: "o1", product_id: "p1", quantity: 2, line_total_cents: 3600 },
+              { order_id: "o2", product_id: "p1", quantity: 1, line_total_cents: 1800 },
+              { order_id: "o3", product_id: "p2", quantity: 1, line_total_cents: 1200 },
+            ],
+            products_raw: [
+              { id: "p1", name: "Edge Router" },
+              { id: "p2", name: "Backup Service" },
+            ],
+            product_access_raw: [
+              { product_id: "p1" },
+              { product_id: "p2" },
+            ],
+          };
+
+          return Result.ok(scanRows(rowsByTable[fragment.table] ?? [], fragment.request));
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT productName, unitsSold, revenueCents
+        FROM productPerformance
+        ORDER BY revenueCents DESC
+      `,
+    });
+
+    expect(rows).toEqual([
+      { productName: "Edge Router", unitsSold: 3, revenueCents: 5400 },
+      { productName: "Backup Service", unitsSold: 1, revenueCents: 1200 },
+    ]);
+  });
+
+  it("executes local cross-provider views", async () => {
+    const productsEntity = createDataEntityHandle({
+      entity: "products_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        name: { source: "name", type: "text", nullable: false },
+      },
+    });
+    const viewCountsEntity = createDataEntityHandle({
+      entity: "product_view_counts",
+      provider: "kv",
+      columns: {
+        productId: { source: "product_id", type: "text", nullable: false },
+        viewCount: { source: "view_count", type: "integer", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, view }) => {
+      const products = table(productsEntity, {
+        columns: ({ col }) => ({
+          id: col.id("id"),
+          productName: col.string("name"),
+        }),
+      });
+
+      const productViewCounts = table(viewCountsEntity, {
+        columns: ({ col }) => ({
+          productId: col.string("productId"),
+          viewCount: col.integer("viewCount"),
+        }),
+      });
+
+      const productEngagement = view({
+        rel: ({ scan, join, col, expr }) =>
+          join({
+            left: scan(products),
+            right: scan(productViewCounts),
+            on: expr.eq(col(products, "id"), col(productViewCounts, "productId")),
+            type: "left",
+          }),
+        columns: {
+          productName: { source: "products.productName", type: "text", nullable: false },
+          viewCount: { source: "productViewCounts.viewCount", type: "integer", nullable: true },
+        },
+      });
+
+      return {
+        tables: {
+          products,
+          productViewCounts,
+          productEngagement,
+        },
+      };
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return Result.ok([]);
+          }
+
+          return Result.ok(scanRows([
+            { id: "p1", name: "Edge Router" },
+            { id: "p2", name: "Backup Service" },
+          ], fragment.request));
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+      kv: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "kv",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return Result.ok([]);
+          }
+
+          return Result.ok(scanRows([
+            { product_id: "p1", view_count: 12 },
+          ], fragment.request));
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT productName, viewCount
+        FROM productEngagement
+        ORDER BY productName ASC
+      `,
+    });
+
+    expect(rows).toEqual([
+      { productName: "Backup Service", viewCount: null },
+      { productName: "Edge Router", viewCount: 12 },
     ]);
   });
 

@@ -7,10 +7,8 @@ import {
   toSqlDDL,
   type ProviderAdapter,
   type QueryRow,
-  type SchemaColumnLensDefinition,
   type SchemaDefinition,
   type ScanFilterClause,
-  type TableColumnDefinition,
   type TableScanRequest,
 } from "sqlql";
 
@@ -174,149 +172,183 @@ function projectRow(row: QueryRow, select: string[]): QueryRow {
   return out;
 }
 
-function toColumnLens(
-  columnName: string,
-  definition: TableColumnDefinition,
-): SchemaColumnLensDefinition {
-  if (typeof definition === "string") {
-    return {
-      source: columnName,
-      type: definition,
-    };
-  }
-
-  const lens: SchemaColumnLensDefinition = {
-    source: columnName,
-    type: definition.type,
-  };
-  if (definition.nullable != null) {
-    lens.nullable = definition.nullable;
-  }
-  if (definition.primaryKey != null) {
-    lens.primaryKey = definition.primaryKey;
-  }
-  if (definition.unique != null) {
-    lens.unique = definition.unique;
-  }
-  if (definition.enum) {
-    lens.enum = definition.enum;
-  }
-  return lens;
-}
-
 async function main(): Promise<void> {
-  const schema = defineSchema({
+  const rawSchema = defineSchema({
     tables: {
-      orders: {
+      orders_raw: {
         provider: "memory",
         columns: {
           id: "text",
           org_id: "text",
           user_id: "text",
+          vendor_id: "text",
           total_cents: "integer",
           created_at: "timestamp",
         },
       },
-      users: {
-        provider: "memory",
-        columns: {
-          id: "text",
-          team_id: "text",
-          email: "text",
-        },
-      },
-      teams: {
+      vendors_raw: {
         provider: "memory",
         columns: {
           id: "text",
           name: "text",
-          tier: "text",
+          org_id: "text",
         },
       },
     },
   });
 
   const tableData = {
-    orders: [
+    orders_raw: [
       {
-        id: "ord_1",
+        id: "o1",
         org_id: "org_1",
-        user_id: "usr_1",
-        total_cents: 1200,
-        created_at: "2026-02-01",
+        user_id: "u1",
+        vendor_id: "v1",
+        total_cents: 1500,
+        created_at: "2026-02-01T00:00:00.000Z",
       },
       {
-        id: "ord_2",
+        id: "o2",
         org_id: "org_1",
-        user_id: "usr_1",
-        total_cents: 1800,
-        created_at: "2026-02-03",
+        user_id: "u1",
+        vendor_id: "v2",
+        total_cents: 3200,
+        created_at: "2026-02-03T00:00:00.000Z",
       },
       {
-        id: "ord_3",
+        id: "o3",
         org_id: "org_1",
-        user_id: "usr_2",
-        total_cents: 2400,
-        created_at: "2026-02-04",
+        user_id: "u2",
+        vendor_id: "v1",
+        total_cents: 7000,
+        created_at: "2026-02-04T00:00:00.000Z",
       },
       {
-        id: "ord_4",
+        id: "o4",
         org_id: "org_2",
-        user_id: "usr_3",
-        total_cents: 9900,
-        created_at: "2026-02-05",
+        user_id: "u9",
+        vendor_id: "v3",
+        total_cents: 1200,
+        created_at: "2026-02-05T00:00:00.000Z",
       },
     ],
-    users: [
-      { id: "usr_1", team_id: "team_enterprise", email: "alice@example.com" },
-      { id: "usr_2", team_id: "team_smb", email: "bob@example.com" },
-      { id: "usr_3", team_id: "team_enterprise", email: "charlie@example.com" },
-    ],
-    teams: [
-      { id: "team_enterprise", name: "Enterprise", tier: "enterprise" },
-      { id: "team_smb", name: "SMB", tier: "smb" },
+    vendors_raw: [
+      { id: "v1", org_id: "org_1", name: "Northwind" },
+      { id: "v2", org_id: "org_1", name: "Acme Parts" },
+      { id: "v3", org_id: "org_2", name: "Other Org Vendor" },
     ],
   };
 
-  const memoryProvider = createMemoryProvider(schema, tableData);
-  const executableSchema = createExecutableSchema<Record<string, never>>(({ table }) => ({
-    tables: Object.fromEntries(
-      Object.entries(schema.tables).map(([tableName, tableDefinition]) => [
-        tableName,
-        table(memoryProvider.entities![tableName]!, {
-          columns: () => Object.fromEntries(
-            Object.entries(tableDefinition.columns).map(([columnName, definition]) => [
-              columnName,
-              toColumnLens(columnName, definition),
-            ]),
-          ),
-          ...(("constraints" in tableDefinition && tableDefinition.constraints)
-            ? { constraints: tableDefinition.constraints }
-            : {}),
+  const memoryProvider = createMemoryProvider(rawSchema, tableData);
+  const executableSchema = createExecutableSchema<Record<string, never>>(({ table, view }) => {
+    const myOrders = table(memoryProvider.entities!.orders_raw!, {
+      columns: ({ col, expr }) => ({
+        id: col.id("id"),
+        vendorId: col.string("vendor_id"),
+        totalCents: col.integer("total_cents"),
+        createdAt: col.timestamp("created_at"),
+        totalDollars: col.real(
+          expr.divide(col("totalCents"), expr.literal(100)),
+          { nullable: false },
+        ),
+        isLargeOrder: col.boolean(
+          expr.gte(col("totalCents"), expr.literal(3000)),
+          { nullable: false },
+        ),
+      }),
+    });
+
+    const myOrderFacts = view(
+      ({ scan, join, col, expr }) =>
+        join({
+          left: scan(myOrders),
+          right: scan(memoryProvider.entities!.vendors_raw!),
+          on: expr.eq(col(myOrders, "vendorId"), col(memoryProvider.entities!.vendors_raw!, "id")),
+          type: "inner",
         }),
-      ]),
-    ),
-  }));
+      {
+        columns: ({ col }) => ({
+          orderId: col.id(myOrders, "id"),
+          vendorId: col.string(myOrders, "vendorId", { nullable: false }),
+          vendorName: col.string(memoryProvider.entities!.vendors_raw!, "name", { nullable: false }),
+          totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+          totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
+          isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
+        }),
+      },
+    );
 
-  const ddl = toSqlDDL(schema, { ifNotExists: true });
+    const myVendorSpend = view(
+      ({ scan, aggregate, col, agg }) =>
+        aggregate({
+          from: scan(myOrderFacts),
+          groupBy: {
+            vendorId: col(myOrderFacts, "vendorId"),
+            vendorName: col(myOrderFacts, "vendorName"),
+          },
+          measures: {
+            totalSpendCents: agg.sum(col(myOrderFacts, "totalCents")),
+            orderCount: agg.count(),
+          },
+        }),
+      {
+        columns: ({ col }) => ({
+          vendorId: col.id("vendorId"),
+          vendorName: col.string("vendorName"),
+          totalSpendCents: col.integer("totalSpendCents"),
+          orderCount: col.integer("orderCount"),
+        }),
+      },
+    );
 
-  const joinRows = await executableSchema.query({
+    return {
+      tables: {
+        myOrders,
+        myOrderFacts,
+        myVendorSpend,
+      },
+    };
+  });
+
+  const ddl = toSqlDDL(rawSchema, { ifNotExists: true });
+
+  const virtualRows = await executableSchema.query({
     context: {},
     sql: `
-      SELECT o.id, o.total_cents, u.email
-      FROM orders o
-      JOIN users u ON o.user_id = u.id
-      WHERE o.org_id = 'org_1'
-      ORDER BY o.created_at DESC
-      LIMIT 3
+      SELECT id, totalDollars, isLargeOrder
+      FROM myOrders
+      WHERE totalDollars >= 20
+      ORDER BY totalDollars DESC
+    `,
+  });
+
+  const orderFactRows = await executableSchema.query({
+    context: {},
+    sql: `
+      SELECT orderId, vendorName, totalDollars, isLargeOrder
+      FROM myOrderFacts
+      ORDER BY totalDollars DESC
+    `,
+  });
+
+  const spendRows = await executableSchema.query({
+    context: {},
+    sql: `
+      SELECT vendorName, totalSpendCents, orderCount
+      FROM myVendorSpend
+      ORDER BY totalSpendCents DESC
     `,
   });
 
   console.log("Generated DDL:");
   console.log(ddl);
   console.log("");
-  console.log("Join result:");
-  console.log(joinRows);
+  console.log("myOrders with virtual columns:");
+  console.log(virtualRows);
+  console.log("myOrderFacts view:");
+  console.log(orderFactRows);
+  console.log("myVendorSpend aggregate view:");
+  console.log(spendRows);
 }
 
 main().catch((error: unknown) => {

@@ -7,9 +7,11 @@ import {
   type SqlqlResult,
 } from "./errors";
 import {
+  getDataEntityAdapter,
   normalizeCapability,
   resolveTableProvider,
   unwrapProviderOperationResult,
+  type ProviderAdapter,
   type ProviderFragment,
   type ProvidersMap,
 } from "./provider";
@@ -22,7 +24,10 @@ import {
   type RelScanNode,
 } from "./rel";
 import {
-  getNormalizedColumnSourceMap,
+  createPhysicalBindingFromEntity,
+  createTableDefinitionFromEntity,
+  getNormalizedColumnBindings,
+  isNormalizedSourceColumnBinding,
   mapProviderRowsToLogical,
   resolveNormalizedColumnSource,
   getNormalizedTableBinding,
@@ -214,13 +219,14 @@ async function executeScanResult<TContext>(
   }
 
   const providerNameResult = tryExecutionStep("resolve scan provider", () =>
-    resolveTableProvider(context.schema, scan.table)
+    scan.entity?.provider ?? resolveTableProvider(context.schema, scan.table)
   );
   if (Result.isError(providerNameResult)) {
     return providerNameResult;
   }
   const providerName = providerNameResult.value;
-  const provider = context.providers[providerName];
+  const provider = context.providers[providerName]
+    ?? (scan.entity ? (getDataEntityAdapter(scan.entity) as ProviderAdapter<TContext> | undefined) : undefined);
   if (!provider) {
     return Result.err(
       new SqlqlExecutionError({
@@ -230,7 +236,10 @@ async function executeScanResult<TContext>(
     );
   }
 
-  const physicalBinding = normalizedBinding?.kind === "physical" ? normalizedBinding : null;
+  const physicalBinding = normalizedBinding?.kind === "physical"
+    ? normalizedBinding
+    : (scan.entity ? createPhysicalBindingFromEntity(scan.entity) : null);
+  const tableDefinition = context.schema.tables[scan.table] ?? (scan.entity ? createTableDefinitionFromEntity(scan.entity) : undefined);
   const requestResult = tryExecutionStep("build provider scan request", () => ({
     table: physicalBinding?.entity ?? scan.table,
     ...(scan.alias ? { alias: scan.alias } : {}),
@@ -286,10 +295,10 @@ async function executeScanResult<TContext>(
   }
   const projectedResult = tryExecutionStep("map provider rows to logical rows", () =>
     mapProviderRowsToLogical(
-      rowsResult.value,
+      rowsResult.value as QueryRow[],
       scan.select,
       physicalBinding,
-      context.schema.tables[scan.table],
+      tableDefinition,
     )
   );
   if (Result.isError(projectedResult)) {
@@ -380,21 +389,25 @@ async function maybeExecuteLookupJoinResult<TContext>(
     return Result.ok(null);
   }
 
-  const leftProviderName = resolveTableProvider(context.schema, leftScan.table);
-  const rightProviderName = resolveTableProvider(context.schema, rightScan.table);
+  const leftProviderName = leftScan.entity?.provider ?? resolveTableProvider(context.schema, leftScan.table);
+  const rightProviderName = rightScan.entity?.provider ?? resolveTableProvider(context.schema, rightScan.table);
   if (leftProviderName === rightProviderName) {
     return Result.ok(null);
   }
 
-  const rightProvider = context.providers[rightProviderName];
+  const rightProvider = context.providers[rightProviderName]
+    ?? (rightScan.entity ? (getDataEntityAdapter(rightScan.entity) as ProviderAdapter<TContext> | undefined) : undefined);
   if (!rightProvider?.lookupMany) {
     return Result.ok(null);
   }
   const lookupMany = rightProvider.lookupMany;
 
   const leftKey = `${join.leftKey.alias}.${join.leftKey.column}`;
-  const rightKey = rightBinding?.kind === "physical"
-    ? resolveNormalizedColumnSource(rightBinding, join.rightKey.column)
+  const rightPhysicalBinding = rightBinding?.kind === "physical"
+    ? rightBinding
+    : (rightScan.entity ? createPhysicalBindingFromEntity(rightScan.entity) : null);
+  const rightKey = rightPhysicalBinding
+    ? resolveNormalizedColumnSource(rightPhysicalBinding, join.rightKey.column)
     : join.rightKey.column;
   const dedupedKeys = [...new Set(leftRows.map((row) => row[leftKey]).filter((value) => value != null))];
 
@@ -425,15 +438,15 @@ async function maybeExecuteLookupJoinResult<TContext>(
       unwrapProviderOperationResult(
         await lookupMany(
           {
-            table: rightBinding?.kind === "physical" ? rightBinding.entity : rightScan.table,
+            table: rightPhysicalBinding?.entity ?? rightScan.table,
             key: rightKey,
             keys: batch,
             select: mapLogicalColumnsToSource(
               rightScan.select,
-              rightBinding?.kind === "physical" ? rightBinding : null,
+              rightPhysicalBinding,
             ),
             ...(rightScan.where
-              ? { where: mapWhereToSource(rightScan.where, rightBinding?.kind === "physical" ? rightBinding : null) }
+              ? { where: mapWhereToSource(rightScan.where, rightPhysicalBinding) }
               : {}),
           },
           context.context,
@@ -449,8 +462,9 @@ async function maybeExecuteLookupJoinResult<TContext>(
       mapProviderRowsToLogical(
         lookedUpResult.value,
         rightScan.select,
-        rightBinding?.kind === "physical" ? rightBinding : null,
-        context.schema.tables[rightScan.table],
+        rightPhysicalBinding,
+        context.schema.tables[rightScan.table]
+          ?? (rightScan.entity ? createTableDefinitionFromEntity(rightScan.entity) : undefined),
       )
     );
     if (Result.isError(mappedRowsResult)) {
@@ -844,19 +858,54 @@ function compileViewRelToExecutableResult(
     return Result.ok(rel);
   }
 
-  const columns = Object.entries(getNormalizedColumnSourceMap(binding));
+  const columns = Object.entries(getNormalizedColumnBindings(binding));
   return Result.ok({
     id: nextSyntheticRelId("view_project"),
     kind: "project",
     convention: "local",
     input: rel,
-    columns: columns.map(([output, source]) => ({
-      kind: "column" as const,
-      source: parseRef(source),
-      output,
-    })),
+    columns: columns.map(([output, columnBinding]) =>
+      isNormalizedSourceColumnBinding(columnBinding)
+        ? {
+            kind: "column" as const,
+            source: parseRef(columnBinding.source),
+            output,
+          }
+        : {
+            kind: "expr" as const,
+            expr: rewriteViewBindingExprForExecution(columnBinding.expr, getNormalizedColumnBindings(binding)),
+            output,
+          }),
     output: columns.map(([name]) => ({ name })),
   });
+}
+
+function rewriteViewBindingExprForExecution(
+  expr: RelExpr,
+  columnBindings: ReturnType<typeof getNormalizedColumnBindings>,
+): RelExpr {
+  switch (expr.kind) {
+    case "literal":
+      return expr;
+    case "function":
+      return {
+        kind: "function",
+        name: expr.name,
+        args: expr.args.map((arg) => rewriteViewBindingExprForExecution(arg, columnBindings)),
+      };
+    case "column": {
+      if (!expr.ref.table && !expr.ref.alias) {
+        const binding = columnBindings[expr.ref.column];
+        if (binding && isNormalizedSourceColumnBinding(binding)) {
+          return {
+            kind: "column",
+            ref: parseRef(binding.source),
+          };
+        }
+      }
+      return expr;
+    }
+  }
 }
 
 function compileSchemaViewRelNodeResult(
@@ -865,8 +914,8 @@ function compileSchemaViewRelNodeResult(
 ): SqlqlResult<RelNode> {
   switch (node.kind) {
     case "scan": {
-      const table = schema.tables[node.table];
-      if (!table) {
+      const table = schema.tables[node.table] ?? (node.entity ? createTableDefinitionFromEntity(node.entity) : undefined);
+      if (!table || (node.entity && Object.keys(table.columns).length === 0)) {
         return Result.err(
           new SqlqlExecutionError({
             operation: "compile executable view rel",
@@ -880,6 +929,7 @@ function compileSchemaViewRelNodeResult(
         kind: "scan",
         convention: "local",
         table: node.table,
+        ...(node.entity ? { entity: node.entity } : {}),
         alias: node.table,
         select,
         output: select.map((column) => ({ name: `${node.table}.${column}` })),
@@ -954,7 +1004,7 @@ function compileSchemaViewRelNodeResult(
         });
       }
 
-      return Result.ok({
+      const aggregateNode: RelNode = {
         id: nextSyntheticRelId("view_aggregate"),
         kind: "aggregate",
         convention: "local",
@@ -965,6 +1015,32 @@ function compileSchemaViewRelNodeResult(
           ...groupBy.map((column) => ({ name: column.name })),
           ...metrics.map((metric) => ({ name: metric.as })),
         ],
+      };
+
+      const expectedOutputs = [
+        ...groupBy.map((column) => column.name),
+        ...metrics.map((metric) => metric.as),
+      ];
+      const actualOutputs = [
+        ...groupBy.map((column) => column.ref.column),
+        ...metrics.map((metric) => metric.as),
+      ];
+
+      if (expectedOutputs.every((name, index) => name === actualOutputs[index])) {
+        return Result.ok(aggregateNode);
+      }
+
+      return Result.ok({
+        id: nextSyntheticRelId("view_project"),
+        kind: "project",
+        convention: "local",
+        input: aggregateNode,
+        columns: expectedOutputs.map((output: string, index: number) => ({
+          kind: "column" as const,
+          source: { column: actualOutputs[index] ?? output },
+          output,
+        })),
+        output: expectedOutputs.map((output: string) => ({ name: output })),
       });
     }
   }

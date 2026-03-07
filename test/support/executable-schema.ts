@@ -139,6 +139,29 @@ function toLensDefinitionFromSource(
   return lens;
 }
 
+function getCalculatedColumnMethodName(definition: TableColumnDefinition): string {
+  const type = typeof definition === "string" ? definition : definition.type;
+  return type === "text" ? "string" : type;
+}
+
+function getCalculatedColumnOptions(
+  binding: Extract<NormalizedColumnBinding, { kind: "expr" }>,
+  definition: TableColumnDefinition,
+) {
+  if (typeof definition === "string") {
+    return binding.coerce ? { coerce: binding.coerce } : {};
+  }
+
+  return {
+    ...(definition.nullable != null ? { nullable: definition.nullable } : {}),
+    ...(definition.physicalType ? { physicalType: definition.physicalType } : {}),
+    ...(definition.physicalDialect ? { physicalDialect: definition.physicalDialect } : {}),
+    ...(definition.foreignKey ? { foreignKey: definition.foreignKey } : {}),
+    ...(definition.description ? { description: definition.description } : {}),
+    ...(binding.coerce ? { coerce: binding.coerce } : {}),
+  };
+}
+
 export function createExecutableSchemaFromProviders<
   TContext,
   TSchema extends SchemaDefinition,
@@ -242,6 +265,33 @@ export function createExecutableSchemaFromProviders<
                       toLensDefinition(columnName, definition),
                     ]),
               ),
+            ...(binding?.kind === "physical"
+              ? {
+                  virtuals: (({ calc }: { calc: any }) =>
+                    Object.fromEntries(
+                      Object.entries(binding.columnBindings).flatMap(([columnName, columnBinding]) => {
+                        if (isNormalizedSourceColumnBinding(columnBinding) || columnBinding.kind !== "expr") {
+                          return [];
+                        }
+
+                        const definition = columnBinding.definition ?? tableDefinition.columns[columnName] ?? "text";
+                        const methodName = getCalculatedColumnMethodName(definition);
+                        const calcMethod = calc[methodName];
+                        if (typeof calcMethod !== "function") {
+                          throw new Error(`Unsupported calculated column type for ${tableName}.${columnName}`);
+                        }
+
+                        return [[
+                          columnName,
+                          calcMethod(
+                            columnBinding.expr,
+                            getCalculatedColumnOptions(columnBinding, definition),
+                          ),
+                        ] as const];
+                      }),
+                    )) as any,
+                }
+              : {}),
             ...(tableDefinition.constraints ? { constraints: tableDefinition.constraints } : {}),
           }),
         ];

@@ -477,7 +477,14 @@ function resolveKyselyRelCompileStrategy<TContext>(
   entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
 ): KyselyRelCompileStrategy | null {
   if (canCompileBasicRel(node, entityConfigs)) {
-    return "basic";
+    try {
+      buildSingleQueryPlan(node, entityConfigs);
+      return "basic";
+    } catch (error) {
+      if (!(error instanceof UnsupportedSingleQueryPlanError)) {
+        throw error;
+      }
+    }
   }
   if (canCompileSetOpRel(node, entityConfigs)) {
     return "set_op";
@@ -498,6 +505,8 @@ function canCompileBasicRel<TContext>(
     case "filter":
       return !node.expr && canCompileBasicRel(node.input, entityConfigs);
     case "project":
+      return node.columns.every((column) => isRelProjectColumnMapping(column))
+        && canCompileBasicRel(node.input, entityConfigs);
     case "aggregate":
     case "sort":
     case "limit_offset":
