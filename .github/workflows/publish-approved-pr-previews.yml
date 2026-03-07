@@ -43,12 +43,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build publishable packages
-        run: |
-          pnpm build
-          pnpm --filter @sqlql/drizzle build
-          pnpm --filter @sqlql/kysely build
-          pnpm --filter @sqlql/objection build
+      - name: Build publishable package
+        run: pnpm build
 
       - name: Publish preview packages
-        run: pnpm dlx pkg-pr-new publish --pnpm --packageManager=pnpm . ./packages/*
+        run: pnpm dlx pkg-pr-new publish --pnpm --packageManager=pnpm .
