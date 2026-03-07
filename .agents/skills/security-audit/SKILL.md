@@ -1,6 +1,6 @@
 ---
 name: security-audit
-description: Findings-first security auditing for TypeScript/Node libraries and runtimes exposed to untrusted or public interfaces. Use when users ask for a security audit, auth-boundary review, schema/public-interface risk review, data-exposure analysis, or query-abuse/DoS analysis.
+description: Findings-first security auditing for TypeScript/Node libraries and runtimes exposed to untrusted or public interfaces. Use when after any significant refactor, or when users ask for a security audit, auth-boundary review, schema/public-interface risk review, data-exposure analysis, or query-abuse/DoS analysis
 ---
 
 # Security Audit
