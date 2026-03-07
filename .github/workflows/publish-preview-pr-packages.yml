@@ -1,29 +1,19 @@
-name: Publish Approved Pull Requests
+name: Publish Preview Pull Requests
 
 on:
-  pull_request_review:
-    types: [submitted]
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
   pull-requests: write
 
-jobs:
-  check:
-    if: github.event.review.state == 'approved'
-    runs-on: ubuntu-latest
-    outputs:
-      has-permissions: ${{ steps.checkPermissions.outputs.require-result }}
-    steps:
-      - name: Check permissions
-        id: checkPermissions
-        uses: actions-cool/check-user-permission@v2
-        with:
-          require: write
+env:
+  PREVIEW_LABEL: preview
 
+jobs:
   publish:
-    needs: check
-    if: needs.check.outputs.has-permissions == 'true'
+    if: contains(github.event.pull_request.labels.*.name, env.PREVIEW_LABEL)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
