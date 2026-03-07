@@ -265,15 +265,15 @@ describe("query/provider runtime", () => {
       provider: "warehouse",
     });
 
-    const schema = defineSchema(({ table, col }) => ({
+    const schema = defineSchema(({ table }) => ({
       tables: {
         my_orders: table({
           from: ordersEntity,
           columns: {
-            id: col("id"),
-            totalCents: col("total_cents"),
+            id: { source: "id" },
+            totalCents: { source: "total_cents" },
             status: {
-              source: col("status"),
+              source: "status",
               type: "text",
               enumFrom: "orders.status",
               enumMap: {
@@ -359,15 +359,14 @@ describe("query/provider runtime", () => {
       },
     });
 
-    const schema = defineSchema(({ table, col }) => ({
+    const schema = defineSchema(({ table }) => ({
       tables: {
-        my_orders: table({
-          from: ordersEntity,
-          columns: {
+        my_orders: table(ordersEntity, {
+          columns: ({ col }) => ({
             id: col.id("id"),
             totalCents: col.integer("totalCents"),
             createdAt: col.string("createdAt", { coerce: "isoTimestamp" }),
-          },
+          }),
         }),
       },
     }));
@@ -716,7 +715,7 @@ describe("query/provider runtime", () => {
       provider: "warehouse",
     });
 
-    const schema = defineSchema(({ table, view, rel, col, agg }) => ({
+    const schema = defineSchema(({ table, view }) => ({
       tables: {
         my_orders: table({
           from: ordersEntity,
@@ -726,9 +725,9 @@ describe("query/provider runtime", () => {
           },
         }),
         order_spend: view(
-          () =>
-            rel.aggregate({
-              from: rel.scan("my_orders"),
+          ({ scan, aggregate, col, agg }) =>
+            aggregate({
+              from: scan("my_orders"),
               groupBy: {
                 order_id: col("my_orders.id"),
               },

@@ -7,17 +7,20 @@ const NODE_MODULES_ROOT_PATH = `${WORKSPACE_ROOT_PATH}/node_modules`;
 
 export const PLAYGROUND_WORKSPACE_ROOT_URI = `file://${WORKSPACE_ROOT_PATH}`;
 export const PLAYGROUND_SCHEMA_FILE_PATH = `${WORKSPACE_ROOT_PATH}/schema.ts`;
+export const PLAYGROUND_CONTEXT_FILE_PATH = `${WORKSPACE_ROOT_PATH}/context.ts`;
 export const PLAYGROUND_DB_PROVIDER_FILE_PATH = `${WORKSPACE_ROOT_PATH}/db-provider.ts`;
 export const PLAYGROUND_KV_PROVIDER_FILE_PATH = `${WORKSPACE_ROOT_PATH}/kv-provider.ts`;
 export const PLAYGROUND_GENERATED_DB_FILE_PATH = `${WORKSPACE_ROOT_PATH}/generated-db.ts`;
 
 export const PLAYGROUND_SCHEMA_FILE_URI = `file://${PLAYGROUND_SCHEMA_FILE_PATH}`;
+export const PLAYGROUND_CONTEXT_FILE_URI = `file://${PLAYGROUND_CONTEXT_FILE_PATH}`;
 export const PLAYGROUND_DB_PROVIDER_FILE_URI = `file://${PLAYGROUND_DB_PROVIDER_FILE_PATH}`;
 export const PLAYGROUND_KV_PROVIDER_FILE_URI = `file://${PLAYGROUND_KV_PROVIDER_FILE_PATH}`;
 export const PLAYGROUND_GENERATED_DB_FILE_URI = `file://${PLAYGROUND_GENERATED_DB_FILE_PATH}`;
 
 export interface PlaygroundWorkspaceUserFiles {
   schemaCode: string;
+  contextCode: string;
   dbProviderCode: string;
   kvProviderCode: string;
   generatedDbCode: string;
@@ -149,8 +152,6 @@ const BETTER_RESULT_DECLARATION_FILES: Record<string, string> = {
 
 const HOST_PACKAGE_DECLARATION_FILES: Record<string, string> = {
   [`${NODE_MODULES_ROOT_PATH}/@playground/runtime/index.d.ts`]: `
-import type { PgliteDatabase } from "drizzle-orm/pglite";
-
 export interface PlaygroundKvInputRow {
   key: string;
   value: unknown;
@@ -173,15 +174,7 @@ export interface PlaygroundKvRuntime {
   recordOperation?: (operation: PlaygroundKvProviderOperation) => void;
 }
 
-export interface PlaygroundDbRuntime<TTables extends object = object> {
-  db: PgliteDatabase<Record<string, never>>;
-  tables: TTables;
-}
-
 export declare function getPlaygroundKvRuntime(): PlaygroundKvRuntime;
-export declare function getPlaygroundDbRuntime<TTables extends object>(
-  input: { tables: TTables },
-): PlaygroundDbRuntime<TTables>;
 `.trim(),
 };
 
@@ -195,19 +188,6 @@ import { getPlaygroundKvRuntime } from "@playground/runtime";
 import type { KvProviderFactoryRuntime } from "./core";
 
 export const playgroundKvRuntime: KvProviderFactoryRuntime = getPlaygroundKvRuntime();
-`.trim(),
-  [`${NODE_MODULES_ROOT_PATH}/@playground/db-runtime/index.ts`]: `
-import type { PgliteDatabase } from "drizzle-orm/pglite";
-import { getPlaygroundDbRuntime as getRuntimeDbRuntime } from "@playground/runtime";
-
-export interface PlaygroundDbRuntime<TTables extends object = object> {
-  db: PgliteDatabase<Record<string, never>>;
-  tables: TTables;
-}
-
-export const getPlaygroundDbRuntime: <TTables extends object>(
-  input: { tables: TTables },
-) => PlaygroundDbRuntime<TTables> = getRuntimeDbRuntime;
 `.trim(),
 };
 
@@ -240,6 +220,7 @@ export function buildPlaygroundWorkspaceSnapshot(
 ): PlaygroundWorkspaceSnapshot {
   const userFiles: Record<string, string> = {
     [PLAYGROUND_SCHEMA_FILE_PATH]: input.schemaCode,
+    [PLAYGROUND_CONTEXT_FILE_PATH]: input.contextCode,
     [PLAYGROUND_DB_PROVIDER_FILE_PATH]: input.dbProviderCode,
     [PLAYGROUND_KV_PROVIDER_FILE_PATH]: input.kvProviderCode,
     [PLAYGROUND_GENERATED_DB_FILE_PATH]: input.generatedDbCode,

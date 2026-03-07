@@ -324,19 +324,17 @@ type DslViewColumnInput<TSourceColumns extends string = string> =
 
 type SchemaDslRelationRef<TColumns extends string> =
   | SchemaDslTableToken<TColumns>
-  | DslTableDefinition<TColumns, string, string>
+  | DslTableDefinition<TColumns, string>
   | DslViewDefinition<any, TColumns, string>;
 
 interface DslTableDefinition<
   TMappedColumns extends string = string,
   TSourceColumns extends string = string,
-  TVirtualColumns extends string = never,
 > {
   kind: "dsl_table";
-  tableToken: SchemaDslTableToken<TMappedColumns | TVirtualColumns>;
+  tableToken: SchemaDslTableToken<TMappedColumns>;
   from: SchemaDataEntityHandle<TSourceColumns>;
   columns: Record<TMappedColumns, DslTableColumnInput<TSourceColumns>>;
-  virtuals?: Record<TVirtualColumns, SchemaCalculatedColumnDefinition>;
   constraints?: TableConstraints;
 }
 
@@ -387,7 +385,7 @@ interface SchemaDslRelHelpers {
     (table: SchemaDslTableToken<string>): SchemaViewScanNodeInput<string>;
     <TColumns extends string>(table: SchemaDslTableToken<TColumns>): SchemaViewScanNodeInput<TColumns>;
     <TColumns extends string>(entity: SchemaDataEntityHandle<TColumns>): SchemaViewScanNodeInput<TColumns>;
-    <TColumns extends string>(table: DslTableDefinition<TColumns, string, string>): SchemaViewScanNodeInput<TColumns>;
+    <TColumns extends string>(table: DslTableDefinition<TColumns, string>): SchemaViewScanNodeInput<TColumns>;
     <TColumns extends string>(table: DslViewDefinition<any, TColumns, string>): SchemaViewScanNodeInput<TColumns>;
   };
   join: <TLeftColumns extends string, TRightColumns extends string>(input: {
@@ -539,7 +537,6 @@ export interface SchemaDslHelpers<TContext> {
     <
       TSourceColumns extends string,
       TMappedColumns extends string,
-      TVirtualColumns extends string = never,
       TRow extends Partial<Record<TSourceColumns, unknown>> = Record<TSourceColumns, unknown>,
       TColumnMetadata extends Partial<Record<TSourceColumns, DataEntityColumnMetadata<any>>> = DataEntityReadMetadataMap<
         TSourceColumns,
@@ -552,14 +549,9 @@ export interface SchemaDslHelpers<TContext> {
           col: SchemaColumnsColHelper<TSourceColumns, TColumnMetadata>;
           expr: SchemaColumnExprHelpers;
         }) => Record<TMappedColumns, DslTableColumnInput<TSourceColumns>>;
-        virtuals?: (helpers: {
-          col: (column: TMappedColumns) => RelExpr;
-          expr: SchemaColumnExprHelpers;
-          calc: SchemaTypedColumnBuilder<string>;
-        }) => Record<TVirtualColumns, SchemaCalculatedColumnDefinition>;
         constraints?: TableConstraints;
       },
-    ): DslTableDefinition<TMappedColumns, TSourceColumns, TVirtualColumns>;
+    ): DslTableDefinition<TMappedColumns, TSourceColumns>;
   };
   view: {
     <TRelColumns extends string, TColumns extends string>(
@@ -596,30 +588,6 @@ export interface SchemaDslHelpers<TContext> {
       constraints?: TableConstraints;
     }): DslViewDefinition<TContext, TColumns, string>;
   };
-  col: {
-    (ref: string): SchemaColRefToken;
-    <TColumns extends string, TColumn extends TColumns>(
-      entity: SchemaDataEntityHandle<TColumns>,
-      column: TColumn,
-    ): SchemaColRefToken;
-    <TColumns extends string, TColumn extends TColumns>(
-      table: SchemaDslRelationRef<TColumns>,
-      column: TColumn,
-    ): SchemaColRefToken;
-    id: SchemaTypedColumnBuilder<string>["id"];
-    string: SchemaTypedColumnBuilder<string>["string"];
-    integer: SchemaTypedColumnBuilder<string>["integer"];
-    real: SchemaTypedColumnBuilder<string>["real"];
-    blob: SchemaTypedColumnBuilder<string>["blob"];
-    boolean: SchemaTypedColumnBuilder<string>["boolean"];
-    timestamp: SchemaTypedColumnBuilder<string>["timestamp"];
-    date: SchemaTypedColumnBuilder<string>["date"];
-    datetime: SchemaTypedColumnBuilder<string>["datetime"];
-    json: SchemaTypedColumnBuilder<string>["json"];
-  };
-  expr: SchemaDslRelExprHelpers;
-  agg: SchemaDslAggHelpers;
-  rel: SchemaDslRelHelpers;
 }
 
 export interface SchemaDslDefinition<TContext> {
@@ -1350,11 +1318,7 @@ function normalizeDslSchema<TContext>(
     if (isDslTableDefinition(rawTable)) {
       const normalizedColumns: TableColumns = {};
       const columnBindings: Record<string, NormalizedColumnBinding> = {};
-      const rawColumns = {
-        ...rawTable.columns,
-        ...rawTable.virtuals,
-      } as Record<string, DslTableColumnInput>;
-      for (const [columnName, rawColumn] of Object.entries(rawColumns)) {
+      for (const [columnName, rawColumn] of Object.entries(rawTable.columns)) {
         const normalized = normalizeColumnBinding(columnName, rawColumn, {
           preserveQualifiedRef: false,
           resolveTableToken,
@@ -2342,46 +2306,6 @@ function buildSchemaDslViewRelHelpers(): SchemaDslViewRelHelpers {
 }
 
 function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
-  const typedColumnBuilder = buildTypedColumnBuilder<string>();
-  const viewRelHelpers = buildSchemaDslViewRelHelpers();
-  const schemaColHelper = Object.assign(
-    function col<TColumns extends string, TColumn extends TColumns>(
-      tableOrRef:
-        | string
-        | SchemaDataEntityHandle<TColumns>
-        | SchemaDslRelationRef<TColumns>,
-      column?: TColumn,
-    ): SchemaColRefToken {
-      if (typeof tableOrRef === "string") {
-        if (column != null) {
-          throw new Error("Schema DSL col(ref) does not accept a second argument for string refs.");
-        }
-        return {
-          kind: "dsl_col_ref",
-          ref: tableOrRef,
-        } as const;
-      }
-
-      if (column == null) {
-        throw new Error("Schema DSL col(table, column) requires a column name.");
-      }
-
-      if (isSchemaDataEntityHandle(tableOrRef)) {
-        return {
-          kind: "dsl_col_ref",
-          entity: tableOrRef,
-          column,
-        } as const;
-      }
-
-      return {
-        kind: "dsl_col_ref",
-        table: toSchemaDslTableToken(tableOrRef),
-        column,
-      } as const;
-    },
-    typedColumnBuilder,
-  );
   const tableHelper = ((arg1: any, arg2?: any) => {
     const from = isSchemaDataEntityHandle(arg1) ? arg1 : arg1.from;
     const input = isSchemaDataEntityHandle(arg1)
@@ -2398,23 +2322,12 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
       col: buildSchemaColumnsColHelper(),
       expr: buildColumnExprHelpers(),
     });
-    const virtuals = input.virtuals?.({
-      col(column: string) {
-        return {
-          kind: "column",
-          ref: { column },
-        };
-      },
-      expr: buildColumnExprHelpers(),
-      calc: buildTypedColumnBuilder<string>(),
-    });
 
     return {
       kind: "dsl_table" as const,
       tableToken: createSchemaDslTableToken(),
       from,
       columns,
-      ...(virtuals ? { virtuals } : {}),
       ...(input.constraints ? { constraints: input.constraints } : {}),
     };
   }) as SchemaDslHelpers<TContext>["table"];
@@ -2448,10 +2361,6 @@ function buildSchemaDslHelpers<TContext>(): SchemaDslHelpers<TContext> {
   return {
     table: tableHelper,
     view: viewHelper,
-    col: schemaColHelper,
-    expr: viewRelHelpers.expr,
-    agg: viewRelHelpers.agg,
-    rel: viewRelHelpers,
   };
 }
 

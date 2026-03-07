@@ -2,6 +2,7 @@ import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_CONTEXT_CODE,
   DEFAULT_DB_PROVIDER_CODE,
   DEFAULT_FACADE_SCHEMA_CODE,
   DEFAULT_GENERATED_DB_FILE_CODE,
@@ -9,6 +10,7 @@ import {
 } from "../src/examples";
 import {
   buildPlaygroundWorkspaceSnapshot,
+  PLAYGROUND_CONTEXT_FILE_PATH,
   PLAYGROUND_DB_PROVIDER_FILE_PATH,
   PLAYGROUND_GENERATED_DB_FILE_PATH,
   PLAYGROUND_KV_PROVIDER_FILE_PATH,
@@ -17,6 +19,7 @@ import {
 
 const PLAYGROUND_TYPED_FILE_PATHS = new Set<string>([
   PLAYGROUND_SCHEMA_FILE_PATH,
+  PLAYGROUND_CONTEXT_FILE_PATH,
   PLAYGROUND_DB_PROVIDER_FILE_PATH,
   PLAYGROUND_KV_PROVIDER_FILE_PATH,
   PLAYGROUND_GENERATED_DB_FILE_PATH,
@@ -53,6 +56,7 @@ function formatDiagnostic(diagnostic: ts.Diagnostic): string {
 function collectWorkspaceDiagnostics(): string[] {
   const workspace = buildPlaygroundWorkspaceSnapshot({
     schemaCode: DEFAULT_FACADE_SCHEMA_CODE,
+    contextCode: DEFAULT_CONTEXT_CODE,
     dbProviderCode: DEFAULT_DB_PROVIDER_CODE,
     kvProviderCode: DEFAULT_KV_PROVIDER_CODE,
     generatedDbCode: DEFAULT_GENERATED_DB_FILE_CODE,
@@ -115,6 +119,7 @@ function collectWorkspaceDiagnostics(): string[] {
 
   const rootNames = [
     PLAYGROUND_SCHEMA_FILE_PATH,
+    PLAYGROUND_CONTEXT_FILE_PATH,
     PLAYGROUND_DB_PROVIDER_FILE_PATH,
     PLAYGROUND_KV_PROVIDER_FILE_PATH,
     PLAYGROUND_GENERATED_DB_FILE_PATH,

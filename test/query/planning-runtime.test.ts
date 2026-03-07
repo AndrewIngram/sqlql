@@ -102,12 +102,12 @@ describe("query/planning", () => {
   });
 
   it("returns tagged planning errors when expanding invalid view rels", () => {
-    const schema = defineSchema(({ view, rel, col }) => ({
+    const schema = defineSchema(({ view }) => ({
       tables: {
         broken_view: view({
-          rel: () => rel.scan("missing_table"),
+          rel: ({ scan }) => scan("missing_table"),
           columns: {
-            id: col("missing_table.id"),
+            id: { source: "missing_table.id" },
           },
         }),
       },
@@ -128,12 +128,12 @@ describe("query/planning", () => {
   });
 
   it("returns tagged planning errors when building provider fragments for invalid expanded rels", () => {
-    const schema = defineSchema(({ view, rel, col }) => ({
+    const schema = defineSchema(({ view }) => ({
       tables: {
         broken_view: view({
-          rel: () => rel.scan("missing_table"),
+          rel: ({ scan }) => scan("missing_table"),
           columns: {
-            id: col("missing_table.id"),
+            id: { source: "missing_table.id" },
           },
         }),
       },

@@ -40,7 +40,7 @@ const productViewCountsEntity = createDataEntityHandle<"product_id" | "view_coun
   entity: "product_view_counts",
 });
 
-export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel, expr, col, agg }) => {
+export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view }) => {
   const myOrders = table(ordersEntity, {
     columns: ({ col, expr }) => ({
       id: col.id("id"),
@@ -130,10 +130,10 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
   });
 
   const activeProducts = view(
-    () =>
-      rel.join({
-        left: rel.scan(productsForOrg),
-        right: rel.scan(productAccessForUser),
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(productsForOrg),
+        right: scan(productAccessForUser),
         on: expr.eq(
           col(productsForOrg, "id"),
           col(productAccessForUser, "product_id"),
@@ -154,10 +154,10 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
   );
 
   const myOrderLines = view(
-    () =>
-      rel.join({
-        left: rel.scan(myOrderItems),
-        right: rel.scan(activeProducts),
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(myOrderItems),
+        right: scan(activeProducts),
         on: expr.eq(
           col(myOrderItems, "product_id"),
           col(activeProducts, "id"),
@@ -201,10 +201,10 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
   });
 
   const productEngagement = view(
-    () =>
-      rel.join({
-        left: rel.scan(activeProducts),
-        right: rel.scan(productViewCounts),
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(activeProducts),
+        right: scan(productViewCounts),
         on: expr.eq(
           col(activeProducts, "id"),
           col(productViewCounts, "product_id"),
@@ -230,9 +230,9 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
   );
 
   const productPerformance = view(
-    () =>
-      rel.aggregate({
-        from: rel.scan(myOrderLines),
+    ({ scan, aggregate, col, agg }) =>
+      aggregate({
+        from: scan(myOrderLines),
         groupBy: {
           product_id: col(myOrderLines, "product_id"),
           product_name: col(myOrderLines, "product_name"),
@@ -283,11 +283,21 @@ export const FACADE_SCHEMA: SchemaDefinition = defineSchema(({ table, view, rel,
 export const GENERATED_DB_MODULE_ID = "./generated-db";
 export const DB_PROVIDER_MODULE_ID = "./db-provider";
 export const KV_PROVIDER_MODULE_ID = "./kv-provider";
+export const CONTEXT_MODULE_ID = "./context";
+
+export const DEFAULT_CONTEXT_CODE = `
+import { drizzle } from "drizzle-orm/pglite";
+
+export type QueryContext = {
+  orgId: string;
+  userId: string;
+  db: ReturnType<typeof drizzle>;
+};
+`.trim();
 
 export const DEFAULT_GENERATED_DB_FILE_CODE = `
 // Generated from the downstream Postgres model used by the playground.
 // This file is read-only in the editor.
-import { getPlaygroundDbRuntime } from "@playground/db-runtime";
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 const orgsTable = pgTable("orgs", {
@@ -354,16 +364,13 @@ export const tables = {
   order_items: orderItemsTable,
   user_product_access: userProductAccessTable,
 } as const;
-
-export const { db } = getPlaygroundDbRuntime({ tables });
 `.trim();
 
 export const DEFAULT_DB_PROVIDER_CODE = `
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
-import { db, tables } from "${GENERATED_DB_MODULE_ID}";
-
-export type QueryContext = { orgId: string; userId: string; db: typeof db };
+import type { QueryContext } from "${CONTEXT_MODULE_ID}";
+import { tables } from "${GENERATED_DB_MODULE_ID}";
 
 const providerTables = {
   orders: {
@@ -400,18 +407,17 @@ const providerTables = {
   },
 };
 
-export const dbProvider = createDrizzleProvider<QueryContext, typeof providerTables>({
+export const dbProvider = createDrizzleProvider({
   name: "dbProvider",
   dialect: "postgres",
-  db: (ctx) => ctx.db,
+  db: (ctx: QueryContext) => ctx.db,
   tables: providerTables,
 });
 `.trim();
 
 export const DEFAULT_KV_PROVIDER_CODE = `
 import { createKvProvider, playgroundKvRuntime, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
-
-type QueryContext = { orgId: string; userId: string };
+import type { QueryContext } from "${CONTEXT_MODULE_ID}";
 
 function parseViewCounterKey(raw: string): { userId: string; productId: string } | null {
   const separator = raw.indexOf(":");
@@ -460,10 +466,11 @@ export const kvProvider = createProvider(playgroundKvRuntime);
 
 export const DEFAULT_FACADE_SCHEMA_CODE = `
 import { createExecutableSchema } from "sqlql";
-import { dbProvider, type QueryContext } from "${DB_PROVIDER_MODULE_ID}";
+import type { QueryContext } from "${CONTEXT_MODULE_ID}";
+import { dbProvider } from "${DB_PROVIDER_MODULE_ID}";
 import { kvProvider } from "${KV_PROVIDER_MODULE_ID}";
 
-export const executableSchema = createExecutableSchema<QueryContext>(({ table, view, rel, expr, col, agg }) => {
+export const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
   const myOrders = table(dbProvider.entities.orders, {
     columns: ({ col, expr }) => ({
       id: col.id("id"),
@@ -553,10 +560,10 @@ export const executableSchema = createExecutableSchema<QueryContext>(({ table, v
   });
 
   const activeProducts = view(
-    () =>
-      rel.join({
-        left: rel.scan(productsForOrg),
-        right: rel.scan(productAccessForUser),
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(productsForOrg),
+        right: scan(productAccessForUser),
         on: expr.eq(
           col(productsForOrg, "id"),
           col(productAccessForUser, "product_id"),
@@ -577,10 +584,10 @@ export const executableSchema = createExecutableSchema<QueryContext>(({ table, v
   );
 
   const myOrderLines = view(
-    () =>
-      rel.join({
-        left: rel.scan(myOrderItems),
-        right: rel.scan(activeProducts),
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(myOrderItems),
+        right: scan(activeProducts),
         on: expr.eq(
           col(myOrderItems, "product_id"),
           col(activeProducts, "id"),
@@ -630,10 +637,10 @@ export const executableSchema = createExecutableSchema<QueryContext>(({ table, v
   });
 
   const productEngagement = view(
-    () =>
-      rel.join({
-        left: rel.scan(activeProducts),
-        right: rel.scan(productViewCounts),
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(activeProducts),
+        right: scan(productViewCounts),
         on: expr.eq(
           col(activeProducts, "id"),
           col(productViewCounts, "product_id"),
@@ -659,9 +666,9 @@ export const executableSchema = createExecutableSchema<QueryContext>(({ table, v
   );
 
   const productPerformance = view(
-    () =>
-      rel.aggregate({
-        from: rel.scan(myOrderLines),
+    ({ scan, aggregate, col, agg }) =>
+      aggregate({
+        from: scan(myOrderLines),
         groupBy: {
           product_id: col(myOrderLines, "product_id"),
           product_name: col(myOrderLines, "product_name"),
