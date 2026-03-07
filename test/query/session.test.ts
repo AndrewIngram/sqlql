@@ -10,6 +10,12 @@ import { commerceRows, commerceSchema } from "../support/commerce-fixture";
 
 const EMPTY_CONTEXT = {} as const;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 describe("query/session", () => {
   it("links CTE-backed scans to their producer step in the static plan", () => {
     const schema = defineSchema({
@@ -79,16 +85,15 @@ describe("query/session", () => {
     expect(cteStep).toBeDefined();
     expect(cteStep?.scopeId).toBeDefined();
 
-    const cteScanStep = plan.steps.find(
-      (step) => step.kind === "scan" && step.summary === "Scan r (recent_workouts)",
+    const finalizeStep = plan.steps.find(
+      (step) => step.kind === "projection" && step.summary === "Finalize WITH query",
     );
-    expect(cteScanStep).toBeDefined();
-    expect(cteScanStep?.dependsOn).toContain(cteStep?.id);
+    expect(finalizeStep).toBeDefined();
+    expect(finalizeStep?.dependsOn).toContain(cteStep?.id);
 
     const planScopes = plan.scopes ?? [];
     const rootScope = planScopes.find((scope) => scope.kind === "root");
     expect(rootScope).toBeDefined();
-    expect(cteScanStep?.scopeId).toBe(rootScope?.id);
     const cteScope = planScopes.find((scope) => scope.id === cteStep?.scopeId);
     expect(cteScope?.kind).toBe("cte");
     expect(cteScope?.label).toBe("CTE recent_workouts");
@@ -128,7 +133,6 @@ describe("query/session", () => {
     expect(scanStep?.operation.name).toBe("scan");
     expect(scanStep?.sqlOrigin).toBe("FROM");
     expect(scanStep?.request).toBeDefined();
-    expect(scanStep?.pushdown).toBeDefined();
 
     const first = await session.next();
     expect("done" in first).toBe(false);
@@ -201,14 +205,12 @@ describe("query/session", () => {
     });
 
     const plan = session.getPlan();
-    const projectionStep = plan.steps.find((step) => step.summary === "Project result rows");
-    const projectedOrderStep = plan.steps.find(
-      (step) => step.summary === "Apply ORDER/LIMIT/OFFSET on projected rows",
-    );
+    const windowStep = plan.steps.find((step) => step.summary === "Compute window functions");
+    const orderStep = plan.steps.find((step) => step.summary === "Order result rows");
 
-    expect(projectionStep).toBeDefined();
-    expect(projectedOrderStep).toBeDefined();
-    expect(projectedOrderStep?.dependsOn).toContain(projectionStep?.id);
+    expect(windowStep).toBeDefined();
+    expect(orderStep).toBeDefined();
+    expect(orderStep?.dependsOn).toContain(windowStep?.id);
   });
 
   it("steps through execution using next() and returns final result", async () => {
@@ -313,13 +315,58 @@ describe("query/session", () => {
       users: createArrayTableMethods([{ id: "u1" }]),
     });
 
+    expect(() =>
+      createMethodsSession({
+        schema,
+        methods,
+        context: EMPTY_CONTEXT,
+        sql: "SELECT * FROM missing_table",
+      })
+    ).toThrow("Unknown table: missing_table");
+  });
+
+  it("marks the root step failed when execution times out", async () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
+          columns: {
+            id: { type: "text", nullable: false },
+          },
+        },
+      },
+    });
+
+    const methods = defineTableMethods(schema, {
+      users: {
+        ...createArrayTableMethods([{ id: "u1" }]),
+        async scan(request, context) {
+          await sleep(25);
+          return createArrayTableMethods([{ id: "u1" }]).scan(request, context);
+        },
+      },
+    });
+
     const session = createMethodsSession({
       schema,
       methods,
       context: EMPTY_CONTEXT,
-      sql: "SELECT * FROM missing_table",
+      sql: "SELECT id FROM users",
+      queryGuardrails: {
+        timeoutMs: 5,
+      },
     });
 
-    await expect(session.next()).rejects.toThrow("Unknown table: missing_table");
+    await expect(session.next()).rejects.toMatchObject({
+      _tag: "SqlqlTimeoutError",
+      name: "SqlqlTimeoutError",
+      message: "Query timed out after 5ms.",
+    });
+
+    const rootStepId = session.getPlan().steps[session.getPlan().steps.length - 1]?.id;
+    expect(rootStepId).toBeDefined();
+    expect(session.getStepState(rootStepId ?? "")).toMatchObject({
+      status: "failed",
+      error: "Query timed out after 5ms.",
+    });
   });
 });

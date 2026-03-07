@@ -52,7 +52,9 @@
     "example:playground:dev": "pnpm --dir examples/playground dev",
     "prepublishOnly": "pnpm run build"
   },
-  "dependencies": {},
+  "dependencies": {
+    "better-result": "^2.7.0"
+  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.3.0",

@@ -101,7 +101,9 @@ async function executeRelNode<TContext>(
     case "with":
       return executeWith(node, context);
     case "sql":
-      throw new UnsupportedRelExecutionError("SQL-shaped rel nodes are not executable in the v1 provider runtime.");
+      throw new UnsupportedRelExecutionError(
+        "SQL-shaped rel nodes are not executable in the current provider runtime.",
+      );
   }
 }
 

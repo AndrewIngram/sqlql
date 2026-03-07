@@ -5,7 +5,7 @@ import { defineSchema, defineTableMethods } from "../../src";
 
 const EMPTY_CONTEXT = {} as const;
 
-describe("query/v1-security", () => {
+describe("query/security", () => {
   it("rejects selecting columns that are not declared in the schema facade", async () => {
     const schema = defineSchema({
       tables: {

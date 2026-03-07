@@ -7,7 +7,7 @@ import {
   toSqlDDL,
 } from "../../src";
 
-describe("query/v1 schema dsl", () => {
+describe("query/schema dsl", () => {
   it("keeps foreignKey metadata on source-based table lens columns", () => {
     const ordersEntity = createDataEntityHandle<"id" | "vendor_id">({
       entity: "orders_raw",

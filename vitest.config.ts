@@ -13,7 +13,8 @@ export default defineConfig({
   test: {
     include: [
       "test/parser/**/*.test.ts",
-      "test/query/v1-*.test.ts",
+      "test/query/*runtime.test.ts",
+      "test/query/session.test.ts",
       "test/providers/**/*.test.ts",
       "examples/**/test/**/*.test.ts",
     ],

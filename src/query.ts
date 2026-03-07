@@ -1,9 +1,9 @@
 import type { ConstraintValidationOptions } from "./constraints";
+import { Result, TaggedError, type Result as BetterResult } from "better-result";
 import {
   normalizeCapability,
   validateProviderBindings,
   type ProviderAdapter,
-  type ProviderCompiledPlan,
   type ProviderCapabilityReport,
   type ProviderFragment,
   type ProvidersMap,
@@ -258,42 +258,136 @@ function makeDiagnostic(
   };
 }
 
-export class SqlqlDiagnosticError extends Error {
-  readonly diagnostics: SqlqlDiagnostic[];
+export class SqlqlDiagnosticError extends TaggedError("SqlqlDiagnosticError")<{
+  diagnostics: SqlqlDiagnostic[];
+  message: string;
+}>() {}
 
-  constructor(message: string, diagnostics: SqlqlDiagnostic[]) {
-    super(message);
-    this.name = "SqlqlDiagnosticError";
-    this.diagnostics = diagnostics;
-  }
+class SqlqlGuardrailError extends TaggedError("SqlqlGuardrailError")<{
+  actual: number;
+  guardrail: keyof QueryGuardrails;
+  limit: number;
+  message: string;
+}>() {}
+
+class SqlqlTimeoutError extends TaggedError("SqlqlTimeoutError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+  timeoutMs: number;
+}>() {}
+
+class SqlqlRuntimeError extends TaggedError("SqlqlRuntimeError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+}>() {}
+
+type SqlqlQueryError =
+  | SqlqlDiagnosticError
+  | SqlqlGuardrailError
+  | SqlqlTimeoutError
+  | SqlqlRuntimeError;
+
+type QueryResult<T> = BetterResult<T, SqlqlQueryError>;
+
+function isSqlqlQueryError(error: unknown): error is SqlqlQueryError {
+  return (
+    error instanceof SqlqlDiagnosticError ||
+    error instanceof SqlqlGuardrailError ||
+    error instanceof SqlqlTimeoutError ||
+    error instanceof SqlqlRuntimeError
+  );
 }
 
-function enforceExecutionRowLimit(rows: QueryRow[], guardrails: QueryGuardrails): void {
+function toSqlqlRuntimeError(error: unknown, operation: string): SqlqlQueryError {
+  if (isSqlqlQueryError(error)) {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return new SqlqlRuntimeError({
+      operation,
+      message: error.message,
+      cause: error,
+    });
+  }
+
+  return new SqlqlRuntimeError({
+    operation,
+    message: String(error),
+    cause: error,
+  });
+}
+
+function unwrapQueryResult<T>(result: QueryResult<T>): T {
+  if (Result.isOk(result)) {
+    return result.value;
+  }
+
+  throw result.error;
+}
+
+function tryQueryStep<T>(operation: string, fn: () => T): QueryResult<T> {
+  return Result.try({
+    try: () => fn() as Awaited<T>,
+    catch: (error) => toSqlqlRuntimeError(error, operation),
+  }) as QueryResult<T>;
+}
+
+async function tryQueryStepAsync<T>(operation: string, fn: () => Promise<T>): Promise<QueryResult<T>> {
+  return Result.tryPromise({
+    try: fn,
+    catch: (error) => toSqlqlRuntimeError(error, operation),
+  });
+}
+
+function enforceExecutionRowLimitResult(
+  rows: QueryRow[],
+  guardrails: QueryGuardrails,
+): QueryResult<QueryRow[]> {
   if (rows.length > guardrails.maxExecutionRows) {
-    throw new Error(
-      `Query exceeded maxExecutionRows guardrail (${guardrails.maxExecutionRows}). Received ${rows.length} rows.`,
+    return Result.err(
+      new SqlqlGuardrailError({
+        guardrail: "maxExecutionRows",
+        limit: guardrails.maxExecutionRows,
+        actual: rows.length,
+        message: `Query exceeded maxExecutionRows guardrail (${guardrails.maxExecutionRows}). Received ${rows.length} rows.`,
+      }),
     );
   }
+
+  return Result.ok(rows);
 }
 
 function isPromiseLike<T>(value: unknown): value is Promise<T> {
   return !!value && typeof value === "object" && "then" in value;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withTimeoutResult<T>(
+  operation: string,
+  promiseFactory: () => Promise<T>,
+  timeoutMs: number,
+): Promise<QueryResult<T>> {
   if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
-    return promise;
+    return tryQueryStepAsync(operation, promiseFactory);
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`Query timed out after ${timeoutMs}ms.`));
+      reject(
+        new SqlqlTimeoutError({
+          operation,
+          timeoutMs,
+          message: `Query timed out after ${timeoutMs}ms.`,
+        }),
+      );
     }, timeoutMs);
   });
 
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    return await tryQueryStepAsync(operation, () => Promise.race([promiseFactory(), timeoutPromise]));
   } finally {
     if (timer) {
       clearTimeout(timer);
@@ -461,7 +555,10 @@ function maybeRejectFallback<TContext>(
             "42000",
           ),
         ];
-    throw new SqlqlDiagnosticError(summarizeCapabilityReason(resolution.report), diagnostics);
+    throw new SqlqlDiagnosticError({
+      message: summarizeCapabilityReason(resolution.report),
+      diagnostics,
+    });
   }
 }
 
@@ -510,6 +607,38 @@ async function maybeExecuteWholeQueryFragment<TContext>(
 
   const compiled = await resolution.provider.compile(resolution.fragment, input.context);
   return resolution.provider.execute(compiled, input.context);
+}
+
+function enforcePlannerNodeLimitResult(
+  plannerNodeCount: number,
+  guardrails: QueryGuardrails,
+): QueryResult<number> {
+  if (plannerNodeCount > guardrails.maxPlannerNodes) {
+    return Result.err(
+      new SqlqlGuardrailError({
+        guardrail: "maxPlannerNodes",
+        limit: guardrails.maxPlannerNodes,
+        actual: plannerNodeCount,
+        message: `Query exceeded maxPlannerNodes guardrail (${guardrails.maxPlannerNodes}). Planned ${plannerNodeCount} nodes.`,
+      }),
+    );
+  }
+
+  return Result.ok(plannerNodeCount);
+}
+
+function setFailedStepState(
+  state: QueryStepState,
+  error: SqlqlQueryError,
+  endedAt: number,
+): QueryStepState {
+  return {
+    ...state,
+    status: "failed",
+    endedAt,
+    durationMs: endedAt - (state.startedAt ?? endedAt),
+    error: error.message,
+  };
 }
 
 function createProviderFragmentSession<TContext>(
@@ -565,9 +694,9 @@ function createProviderFragmentSession<TContext>(
     ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 
-  const run = async (): Promise<QueryRow[]> => {
+  const runResult = async (): Promise<QueryResult<QueryRow[]>> => {
     if (executed) {
-      return result ?? [];
+      return Result.ok(result ?? []);
     }
 
     executed = true;
@@ -578,18 +707,48 @@ function createProviderFragmentSession<TContext>(
       startedAt,
     };
 
-    const compiled = await provider.compile(fragment, input.context);
-    let rows = await withTimeout(provider.execute(compiled, input.context), guardrails.timeoutMs);
-    if (fragment.kind === "scan" && rel.kind === "scan") {
-      const binding = getNormalizedTableBinding(input.schema, rel.table);
-      rows = mapProviderRowsToLogical(
-        rows,
-        rel.select,
-        binding?.kind === "physical" ? binding : null,
-        input.schema.tables[rel.table],
-      );
+    const compiledResult = await tryQueryStepAsync("compile provider fragment", () =>
+      Promise.resolve(provider.compile(fragment, input.context))
+    );
+    if (Result.isError(compiledResult)) {
+      state = setFailedStepState(state, compiledResult.error, Date.now());
+      return compiledResult;
     }
-    enforceExecutionRowLimit(rows, guardrails);
+
+    const executeRowsResult = await withTimeoutResult(
+      "execute provider fragment",
+      () => provider.execute(compiledResult.value, input.context),
+      guardrails.timeoutMs,
+    );
+    if (Result.isError(executeRowsResult)) {
+      state = setFailedStepState(state, executeRowsResult.error, Date.now());
+      return executeRowsResult;
+    }
+
+    let rows = executeRowsResult.value;
+    if (fragment.kind === "scan" && rel.kind === "scan") {
+      const mappedRowsResult = tryQueryStep("map provider rows to logical rows", () => {
+        const binding = getNormalizedTableBinding(input.schema, rel.table);
+        return mapProviderRowsToLogical(
+          rows,
+          rel.select,
+          binding?.kind === "physical" ? binding : null,
+          input.schema.tables[rel.table],
+        );
+      });
+      if (Result.isError(mappedRowsResult)) {
+        state = setFailedStepState(state, mappedRowsResult.error, Date.now());
+        return mappedRowsResult;
+      }
+      rows = mappedRowsResult.value;
+    }
+
+    const limitedRowsResult = enforceExecutionRowLimitResult(rows, guardrails);
+    if (Result.isError(limitedRowsResult)) {
+      state = setFailedStepState(state, limitedRowsResult.error, Date.now());
+      return limitedRowsResult;
+    }
+
     result = rows;
 
     const endedAt = Date.now();
@@ -606,7 +765,11 @@ function createProviderFragmentSession<TContext>(
       ...(diagnostics.length > 0 ? { diagnostics } : {}),
     };
 
-    return rows;
+    return Result.ok(rows);
+  };
+
+  const run = async (): Promise<QueryRow[]> => {
+    return unwrapQueryResult(await runResult());
   };
 
   return {
@@ -679,9 +842,9 @@ function createRelExecutionSession<TContext>(
   let emittedEvents: QueryStepEvent[] = [];
   let emittedIndex = 0;
 
-  const run = async (): Promise<QueryRow[]> => {
+  const runResult = async (): Promise<QueryResult<QueryRow[]>> => {
     if (executed) {
-      return result ?? [];
+      return Result.ok(result ?? []);
     }
 
     executed = true;
@@ -698,8 +861,9 @@ function createRelExecutionSession<TContext>(
       }
     }
 
-    try {
-      const rows = await withTimeout(
+    const rowsResult = await withTimeoutResult(
+      "execute relational query",
+      () =>
         executeRelWithProviders(
           rel,
           input.schema,
@@ -711,15 +875,39 @@ function createRelExecutionSession<TContext>(
             maxLookupBatches: guardrails.maxLookupBatches,
           },
         ),
-        guardrails.timeoutMs,
-      );
-      enforceExecutionRowLimit(rows, guardrails);
-      result = rows;
+      guardrails.timeoutMs,
+    );
+    if (Result.isError(rowsResult)) {
+      const endedAt = Date.now();
+      if (rootStepId) {
+        const rootState = states.get(rootStepId);
+        if (rootState) {
+          states.set(rootStepId, setFailedStepState(rootState, rowsResult.error, endedAt));
+        }
+      }
+      return rowsResult;
+    }
 
+    const limitedRowsResult = enforceExecutionRowLimitResult(rowsResult.value, guardrails);
+    if (Result.isError(limitedRowsResult)) {
+      const endedAt = Date.now();
+      if (rootStepId) {
+        const rootState = states.get(rootStepId);
+        if (rootState) {
+          states.set(rootStepId, setFailedStepState(rootState, limitedRowsResult.error, endedAt));
+        }
+      }
+      return limitedRowsResult;
+    }
+
+    result = limitedRowsResult.value;
+    const completedRows = result;
+
+    const eventBuildResult = tryQueryStep("build session step events", () => {
       const endedAt = Date.now();
       const duration = Math.max(endedAt - startedAt, 1);
       const stepCount = Math.max(executionOrder.length, 1);
-      emittedEvents = executionOrder.map((stepId, index) => {
+      return executionOrder.map((stepId, index) => {
         const step = stepById.get(stepId);
         if (!step) {
           throw new Error(`Unknown query step id: ${stepId}`);
@@ -741,8 +929,8 @@ function createRelExecutionSession<TContext>(
           endedAt: stepEndedAt,
           durationMs: stepDuration,
           ...(routeUsed ? { routeUsed } : {}),
-          ...(isRoot ? { rowCount: rows.length, outputRowCount: rows.length } : {}),
-          ...(isRoot && input.options?.captureRows === "full" ? { rows } : {}),
+          ...(isRoot ? { rowCount: completedRows.length, outputRowCount: completedRows.length } : {}),
+          ...(isRoot && input.options?.captureRows === "full" ? { rows: completedRows } : {}),
           ...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
         };
         states.set(step.id, nextState);
@@ -758,31 +946,30 @@ function createRelExecutionSession<TContext>(
           endedAt: stepEndedAt,
           durationMs: stepDuration,
           ...(routeUsed ? { routeUsed } : {}),
-          ...(isRoot ? { rowCount: rows.length, outputRowCount: rows.length } : {}),
-          ...(isRoot && input.options?.captureRows === "full" ? { rows } : {}),
+          ...(isRoot ? { rowCount: completedRows.length, outputRowCount: completedRows.length } : {}),
+          ...(isRoot && input.options?.captureRows === "full" ? { rows: completedRows } : {}),
           ...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
         };
         return event;
       });
-
-      return rows;
-    } catch (error) {
+    });
+    if (Result.isError(eventBuildResult)) {
       const endedAt = Date.now();
       if (rootStepId) {
         const rootState = states.get(rootStepId);
         if (rootState) {
-          states.set(rootStepId, {
-            ...rootState,
-            status: "failed",
-            endedAt,
-            durationMs: endedAt - (rootState.startedAt ?? startedAt),
-            error: error instanceof Error ? error.message : String(error),
-            ...(diagnostics.length > 0 ? { diagnostics } : {}),
-          });
+          states.set(rootStepId, setFailedStepState(rootState, eventBuildResult.error, endedAt));
         }
       }
-      throw error;
+      return eventBuildResult;
     }
+
+    emittedEvents = eventBuildResult.value;
+    return Result.ok(result);
+  };
+
+  const run = async (): Promise<QueryRow[]> => {
+    return unwrapQueryResult(await runResult());
   };
 
   return {
@@ -1226,6 +1413,16 @@ function tryCreateSyncProviderFragmentSession<TContext>(
   );
 }
 
+function tryCreateSyncProviderFragmentSessionResult<TContext>(
+  input: QuerySessionInput<TContext>,
+  guardrails: QueryGuardrails,
+  rel: RelNode,
+): QueryResult<QuerySession | null> {
+  return tryQueryStep("create provider fragment session", () =>
+    tryCreateSyncProviderFragmentSession(input, guardrails, rel)
+  );
+}
+
 function normalizeRuntimeSchema<TContext>(input: QueryInput<TContext>): QueryInput<TContext> {
   const schema = resolveSchemaLinkedEnums(input.schema);
   validateProviderBindings(schema, input.providers);
@@ -1235,33 +1432,59 @@ function normalizeRuntimeSchema<TContext>(input: QueryInput<TContext>): QueryInp
   };
 }
 
+function normalizeRuntimeSchemaResult<TContext>(input: QueryInput<TContext>): QueryResult<QueryInput<TContext>> {
+  return tryQueryStep("normalize runtime schema", () => normalizeRuntimeSchema(input));
+}
+
+function lowerSqlToRelResult<TContext>(input: QueryInput<TContext>): QueryResult<ReturnType<typeof lowerSqlToRel>> {
+  return tryQueryStep("lower SQL to relational plan", () => lowerSqlToRel(input.sql, input.schema));
+}
+
+function expandRelViewsResult<TContext>(
+  rel: RelNode,
+  input: QueryInput<TContext>,
+): QueryResult<RelNode> {
+  return tryQueryStep("expand relational views", () => expandRelViews(rel, input.schema, input.context));
+}
+
+function assertNoSqlNodesWithoutProviderFragmentResult(rel: RelNode): QueryResult<RelNode> {
+  const assertionResult = tryQueryStep("validate provider fragment execution shape", () => {
+    assertNoSqlNodesWithoutProviderFragment(rel);
+  });
+  if (Result.isError(assertionResult)) {
+    return assertionResult;
+  }
+  return Result.ok(rel);
+}
+
 function createQuerySessionInternal<TContext>(input: QuerySessionInput<TContext>): QuerySession {
-  const resolvedInput = normalizeRuntimeSchema(input);
+  const resolvedInputResult = normalizeRuntimeSchemaResult(input);
+  const resolvedInput = unwrapQueryResult(resolvedInputResult);
   const guardrails = resolveGuardrails(input.queryGuardrails);
-  const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
+  const lowered = unwrapQueryResult(lowerSqlToRelResult(resolvedInput));
 
   const plannerNodeCount = countRelNodes(lowered.rel);
-  if (plannerNodeCount > guardrails.maxPlannerNodes) {
-    throw new Error(
-      `Query exceeded maxPlannerNodes guardrail (${guardrails.maxPlannerNodes}). Planned ${plannerNodeCount} nodes.`,
-    );
-  }
+  unwrapQueryResult(enforcePlannerNodeLimitResult(plannerNodeCount, guardrails));
 
-  const providerSession = tryCreateSyncProviderFragmentSession(
+  const providerSession = unwrapQueryResult(tryCreateSyncProviderFragmentSessionResult(
     resolvedInput,
     guardrails,
     lowered.rel,
-  );
+  ));
   if (providerSession) {
     return providerSession;
   }
 
-  const capabilityResolution = resolveSyncProviderCapabilityForRel(resolvedInput, lowered.rel);
+  const capabilityResolution = unwrapQueryResult(
+    tryQueryStep("resolve provider capability", () =>
+      resolveSyncProviderCapabilityForRel(resolvedInput, lowered.rel)
+    ),
+  );
   if (capabilityResolution) {
     maybeRejectFallback(resolvedInput, capabilityResolution);
   }
-  const expandedRel = expandRelViews(lowered.rel, resolvedInput.schema, resolvedInput.context);
-  assertNoSqlNodesWithoutProviderFragment(expandedRel);
+  const expandedRel = unwrapQueryResult(expandRelViewsResult(lowered.rel, resolvedInput));
+  unwrapQueryResult(assertNoSqlNodesWithoutProviderFragmentResult(expandedRel));
   return createRelExecutionSession(
     resolvedInput,
     guardrails,
@@ -1270,34 +1493,54 @@ function createQuerySessionInternal<TContext>(input: QuerySessionInput<TContext>
   );
 }
 
-async function queryInternal<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
-  const resolvedInput = normalizeRuntimeSchema(input);
+async function queryInternalResult<TContext>(input: QueryInput<TContext>): Promise<QueryResult<QueryRow[]>> {
+  const resolvedInputResult = normalizeRuntimeSchemaResult(input);
+  if (Result.isError(resolvedInputResult)) {
+    return resolvedInputResult;
+  }
+  const resolvedInput = resolvedInputResult.value;
   const guardrails = resolveGuardrails(input.queryGuardrails);
-  const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
+  const loweredResult = lowerSqlToRelResult(resolvedInput);
+  if (Result.isError(loweredResult)) {
+    return loweredResult;
+  }
+  const lowered = loweredResult.value;
   const plannerNodeCount = countRelNodes(lowered.rel);
 
-  if (plannerNodeCount > guardrails.maxPlannerNodes) {
-    throw new Error(
-      `Query exceeded maxPlannerNodes guardrail (${guardrails.maxPlannerNodes}). Planned ${plannerNodeCount} nodes.`,
-    );
+  const plannerNodeLimitResult = enforcePlannerNodeLimitResult(plannerNodeCount, guardrails);
+  if (Result.isError(plannerNodeLimitResult)) {
+    return plannerNodeLimitResult;
   }
 
-  const remoteRows = await withTimeout(
-    maybeExecuteWholeQueryFragment(resolvedInput, lowered.rel),
+  const remoteRowsResult = await withTimeoutResult(
+    "execute whole provider fragment",
+    () => maybeExecuteWholeQueryFragment(resolvedInput, lowered.rel),
     guardrails.timeoutMs,
   );
+  if (Result.isError(remoteRowsResult)) {
+    return remoteRowsResult;
+  }
+  const remoteRows = remoteRowsResult.value;
 
   if (remoteRows) {
-    enforceExecutionRowLimit(remoteRows, guardrails);
-    return remoteRows;
+    return enforceExecutionRowLimitResult(remoteRows, guardrails);
   }
 
-  const expandedRel = expandRelViews(lowered.rel, resolvedInput.schema, resolvedInput.context);
-  assertNoSqlNodesWithoutProviderFragment(expandedRel);
+  const expandedRelResult = expandRelViewsResult(lowered.rel, resolvedInput);
+  if (Result.isError(expandedRelResult)) {
+    return expandedRelResult;
+  }
 
-  const rows = await withTimeout(
-    executeRelWithProviders(
-      expandedRel,
+  const executableRelResult = assertNoSqlNodesWithoutProviderFragmentResult(expandedRelResult.value);
+  if (Result.isError(executableRelResult)) {
+    return executableRelResult;
+  }
+
+  const rowsResult = await withTimeoutResult(
+    "execute relational query",
+    () =>
+      executeRelWithProviders(
+      executableRelResult.value,
       resolvedInput.schema,
       resolvedInput.providers,
       resolvedInput.context,
@@ -1309,9 +1552,15 @@ async function queryInternal<TContext>(input: QueryInput<TContext>): Promise<Que
     ),
     guardrails.timeoutMs,
   );
+  if (Result.isError(rowsResult)) {
+    return rowsResult;
+  }
 
-  enforceExecutionRowLimit(rows, guardrails);
-  return rows;
+  return enforceExecutionRowLimitResult(rowsResult.value, guardrails);
+}
+
+async function queryInternal<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
+  return unwrapQueryResult(await queryInternalResult(input));
 }
 
 export interface ExplainResult {
@@ -1322,10 +1571,14 @@ export interface ExplainResult {
 }
 
 function explainInternal<TContext>(input: QueryInput<TContext>): ExplainResult {
-  const resolvedInput = normalizeRuntimeSchema(input);
+  const resolvedInput = unwrapQueryResult(normalizeRuntimeSchemaResult(input));
   const guardrails = resolveGuardrails(input.queryGuardrails);
-  const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
-  const capabilityResolution = resolveSyncProviderCapabilityForRel(resolvedInput, lowered.rel);
+  const lowered = unwrapQueryResult(lowerSqlToRelResult(resolvedInput));
+  const capabilityResolution = unwrapQueryResult(
+    tryQueryStep("resolve provider capability", () =>
+      resolveSyncProviderCapabilityForRel(resolvedInput, lowered.rel)
+    ),
+  );
 
   return {
     rel: lowered.rel,
@@ -1408,17 +1661,5 @@ export function createExecutableSchema<TContext, TSchema extends SchemaDefinitio
         ...input,
       });
     },
-  };
-}
-
-export function asProviderCompiledPlan(
-  provider: string,
-  kind: string,
-  payload: unknown,
-): ProviderCompiledPlan {
-  return {
-    provider,
-    kind,
-    payload,
   };
 }
