@@ -13,8 +13,8 @@ import type {
   QueryStepState,
   SchemaDefinition,
   SqlScalarType,
-} from "sqlql";
-import { toSqlDDL } from "sqlql";
+} from "../../../src/index";
+import { toSqlDDL } from "../../../src/index";
 
 import { DataGrid } from "@/data-grid";
 import {
@@ -58,12 +58,17 @@ import {
 import { SqlPreviewLine } from "@/SqlPreviewLine";
 import { registerSqlCompletionProvider } from "@/sql-completion";
 import { configureSchemaTypescriptProject } from "@/schema-monaco";
+import {
+  PLAYGROUND_DB_PROVIDER_FILE_URI,
+  PLAYGROUND_GENERATED_DB_FILE_URI,
+  PLAYGROUND_KV_PROVIDER_FILE_URI,
+  PLAYGROUND_SCHEMA_FILE_URI,
+} from "@/playground-workspace";
 import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "@/kv-provider";
 import {
   parseDownstreamRowsText,
   parseFacadeSchemaCode,
 } from "@/validation";
-import schemaEditorSqlqlTypesText from "@/schema-editor-sqlql.d.ts.txt?raw";
 import { DOWNSTREAM_ROWS_SCHEMA, DOWNSTREAM_TABLE_NAMES } from "@/downstream-model";
 import {
   type ExecutedProviderOperation,
@@ -99,14 +104,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
-const SCHEMA_MODEL_PATH = "file:///playground/schema.ts";
-const SCHEMA_PROVIDER_MODEL_PATH = "file:///playground/db-provider.ts";
-const SCHEMA_KV_PROVIDER_MODEL_PATH = "file:///playground/kv-provider.ts";
-const SCHEMA_GENERATED_MODEL_PATH = "file:///playground/generated-db.ts";
+const SCHEMA_MODEL_PATH = PLAYGROUND_SCHEMA_FILE_URI;
+const SCHEMA_PROVIDER_MODEL_PATH = PLAYGROUND_DB_PROVIDER_FILE_URI;
+const SCHEMA_KV_PROVIDER_MODEL_PATH = PLAYGROUND_KV_PROVIDER_FILE_URI;
+const SCHEMA_GENERATED_MODEL_PATH = PLAYGROUND_GENERATED_DB_FILE_URI;
 const SCHEMA_DDL_MODEL_PATH = "inmemory://sqlql/schema.ddl.sql";
 const DOWNSTREAM_DDL_MODEL_PATH = "inmemory://sqlql/downstream-schema.ddl.sql";
 const SQL_MODEL_PATH = "inmemory://sqlql/query.sql";
-const SCHEMA_SQLQL_TYPES_LIB_PATH = "file:///types/sqlql/index.d.ts";
 const CUSTOM_SCENARIO_ID = "__custom_scenario__";
 const EXPANDED_QUERY_EDITOR_PADDING_Y_PX = 16;
 const EXPANDED_QUERY_EDITOR_DEFAULT_HEIGHT_PX = 120;
@@ -841,8 +845,7 @@ function buildGeneratedDbModuleCode(schema: SchemaDefinition): string {
   return `
 // Generated from the downstream Postgres model used by the playground.
 // This file is read-only in the editor.
-import { PGlite } from "https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js";
-import { drizzle } from "drizzle-orm/pglite";
+import { getPlaygroundDbRuntime } from "@playground/db-runtime";
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 ${tableDefinitions}
@@ -851,8 +854,7 @@ export const tables = {
 ${tableEntries}
 } as const;
 
-const client = new PGlite();
-export const db = drizzle({ client });
+export const { db } = getPlaygroundDbRuntime({ tables });
 `.trim();
 }
 
@@ -1445,10 +1447,7 @@ export function App(): React.JSX.Element {
       return;
     }
 
-    configureSchemaTypescriptProject(monaco, {
-      sqlqlTypesText: schemaEditorSqlqlTypesText,
-      sqlqlTypesLibPath: SCHEMA_SQLQL_TYPES_LIB_PATH,
-    });
+    configureSchemaTypescriptProject(monaco);
     schemaTypesRegisteredRef.current = true;
   }, []);
 

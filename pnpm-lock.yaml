@@ -141,6 +141,9 @@ importers:
       '@xyflow/react':
         specifier: ^12.9.0
         version: 12.10.1(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1

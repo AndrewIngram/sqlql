@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/pglite";
-import type { QueryRow } from "sqlql";
+import type { QueryRow } from "../../../src/index";
 
 import type {
   DownstreamRows,
@@ -185,7 +185,10 @@ async function createRuntime(): Promise<PlaygroundPgliteRuntime> {
 
 async function loadPGliteConstructor(): Promise<PGliteConstructor> {
   pgliteCtorPromise ??= (async () => {
-    const preferCdn = typeof globalThis === "object" && "document" in globalThis;
+    const preferCdn =
+      typeof globalThis === "object" &&
+      typeof globalThis.location === "object" &&
+      (globalThis.location.protocol === "http:" || globalThis.location.protocol === "https:");
     if (preferCdn) {
       try {
         const cdnModule = await import(/* @vite-ignore */ PGLITE_CDN_URL);
@@ -198,8 +201,7 @@ async function loadPGliteConstructor(): Promise<PGliteConstructor> {
       }
     }
 
-    const localSpecifier = "@electric-sql/pglite";
-    const localModule = await import(/* @vite-ignore */ localSpecifier);
+    const localModule = await import("@electric-sql/pglite");
     const localConstructor = (localModule as { PGlite?: unknown }).PGlite;
     if (typeof localConstructor === "function") {
       return localConstructor as PGliteConstructor;

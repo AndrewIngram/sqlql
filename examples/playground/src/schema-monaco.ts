@@ -1,13 +1,28 @@
 import type * as Monaco from "monaco-editor";
 
-export interface SchemaMonacoBootstrap {
-  sqlqlTypesText: string;
-  sqlqlTypesLibPath: string;
+import {
+  buildPlaygroundWorkspaceSnapshot,
+  PLAYGROUND_WORKSPACE_ROOT_URI,
+} from "./playground-workspace";
+
+const STATIC_WORKSPACE = buildPlaygroundWorkspaceSnapshot({
+  schemaCode: "",
+  dbProviderCode: "",
+  kvProviderCode: "",
+  generatedDbCode: "",
+});
+
+let workspaceLibrariesRegistered = false;
+
+function inferLanguage(path: string): "typescript" | "javascript" {
+  if (path.endsWith(".ts") || path.endsWith(".d.ts") || path.endsWith(".tsx")) {
+    return "typescript";
+  }
+  return "javascript";
 }
 
 export function configureSchemaTypescriptProject(
   monaco: typeof Monaco,
-  input: SchemaMonacoBootstrap,
 ): void {
   monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
     target: monaco.languages.typescript.ScriptTarget.ES2020,
@@ -20,11 +35,9 @@ export function configureSchemaTypescriptProject(
     allowNonTsExtensions: true,
     allowImportingTsExtensions: true,
     skipLibCheck: true,
-    baseUrl: "file:///",
-    rootDirs: ["file:///playground", "file:///types"],
-    paths: {
-      sqlql: [input.sqlqlTypesLibPath],
-    },
+    lib: ["lib.es2021.d.ts", "lib.dom.d.ts"],
+    baseUrl: PLAYGROUND_WORKSPACE_ROOT_URI,
+    rootDirs: [PLAYGROUND_WORKSPACE_ROOT_URI],
   });
   monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
     noSyntaxValidation: false,
@@ -32,8 +45,25 @@ export function configureSchemaTypescriptProject(
     noSuggestionDiagnostics: false,
   });
   monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
-  monaco.languages.typescript.typescriptDefaults.addExtraLib(
-    input.sqlqlTypesText,
-    input.sqlqlTypesLibPath,
-  );
+
+  if (workspaceLibrariesRegistered) {
+    return;
+  }
+
+  for (const [path, contents] of Object.entries(STATIC_WORKSPACE.sourceFiles)) {
+    const uri = monaco.Uri.parse(`file://${path}`);
+    const existing = monaco.editor.getModel(uri);
+    if (!existing) {
+      monaco.editor.createModel(contents, inferLanguage(path), uri);
+    }
+  }
+
+  for (const [path, contents] of Object.entries(STATIC_WORKSPACE.declarationFiles)) {
+    monaco.languages.typescript.typescriptDefaults.addExtraLib(
+      contents,
+      `file://${path}`,
+    );
+  }
+
+  workspaceLibrariesRegistered = true;
 }

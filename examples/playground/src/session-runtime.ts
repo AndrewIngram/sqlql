@@ -1,55 +1,28 @@
-import * as drizzleAdapterModule from "../../../packages/drizzle/src/index";
-import * as drizzleOrmModule from "drizzle-orm";
-import * as ts from "typescript";
 import {
   defaultSqlAstParser,
   lowerSqlToRel,
-  planPhysicalQuery,
   resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
-  type ExecutableSchema,
   type PhysicalPlan,
   type ProviderFragment,
-  type ProviderAdapter,
   type QueryExecutionPlan,
   type QueryRow,
   type QuerySession,
+  type QueryStepState,
   type QueryStepEvent,
   type RelNode,
   type SchemaDefinition,
-} from "sqlql";
-import * as sqlqlModule from "sqlql";
+} from "../../../src/index";
 
 import {
   DOWNSTREAM_ROWS_SCHEMA,
-  orderItemsTable,
-  orgsTable,
-  ordersTable,
-  productsTable,
-  usersTable,
-  userProductAccessTable,
-  vendorsTable,
 } from "./downstream-model";
+import { requestSandboxWorker } from "./playground-sandbox-client";
 import {
-  DB_PROVIDER_MODULE_ID,
-  DEFAULT_DB_PROVIDER_CODE,
-  DEFAULT_GENERATED_DB_FILE_CODE,
-  DEFAULT_KV_PROVIDER_CODE,
-  GENERATED_DB_MODULE_ID,
-  KV_PROVIDER_MODULE_ID,
-} from "./examples";
-import {
-  createKvProvider,
-  KV_INPUT_TABLE_NAME,
-  type KvInputRow,
-} from "./kv-provider";
-import {
-  clearExecutedProviderOperations,
-  getExecutedProviderOperations,
-  getPlaygroundPgliteRuntime,
-  recordExecutedProviderOperation,
-  reseedDownstreamDatabase,
-} from "./pglite-runtime";
+  buildPlaygroundModules,
+  serializeStringRecord,
+  type PlaygroundSchemaProgramOptions,
+} from "./playground-program-files";
 import type { DownstreamRows, ExecutedProviderOperation, PlaygroundContext } from "./types";
 import {
   parseDownstreamRowsText,
@@ -71,10 +44,6 @@ export interface PlaygroundCompileFailure {
 }
 
 export type PlaygroundCompileResult = PlaygroundCompileSuccess | PlaygroundCompileFailure;
-
-export interface PlaygroundSchemaProgramOptions {
-  modules?: Record<string, string>;
-}
 
 export type PlaygroundPreparedInputSuccess = Omit<PlaygroundCompileSuccess, "sql">;
 
@@ -113,54 +82,12 @@ export interface PlaygroundSessionBundle {
   translation: PlaygroundTranslation;
 }
 
-interface PlaygroundOperationRecorder {
-  clear: () => void;
-  list: () => ExecutedProviderOperation[];
-  record: (operation: Parameters<typeof recordExecutedProviderOperation>[0]) => ExecutedProviderOperation;
-}
-
-const operationRecorder: PlaygroundOperationRecorder = {
-  clear: clearExecutedProviderOperations,
-  list: getExecutedProviderOperations,
-  record: recordExecutedProviderOperation,
-};
-
 interface PlaygroundPreparedInputCacheEntry extends PlaygroundPreparedInputSuccess {
   cacheKey: string;
 }
 
 const preparedInputCache = new Map<string, Promise<PlaygroundPreparedInputResult>>();
-const executableSchemaCache = new Map<
-  string,
-  Promise<{
-    executableSchema: ExecutableSchema<PlaygroundContext, SchemaDefinition>;
-    dbProvider: ProviderAdapter<PlaygroundContext>;
-    kvProvider: ProviderAdapter<PlaygroundContext>;
-  }>
->();
 const MAX_PREPARED_INPUT_CACHE_ENTRIES = 16;
-const MAX_EXECUTABLE_SCHEMA_CACHE_ENTRIES = 16;
-
-export function getPlaygroundOperationRecorder(): PlaygroundOperationRecorder {
-  return operationRecorder;
-}
-
-function buildPlaygroundModules(
-  options: PlaygroundSchemaProgramOptions = {},
-): Record<string, string> {
-  return {
-    [DB_PROVIDER_MODULE_ID]: DEFAULT_DB_PROVIDER_CODE,
-    [GENERATED_DB_MODULE_ID]: DEFAULT_GENERATED_DB_FILE_CODE,
-    [KV_PROVIDER_MODULE_ID]: DEFAULT_KV_PROVIDER_CODE,
-    ...options.modules,
-  };
-}
-
-function serializeStringRecord(record: Record<string, string>): string {
-  return JSON.stringify(
-    Object.entries(record).sort(([left], [right]) => left.localeCompare(right)),
-  );
-}
 
 function createPreparedInputCacheKey(
   schemaCodeText: string,
@@ -168,12 +95,6 @@ function createPreparedInputCacheKey(
   modules: Record<string, string>,
 ): string {
   return `${schemaCodeText}\u0000${rowsText}\u0000${serializeStringRecord(modules)}`;
-}
-
-function createExecutableSchemaCacheKey(
-  compiled: PlaygroundPreparedInputSuccess,
-): string {
-  return `${compiled.schemaCode}\u0000${JSON.stringify(compiled.downstreamRows)}\u0000${serializeStringRecord(compiled.modules)}`;
 }
 
 function setBoundedCacheEntry<T>(
@@ -529,238 +450,6 @@ function hasSqlNode(node: RelNode): boolean {
   }
 }
 
-interface ExecutableSchemaModuleExports<TContext> {
-  executableSchema?: ExecutableSchema<TContext, SchemaDefinition>;
-}
-
-interface ProviderModuleExports<TContext> {
-  dbProvider?: ProviderAdapter<TContext>;
-  kvProvider?: ProviderAdapter<TContext>;
-}
-
-interface DbProviderRuntimeInput {
-  db: Awaited<ReturnType<typeof getPlaygroundPgliteRuntime>>["db"];
-  tables: {
-    orgs: typeof orgsTable;
-    users: typeof usersTable;
-    vendors: typeof vendorsTable;
-    products: typeof productsTable;
-    orders: typeof ordersTable;
-    order_items: typeof orderItemsTable;
-    user_product_access: typeof userProductAccessTable;
-  };
-}
-
-function transpilePlaygroundModuleOrThrow(source: string, moduleId: string): string {
-  const transpiled = ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-      moduleResolution: ts.ModuleResolutionKind.NodeJs,
-      strict: true,
-      esModuleInterop: true,
-    },
-    reportDiagnostics: true,
-    fileName: `${moduleId}.ts`,
-  });
-
-  const firstError = (transpiled.diagnostics ?? []).find(
-    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
-  );
-  if (firstError) {
-    const message = ts.flattenDiagnosticMessageText(firstError.messageText, "\n");
-    throw new Error(`[TS_PARSE_ERROR] ${moduleId}: ${message}`);
-  }
-
-  return transpiled.outputText;
-}
-
-function executePlaygroundModule(
-  moduleId: string,
-  sourceModules: Record<string, string>,
-  staticModules: Record<string, unknown>,
-  cache: Map<string, Record<string, unknown>>,
-): Record<string, unknown> {
-  const cached = cache.get(moduleId);
-  if (cached) {
-    return cached;
-  }
-
-  const staticModule = staticModules[moduleId];
-  if (staticModule && typeof staticModule === "object") {
-    const record = staticModule as Record<string, unknown>;
-    cache.set(moduleId, record);
-    return record;
-  }
-
-  const source = sourceModules[moduleId];
-  if (typeof source !== "string") {
-    throw new Error(`Unsupported import in playground module graph: ${moduleId}`);
-  }
-
-  const transpiledOutput = transpilePlaygroundModuleOrThrow(source, moduleId);
-  const moduleRecord: { exports: Record<string, unknown> } = {
-    exports: {},
-  };
-
-  const require = (id: string): unknown => {
-    return executePlaygroundModule(id, sourceModules, staticModules, cache);
-  };
-
-  const runModule = new Function(
-    "exports",
-    "module",
-    "require",
-    `${transpiledOutput}\n//# sourceURL=playground-provider-${moduleId}.js`,
-  ) as (
-    exports: Record<string, unknown>,
-    module: { exports: Record<string, unknown> },
-    requireFn: (id: string) => unknown,
-  ) => void;
-
-  runModule(moduleRecord.exports, moduleRecord, require);
-  cache.set(moduleId, moduleRecord.exports);
-  return moduleRecord.exports;
-}
-
-function readExecutableSchemaOrThrow<TContext>(
-  moduleId: string,
-  exportsRecord: Record<string, unknown>,
-): ExecutableSchema<TContext, SchemaDefinition> {
-  const executableSchema = (exportsRecord as ExecutableSchemaModuleExports<TContext>).executableSchema;
-  if (
-    !executableSchema ||
-    typeof executableSchema !== "object" ||
-    !("schema" in executableSchema) ||
-    typeof executableSchema.query !== "function" ||
-    typeof executableSchema.createSession !== "function"
-  ) {
-    throw new Error(
-      `${moduleId} must export executableSchema created via createExecutableSchema(...).`,
-    );
-  }
-
-  return executableSchema;
-}
-
-function readProviderExportOrThrow<TContext>(
-  moduleId: string,
-  exportsRecord: Record<string, unknown>,
-  exportName: "dbProvider" | "kvProvider",
-): ProviderAdapter<TContext> {
-  const provider = (exportsRecord as ProviderModuleExports<TContext>)[exportName];
-  if (
-    !provider ||
-    typeof provider !== "object" ||
-    typeof provider.name !== "string" ||
-    typeof provider.canExecute !== "function" ||
-    typeof provider.compile !== "function" ||
-    typeof provider.execute !== "function"
-  ) {
-    throw new Error(`${moduleId} must export ${exportName} as a provider adapter instance.`);
-  }
-
-  return provider;
-}
-
-function readKvInputRows(rows: DownstreamRows): KvInputRow[] {
-  return ((rows[KV_INPUT_TABLE_NAME] ?? []) as Array<Record<string, unknown>>)
-    .flatMap((row) => {
-      const key = row.key;
-      if (typeof key !== "string" || key.trim().length === 0) {
-        return [];
-      }
-
-      return [{ key, value: row.value }];
-    });
-}
-
-async function buildExecutableSchemaFromModules(
-  compiled: PlaygroundPreparedInputSuccess,
-): Promise<{
-  executableSchema: ExecutableSchema<PlaygroundContext, SchemaDefinition>;
-  dbProvider: ProviderAdapter<PlaygroundContext>;
-  kvProvider: ProviderAdapter<PlaygroundContext>;
-}> {
-  const cacheKey = createExecutableSchemaCacheKey(compiled);
-  let cached = executableSchemaCache.get(cacheKey);
-  if (!cached) {
-    cached = (async () => {
-      const runtime = await getPlaygroundPgliteRuntime();
-      const runtimeDbTables: DbProviderRuntimeInput["tables"] = {
-        orgs: orgsTable,
-        users: usersTable,
-        vendors: vendorsTable,
-        products: productsTable,
-        orders: ordersTable,
-        order_items: orderItemsTable,
-        user_product_access: userProductAccessTable,
-      };
-      const staticModules: Record<string, unknown> = {
-        sqlql: sqlqlModule,
-        "@sqlql/drizzle": drizzleAdapterModule,
-        "drizzle-orm": drizzleOrmModule,
-        "@playground/kv-provider-core": {
-          createKvProvider,
-          playgroundKvRuntime: {
-            rows: readKvInputRows(compiled.downstreamRows),
-            recordOperation: operationRecorder.record,
-          },
-        },
-        [GENERATED_DB_MODULE_ID]: {
-          db: runtime.db,
-          tables: runtimeDbTables,
-        } satisfies DbProviderRuntimeInput,
-      };
-
-      const cache = new Map<string, Record<string, unknown>>();
-      const schemaModuleExports = executePlaygroundModule(
-        "__entry__",
-        {
-          __entry__: compiled.schemaCode,
-          ...compiled.modules,
-        },
-        staticModules,
-        cache,
-      );
-      const dbProviderExports = executePlaygroundModule(
-        DB_PROVIDER_MODULE_ID,
-        compiled.modules,
-        staticModules,
-        cache,
-      );
-      const kvProviderExports = executePlaygroundModule(
-        KV_PROVIDER_MODULE_ID,
-        compiled.modules,
-        staticModules,
-        cache,
-      );
-
-      return {
-        executableSchema: readExecutableSchemaOrThrow<PlaygroundContext>("schema.ts", schemaModuleExports),
-        dbProvider: readProviderExportOrThrow<PlaygroundContext>(
-          DB_PROVIDER_MODULE_ID,
-          dbProviderExports,
-          "dbProvider",
-        ),
-        kvProvider: readProviderExportOrThrow<PlaygroundContext>(
-          KV_PROVIDER_MODULE_ID,
-          kvProviderExports,
-          "kvProvider",
-        ),
-      };
-    })();
-    setBoundedCacheEntry(
-      executableSchemaCache,
-      cacheKey,
-      cached,
-      MAX_EXECUTABLE_SCHEMA_CACHE_ENTRIES,
-    );
-  }
-
-  return cached;
-}
-
 function resolveDownstreamEnumValues(ref: { table: string; column: string }): readonly string[] | undefined {
   const table = DOWNSTREAM_ROWS_SCHEMA.tables[ref.table];
   if (!table) {
@@ -773,32 +462,6 @@ function resolveDownstreamEnumValues(ref: { table: string; column: string }): re
 
   const column = resolveTableColumnDefinition(DOWNSTREAM_ROWS_SCHEMA, ref.table, ref.column);
   return column.enum;
-}
-
-function buildTranslation(
-  userSql: string,
-  facadeRel: RelNode,
-  physicalPlan: PhysicalPlan,
-): PlaygroundTranslation {
-  const providerFragments: TranslationFragment[] = [];
-
-  for (const step of physicalPlan.steps) {
-    if (step.kind !== "remote_fragment" || !step.fragment) {
-      continue;
-    }
-    providerFragments.push({
-      stepId: step.id,
-      provider: step.provider,
-      fragment: step.fragment,
-    });
-  }
-
-  return {
-    userSql,
-    facadeRel,
-    physicalPlan,
-    providerFragments,
-  };
 }
 
 export async function preparePlaygroundInput(
@@ -939,44 +602,150 @@ export async function compilePlaygroundInput(
   return compilePreparedPlaygroundQuery(prepared, sqlText);
 }
 
+const SANDBOX_SESSION_PROXY = Symbol("playgroundSandboxSessionProxy");
+
+interface SandboxSessionState {
+  sessionId: string;
+  plan: QueryExecutionPlan;
+  stepStates: Map<string, QueryStepState>;
+  result: QueryRow[] | null;
+  done: boolean;
+  events: QueryStepEvent[];
+}
+
+type SandboxQuerySession = QuerySession & {
+  [SANDBOX_SESSION_PROXY]: SandboxSessionState;
+};
+
+function createInitialStepStates(plan: QueryExecutionPlan): Map<string, QueryStepState> {
+  return new Map(
+    plan.steps.map((step) => [
+      step.id,
+      {
+        id: step.id,
+        kind: step.kind,
+        status: "ready",
+        summary: step.summary,
+        dependsOn: step.dependsOn,
+        ...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
+      } satisfies QueryStepState,
+    ]),
+  );
+}
+
+function applyStepEvent(state: SandboxSessionState, event: QueryStepEvent): void {
+  state.events.push(event);
+  state.stepStates.set(event.id, {
+    id: event.id,
+    kind: event.kind,
+    status: event.status === "failed" ? "failed" : "done",
+    summary: event.summary,
+    dependsOn: event.dependsOn,
+    executionIndex: event.executionIndex,
+    startedAt: event.startedAt,
+    endedAt: event.endedAt,
+    durationMs: event.durationMs,
+    ...(typeof event.rowCount === "number" ? { rowCount: event.rowCount } : {}),
+    ...(typeof event.inputRowCount === "number"
+      ? { inputRowCount: event.inputRowCount }
+      : {}),
+    ...(typeof event.outputRowCount === "number"
+      ? { outputRowCount: event.outputRowCount }
+      : {}),
+    ...(event.rows ? { rows: event.rows } : {}),
+    ...(event.routeUsed ? { routeUsed: event.routeUsed } : {}),
+    ...(event.notes ? { notes: event.notes } : {}),
+    ...(event.error ? { error: event.error } : {}),
+    ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
+  });
+}
+
+function isSandboxQuerySession(session: QuerySession): session is SandboxQuerySession {
+  return SANDBOX_SESSION_PROXY in session;
+}
+
+function createSandboxQuerySession(
+  sessionId: string,
+  plan: QueryExecutionPlan,
+  initialEvents: QueryStepEvent[] = [],
+  initialResult: QueryRow[] | null = null,
+  initialDone = false,
+): SandboxQuerySession {
+  const state: SandboxSessionState = {
+    sessionId,
+    plan,
+    stepStates: createInitialStepStates(plan),
+    result: initialResult,
+    done: initialDone,
+    events: [],
+  };
+
+  for (const event of initialEvents) {
+    applyStepEvent(state, event);
+  }
+
+  const session: SandboxQuerySession = {
+    [SANDBOX_SESSION_PROXY]: state,
+    getPlan(): QueryExecutionPlan {
+      return state.plan;
+    },
+    async next(): Promise<QueryStepEvent | { done: true; result: QueryRow[] }> {
+      if (state.done) {
+        return {
+          done: true,
+          result: state.result ?? [],
+        };
+      }
+
+      const next = await requestSandboxWorker("session_next", {
+        sessionId: state.sessionId,
+      });
+      if ("done" in next) {
+        state.done = true;
+        state.result = next.result;
+        return next;
+      }
+
+      applyStepEvent(state, next);
+      return next;
+    },
+    async runToCompletion(): Promise<QueryRow[]> {
+      const snapshot = await requestSandboxWorker("session_run_to_completion", {
+        sessionId: state.sessionId,
+      });
+      for (const event of snapshot.events) {
+        applyStepEvent(state, event);
+      }
+      state.done = snapshot.done;
+      state.result = snapshot.result;
+      return snapshot.result ?? [];
+    },
+    getResult(): QueryRow[] | null {
+      return state.result;
+    },
+    getStepState(stepId: string): QueryStepState | undefined {
+      return state.stepStates.get(stepId);
+    },
+  };
+
+  return session;
+}
+
 export async function createSession(
   compiled: PlaygroundCompileSuccess,
   context: PlaygroundContext,
   options: PlaygroundSessionOptions = {},
 ): Promise<PlaygroundSessionBundle> {
-  operationRecorder.clear();
-  if (options.reseed ?? true) {
-    await reseedDownstreamDatabase(compiled.downstreamRows);
-  }
-  operationRecorder.clear();
-
-  const { executableSchema, dbProvider, kvProvider } = await buildExecutableSchemaFromModules(compiled);
-  const providers = {
-    [dbProvider.name]: dbProvider,
-    [kvProvider.name]: kvProvider,
-  };
-
-  const lowered = lowerSqlToRel(compiled.sql, executableSchema.schema);
-  const physicalPlan = await planPhysicalQuery(
-    lowered.rel,
-    executableSchema.schema,
-    providers,
+  const bundle = await requestSandboxWorker("create_session", {
+    compiled,
     context,
-    compiled.sql,
-  );
-
-  const session = executableSchema.createSession({
-    context,
-    sql: compiled.sql,
-    options: {
-      maxConcurrency: 4,
-      captureRows: "full",
-    },
+    options,
   });
+  const session = createSandboxQuerySession(bundle.sessionId, bundle.plan);
 
   return {
     session,
-    translation: buildTranslation(compiled.sql, lowered.rel, physicalPlan),
+    translation: bundle.translation,
   };
 }
 
@@ -984,36 +753,28 @@ export async function replaySession(
   compiled: PlaygroundCompileSuccess,
   eventCount: number,
   context: PlaygroundContext,
+  options: PlaygroundSessionOptions = {},
 ): Promise<SessionSnapshot> {
-  const bundle = await createSession(compiled, context);
-  const session = bundle.session;
-  const events: QueryStepEvent[] = [];
-
-  while (events.length < eventCount) {
-    const next = await session.next();
-    if ("done" in next) {
-      const executedOperations = operationRecorder.list();
-      return {
-        session,
-        plan: session.getPlan(),
-        events,
-        result: next.result,
-        done: true,
-        executedOperations,
-      };
-    }
-
-    events.push(next);
-  }
-
-  const executedOperations = operationRecorder.list();
+  const snapshot = await requestSandboxWorker("replay_session", {
+    compiled,
+    context,
+    eventCount,
+    options,
+  });
+  const session = createSandboxQuerySession(
+    snapshot.sessionId,
+    snapshot.plan,
+    snapshot.events,
+    snapshot.result,
+    snapshot.done,
+  );
   return {
     session,
-    plan: session.getPlan(),
-    events,
-    result: null,
-    done: false,
-    executedOperations,
+    plan: snapshot.plan,
+    events: snapshot.events,
+    result: snapshot.result,
+    done: snapshot.done,
+    executedOperations: snapshot.executedOperations,
   };
 }
 
@@ -1021,19 +782,37 @@ export async function runSessionToCompletion(
   session: QuerySession,
   existingEvents: QueryStepEvent[],
 ): Promise<SessionSnapshot> {
+  if (isSandboxQuerySession(session)) {
+    const snapshot = await requestSandboxWorker("session_run_to_completion", {
+      sessionId: session[SANDBOX_SESSION_PROXY].sessionId,
+    });
+    for (const event of snapshot.events) {
+      applyStepEvent(session[SANDBOX_SESSION_PROXY], event);
+    }
+    session[SANDBOX_SESSION_PROXY].done = snapshot.done;
+    session[SANDBOX_SESSION_PROXY].result = snapshot.result;
+    return {
+      session,
+      plan: snapshot.plan,
+      events: [...existingEvents, ...snapshot.events],
+      result: snapshot.result,
+      done: snapshot.done,
+      executedOperations: snapshot.executedOperations,
+    };
+  }
+
   const events = [...existingEvents];
 
   while (true) {
     const next = await session.next();
     if ("done" in next) {
-      const executedOperations = operationRecorder.list();
       return {
         session,
         plan: session.getPlan(),
         events,
         result: next.result,
         done: true,
-        executedOperations,
+        executedOperations: [],
       };
     }
     events.push(next);

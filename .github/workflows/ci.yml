@@ -55,8 +55,8 @@ jobs:
       - name: Run workspace typecheck
         run: pnpm -r typecheck
 
-  test:
-    name: Test
+  test-fast:
+    name: Test (Fast)
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -74,5 +74,45 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run tests
-        run: pnpm test
+      - name: Restore Vitest cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.vite-fast/vitest
+          key: ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-main
+            ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-
+
+      - name: Run fast tests
+        run: pnpm test:fast
+
+  test-playground-slow:
+    name: Test (Playground Slow)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore Vitest cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.vite-playground-slow/vitest
+          key: ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-main
+            ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-
+
+      - name: Run slow playground tests
+        run: pnpm test:playground:slow

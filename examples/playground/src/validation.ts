@@ -5,16 +5,17 @@ import {
   type SchemaDefinition,
   type TableColumnDefinition,
   type TableDefinition,
-} from "sqlql";
+} from "../../../src/index";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "./kv-provider";
 import {
-  evaluateSchemaCodeInProcess,
-  type SchemaCodeEvaluationOptions,
-  type SchemaCodeEvaluationIssue,
-  type SchemaCodeEvaluationResult,
-} from "./schema-code-runtime";
+  requestSandboxWorker,
+} from "./playground-sandbox-client";
+import {
+  validateSchemaInSandbox,
+} from "./playground-sandbox";
+import type { PlaygroundSchemaProgramOptions } from "./playground-program-files";
 import {
   isColumnNullable,
   readColumnType,
@@ -178,104 +179,13 @@ function zodIssues(error: z.ZodError): SchemaValidationIssue[] {
   }));
 }
 
-const SCHEMA_CODE_TIMEOUT_MS = 2000;
-
 function canUseWorkerSandbox(): boolean {
   return typeof Worker !== "undefined";
 }
 
-function issuePathFromCodeIssue(issue: SchemaCodeEvaluationIssue): string {
-  if (typeof issue.line === "number" && typeof issue.column === "number") {
-    return `schema.ts:${issue.line}:${issue.column}`;
-  }
-  return "schema.ts";
-}
-
-function schemaParseFailureFromEvaluation(result: Extract<SchemaCodeEvaluationResult, { ok: false }>): SchemaParseResult {
-  return {
-    ok: false,
-    issues: [
-      {
-        path: issuePathFromCodeIssue(result.issue),
-        message: `[${result.issue.code}] ${result.issue.message}`,
-      },
-    ],
-  };
-}
-
-function schemaParseFromEvaluation(result: SchemaCodeEvaluationResult): SchemaParseResult {
-  if (!result.ok) {
-    return schemaParseFailureFromEvaluation(result);
-  }
-
-  return {
-    ok: true,
-    schema: result.schema,
-    issues: [],
-  };
-}
-
-async function parseSchemaCodeWithWorker(
-  code: string,
-  options: SchemaCodeEvaluationOptions,
-): Promise<SchemaParseResult> {
-  const worker = new Worker(new URL("./schema-sandbox.worker.ts", import.meta.url), {
-    type: "module",
-  });
-
-  try {
-    const response = await new Promise<SchemaCodeEvaluationResult>((resolve, reject) => {
-      const timeout = globalThis.setTimeout(() => {
-        reject(new Error("SCHEMA_TIMEOUT"));
-      }, SCHEMA_CODE_TIMEOUT_MS);
-
-      worker.onmessage = (event: MessageEvent<SchemaCodeEvaluationResult>) => {
-        globalThis.clearTimeout(timeout);
-        resolve(event.data);
-      };
-
-      worker.onerror = (event) => {
-        globalThis.clearTimeout(timeout);
-        reject(event.error ?? new Error(event.message));
-      };
-
-      worker.postMessage({
-        code,
-        ...(options.modules ? { modules: options.modules } : {}),
-      });
-    });
-
-    return schemaParseFromEvaluation(response);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Schema evaluation timed out.";
-    if (message === "SCHEMA_TIMEOUT") {
-      return {
-        ok: false,
-        issues: [
-          {
-            path: "schema.ts",
-            message: "[SCHEMA_TIMEOUT] Schema evaluation timed out.",
-          },
-        ],
-      };
-    }
-    return {
-      ok: false,
-      issues: [
-        {
-          path: "schema.ts",
-          message: `[SCHEMA_EXEC_ERROR] ${message}`,
-        },
-      ],
-    };
-  } finally {
-    worker.terminate();
-  }
-}
-
 export async function parseFacadeSchemaCode(
   value: string,
-  options: SchemaCodeEvaluationOptions = {},
+  options: PlaygroundSchemaProgramOptions = {},
 ): Promise<SchemaParseResult> {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
@@ -291,18 +201,21 @@ export async function parseFacadeSchemaCode(
   }
 
   if (canUseWorkerSandbox()) {
-    const workerResult = await parseSchemaCodeWithWorker(value, options);
-    if (!workerResult.ok) {
+    const workerResult = await requestSandboxWorker("validate_schema", {
+      schemaCode: value,
+      ...(options.modules ? { options: { modules: options.modules } } : {}),
+    });
+    if (!workerResult.ok || !workerResult.schema) {
       return workerResult;
     }
-
-    // Worker responses are structured-cloned and lose non-serializable schema
-    // metadata (for example, normalized view bindings). Re-evaluate locally so
-    // execution uses the canonical schema instance.
-    return schemaParseFromEvaluation(evaluateSchemaCodeInProcess(value, options));
+    return {
+      ok: true,
+      schema: defineSchema(workerResult.schema),
+      issues: [],
+    };
   }
 
-  return schemaParseFromEvaluation(evaluateSchemaCodeInProcess(value, options));
+  return validateSchemaInSandbox(value, options);
 }
 
 export function parseFacadeSchemaText(value: string): SchemaParseResult {

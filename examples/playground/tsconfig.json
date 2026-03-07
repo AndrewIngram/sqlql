@@ -5,9 +5,7 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "node", "react", "react-dom"],
     "paths": {
-      "@/*": ["./src/*"],
-      "sqlql": ["../../src/index.ts"],
-      "@sqlql/drizzle": ["../../packages/drizzle/src/index.ts"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src", "test", "vite.config.ts"]

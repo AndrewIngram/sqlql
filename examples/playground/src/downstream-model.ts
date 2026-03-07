@@ -1,5 +1,5 @@
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
-import { defineSchema, type SchemaDefinition } from "sqlql";
+import { defineSchema, type SchemaDefinition } from "../../../src/index";
 
 export const orgsTable = pgTable("orgs", {
   id: text("id").primaryKey().notNull(),

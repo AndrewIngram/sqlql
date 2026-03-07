@@ -2,7 +2,7 @@ import {
   createDataEntityHandle,
   defineSchema,
   type SchemaDefinition,
-} from "sqlql";
+} from "../../../src/index";
 
 import type {
   CatalogQueryEntry,
@@ -256,8 +256,7 @@ export const KV_PROVIDER_MODULE_ID = "./kv-provider";
 export const DEFAULT_GENERATED_DB_FILE_CODE = `
 // Generated from the downstream Postgres model used by the playground.
 // This file is read-only in the editor.
-import { PGlite } from "https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js";
-import { drizzle } from "drizzle-orm/pglite";
+import { getPlaygroundDbRuntime } from "@playground/db-runtime";
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 const orgsTable = pgTable("orgs", {
@@ -325,8 +324,7 @@ export const tables = {
   user_product_access: userProductAccessTable,
 } as const;
 
-const client = new PGlite();
-export const db = drizzle({ client });
+export const { db } = getPlaygroundDbRuntime({ tables });
 `.trim();
 
 export const DEFAULT_DB_PROVIDER_CODE = `
@@ -441,7 +439,7 @@ function parseViewCounterKey(raw: string): { userId: string; productId: string }
 }
 
 export function createProvider(runtime: KvProviderFactoryRuntime) {
-  return createKvProvider({
+  return createKvProvider<QueryContext>({
     name: "kvProvider",
     rows: runtime.rows,
     recordOperation: runtime.recordOperation,

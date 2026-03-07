@@ -3,13 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { configureSchemaTypescriptProject } from "../src/schema-monaco";
 
 describe("playground/schema-monaco", () => {
-  it("applies TypeScript project config and registers sqlql types lib", () => {
+  it("applies TypeScript project config and registers workspace libraries", () => {
     const setCompilerOptions = vi.fn();
     const setDiagnosticsOptions = vi.fn();
     const setEagerModelSync = vi.fn();
     const addExtraLib = vi.fn();
+    const createModel = vi.fn();
+    const getModel = vi.fn(() => null);
 
     const monaco = {
+      Uri: {
+        parse: (value: string) => ({ toString: () => value }),
+      },
+      editor: {
+        createModel,
+        getModel,
+      },
       languages: {
         typescript: {
           ScriptTarget: {
@@ -31,17 +40,14 @@ describe("playground/schema-monaco", () => {
       },
     } as unknown as Parameters<typeof configureSchemaTypescriptProject>[0];
 
-    configureSchemaTypescriptProject(monaco, {
-      sqlqlTypesText: "declare module 'sqlql' {}",
-      sqlqlTypesLibPath: "file:///types/sqlql/index.d.ts",
-    });
+    configureSchemaTypescriptProject(monaco);
 
     expect(setCompilerOptions).toHaveBeenCalledTimes(1);
     expect(setCompilerOptions).toHaveBeenCalledWith(
       expect.objectContaining({
         strict: true,
         noEmit: true,
-        baseUrl: "file:///",
+        baseUrl: "file:///playground/workspace",
       }),
     );
     expect(setDiagnosticsOptions).toHaveBeenCalledWith({
@@ -50,9 +56,7 @@ describe("playground/schema-monaco", () => {
       noSuggestionDiagnostics: false,
     });
     expect(setEagerModelSync).toHaveBeenCalledWith(true);
-    expect(addExtraLib).toHaveBeenCalledWith(
-      "declare module 'sqlql' {}",
-      "file:///types/sqlql/index.d.ts",
-    );
+    expect(createModel).toHaveBeenCalled();
+    expect(addExtraLib).toHaveBeenCalled();
   });
 });
