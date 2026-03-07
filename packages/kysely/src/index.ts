@@ -16,6 +16,7 @@ import {
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderFragment,
+  type ProviderRuntimeBinding,
   type QueryRow,
   type RelNode,
   type ScanFilterClause,
@@ -72,8 +73,22 @@ export interface CreateKyselyProviderOptions<
   >,
 > {
   name?: string;
-  db: unknown;
+  db: ProviderRuntimeBinding<TContext, unknown>;
   entities?: TEntities;
+}
+
+async function resolveKyselyDb<TContext>(
+  options: CreateKyselyProviderOptions<TContext>,
+  context: TContext,
+): Promise<KyselyDatabaseLike> {
+  const db = typeof options.db === "function" ? await options.db(context) : options.db;
+  const candidate = db as Partial<KyselyDatabaseLike> | null | undefined;
+  if (!candidate || typeof candidate.selectFrom !== "function") {
+    throw new Error(
+      "Kysely provider runtime binding did not resolve to a valid database instance. Check your context and db callback.",
+    );
+  }
+  return candidate as KyselyDatabaseLike;
 }
 
 function requireColumnProjectMapping(
@@ -257,7 +272,6 @@ export function createKyselyProvider<
   ];
 
   const providerName = options.name ?? "kysely";
-  const db = options.db as KyselyDatabaseLike;
   const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
 
@@ -329,6 +343,7 @@ export function createKyselyProvider<
       }
     },
     async execute(plan, context) {
+      const db = await resolveKyselyDb(options, context);
       switch (plan.kind) {
         case "scan": {
           const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
@@ -349,6 +364,7 @@ export function createKyselyProvider<
       }
     },
     async lookupMany(request, context) {
+      const db = await resolveKyselyDb(options, context);
       const scanRequest: TableScanRequest = {
         table: request.table,
         select: request.select,

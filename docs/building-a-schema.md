@@ -51,11 +51,11 @@ const db = drizzle(sqlite);
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
 
-type QueryContext = { orgId: string; userId: string };
+type QueryContext = { orgId: string; userId: string; db: typeof db };
 
 const dbProvider = createDrizzleProvider<QueryContext>({
   name: "dbProvider",
-  db,
+  db: (ctx) => ctx.db,
   tables: {
     orders: {
       table: ordersRaw,
@@ -159,7 +159,7 @@ When a view only needs a provider entity as a private source, `scan(...)` can re
 
 ```ts
 const highValueOrders = await executableSchema.query({
-  context: { orgId: "org_1", userId: "u1" },
+  context: { orgId: "org_1", userId: "u1", db },
   sql: `
     SELECT id, totalDollars, isLargeOrder
     FROM myOrders
@@ -173,7 +173,7 @@ const highValueOrders = await executableSchema.query({
 
 ```ts
 const rows = await executableSchema.query({
-  context: { orgId: "org_1", userId: "u1" },
+  context: { orgId: "org_1", userId: "u1", db },
   sql: `
     SELECT vendorName, spendCents, orderCount
     FROM myVendorSpend
@@ -182,7 +182,7 @@ const rows = await executableSchema.query({
 });
 
 const facts = await executableSchema.query({
-  context: { orgId: "org_1", userId: "u1" },
+  context: { orgId: "org_1", userId: "u1", db },
   sql: `
     SELECT orderId, vendorName, totalDollars
     FROM myOrderFacts
@@ -190,6 +190,8 @@ const facts = await executableSchema.query({
   `,
 });
 ```
+
+If your database handle is already static for the lifetime of the provider, you can still pass `db` directly instead of `db: (ctx) => ctx.db`.
 
 ## Why this pattern stays clean
 

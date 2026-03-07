@@ -363,7 +363,7 @@ import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
 import { db, tables } from "${GENERATED_DB_MODULE_ID}";
 
-export type QueryContext = { orgId: string; userId: string };
+export type QueryContext = { orgId: string; userId: string; db: typeof db };
 
 const providerTables = {
   orders: {
@@ -400,53 +400,12 @@ const providerTables = {
   },
 };
 
-export function createProvider(runtime: {
-  db: typeof db;
-  tables: typeof tables;
-}) {
-  const runtimeProviderTables: typeof providerTables = {
-    orders: {
-      table: runtime.tables.orders,
-      scope: (ctx) =>
-        and(
-          eq(runtime.tables.orders.org_id, ctx.orgId),
-          eq(runtime.tables.orders.user_id, ctx.userId),
-        ),
-    },
-    order_items: {
-      table: runtime.tables.order_items,
-      scope: (ctx) =>
-        and(
-          eq(runtime.tables.order_items.org_id, ctx.orgId),
-          eq(runtime.tables.order_items.user_id, ctx.userId),
-        ),
-    },
-    vendors: {
-      table: runtime.tables.vendors,
-      scope: (ctx) => eq(runtime.tables.vendors.org_id, ctx.orgId),
-    },
-    products: {
-      table: runtime.tables.products,
-      scope: (ctx) =>
-        and(
-          eq(runtime.tables.products.org_id, ctx.orgId),
-          eq(runtime.tables.products.active, true),
-        ),
-    },
-    user_product_access: {
-      table: runtime.tables.user_product_access,
-      scope: (ctx) => eq(runtime.tables.user_product_access.user_id, ctx.userId),
-    },
-  };
-
-  return createDrizzleProvider<QueryContext, typeof runtimeProviderTables>({
-    name: "dbProvider",
-    db: runtime.db,
-    tables: runtimeProviderTables,
-  });
-}
-
-export const dbProvider = createProvider({ db, tables });
+export const dbProvider = createDrizzleProvider<QueryContext, typeof providerTables>({
+  name: "dbProvider",
+  dialect: "postgres",
+  db: (ctx) => ctx.db,
+  tables: providerTables,
+});
 `.trim();
 
 export const DEFAULT_KV_PROVIDER_CODE = `

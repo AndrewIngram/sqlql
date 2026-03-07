@@ -305,9 +305,9 @@ describe("kysely adapter", () => {
       new Map<string, QueryRow[]>(),
     );
 
-    const provider = createKyselyProvider<{ orgId: string }>({
+    const provider = createKyselyProvider<{ orgId: string; db: typeof db }>({
       name: "dbProvider",
-      db,
+      db: (context: { orgId: string; db: typeof db }) => context.db,
       entities: {
         orders: {
           table: "orders_raw",
@@ -328,8 +328,9 @@ describe("kysely adapter", () => {
       table: "orders",
       request: scanRequest,
     };
-    const scanPlan = unwrapProviderOperationResult(await provider.compile(scanFragment, { orgId: "org_1" }));
-    const scanRows = unwrapProviderOperationResult(await provider.execute(scanPlan, { orgId: "org_1" }));
+    const scanContext = { orgId: "org_1", db };
+    const scanPlan = unwrapProviderOperationResult(await provider.compile(scanFragment, scanContext));
+    const scanRows = unwrapProviderOperationResult(await provider.execute(scanPlan, scanContext));
     expect(scanRows).toEqual([{ id: "o1", user_id: "u1" }]);
 
     if (!provider.lookupMany) {
@@ -343,13 +344,45 @@ describe("kysely adapter", () => {
         keys: ["o1"],
         select: ["id"],
       },
-      { orgId: "org_1" },
+      scanContext,
     );
 
     const whereColumns = calls.where.map((entry) => String(entry[0]));
     expect(whereColumns).toContain("orders_raw.org_id");
     expect(whereColumns).toContain("orders_raw.user_id");
     expect(whereColumns).toContain("orders_raw.id");
+  });
+
+  it("fails clearly when a context-resolved db binding is missing at runtime", async () => {
+    const { db } = createMockKyselyDb(new Map(), new Map());
+    const provider = createKyselyProvider<{ db?: typeof db }>({
+      name: "dbProvider",
+      db: (context: { db?: typeof db }) => context.db,
+      entities: {
+        orders: {
+          table: "orders_raw",
+        },
+      },
+    });
+
+    const plan = unwrapProviderOperationResult(
+      await provider.compile(
+        {
+          kind: "scan",
+          provider: "dbProvider",
+          table: "orders",
+          request: {
+            table: "orders",
+            select: ["id"],
+          },
+        },
+        {},
+      ),
+    );
+
+    await expect(
+      Promise.resolve(provider.execute(plan, {})).then(unwrapProviderOperationResult),
+    ).rejects.toThrow("Kysely provider runtime binding did not resolve to a valid database instance.");
   });
 
   it("executes supported rel fragments as a single query", async () => {

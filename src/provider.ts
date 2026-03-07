@@ -18,6 +18,9 @@ import type { RelExpr } from "./rel";
 
 export type MaybePromise<T> = T | Promise<T>;
 export type ProviderOperationResult<T, E = Error> = BetterResult<T, E>;
+export type ProviderRuntimeBinding<TContext, TValue> =
+  | TValue
+  | ((context: TContext) => MaybePromise<TValue>);
 
 export type ProviderRouteFamily = "scan" | "lookup" | "aggregate" | "rel-core" | "rel-advanced";
 

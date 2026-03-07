@@ -14,6 +14,7 @@ import {
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderFragment,
+  type ProviderRuntimeBinding,
   type QueryRow,
   type RelNode,
   type ScanFilterClause,
@@ -92,8 +93,22 @@ export interface CreateObjectionProviderOptions<
   >,
 > {
   name?: string;
-  knex: KnexLike;
+  knex: ProviderRuntimeBinding<TContext, KnexLike>;
   entities?: TEntities;
+}
+
+async function resolveKnex<TContext>(
+  options: CreateObjectionProviderOptions<TContext>,
+  context: TContext,
+): Promise<KnexLike> {
+  const knex = typeof options.knex === "function" ? await options.knex(context) : options.knex;
+  const candidate = knex as Partial<KnexLike> | null | undefined;
+  if (!candidate || typeof candidate.table !== "function" || typeof candidate.queryBuilder !== "function") {
+    throw new Error(
+      "Objection provider runtime binding did not resolve to a valid knex instance. Check your context and knex callback.",
+    );
+  }
+  return candidate as KnexLike;
 }
 
 function requireColumnProjectMapping(
@@ -351,11 +366,12 @@ export function createObjectionProvider<
       }
     },
     async execute(plan, context) {
+      const knex = await resolveKnex(options, context);
       switch (plan.kind) {
         case "scan": {
           const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
           return Result.tryPromise({
-            try: () => executeScan(options.knex, entityConfigs, fragment.request, context),
+            try: () => executeScan(knex, entityConfigs, fragment.request, context),
             catch: (error) => (error instanceof Error ? error : new Error(String(error))),
           });
         }
@@ -363,7 +379,7 @@ export function createObjectionProvider<
           const compiled = plan.payload as ObjectionRelCompiledPlan;
           return Result.tryPromise({
             try: () =>
-              executeRelSingleQuery(options.knex, entityConfigs, compiled.rel, compiled.strategy, context),
+              executeRelSingleQuery(knex, entityConfigs, compiled.rel, compiled.strategy, context),
             catch: (error) => (error instanceof Error ? error : new Error(String(error))),
           });
         }
@@ -372,6 +388,7 @@ export function createObjectionProvider<
       }
     },
     async lookupMany(request, context) {
+      const knex = await resolveKnex(options, context);
       const scanRequest: TableScanRequest = {
         table: request.table,
         select: request.select,
@@ -386,7 +403,7 @@ export function createObjectionProvider<
       };
 
       return Result.tryPromise({
-        try: () => executeScan(options.knex, entityConfigs, scanRequest, context),
+        try: () => executeScan(knex, entityConfigs, scanRequest, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
