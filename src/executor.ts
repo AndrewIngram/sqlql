@@ -23,12 +23,14 @@ import {
   type RelProjectNode,
   type RelScanNode,
 } from "./rel";
+import { buildProviderFragmentForRelResult } from "./planning";
 import {
   createPhysicalBindingFromEntity,
   createTableDefinitionFromEntity,
   getNormalizedColumnBindings,
   isNormalizedSourceColumnBinding,
   mapProviderRowsToLogical,
+  mapProviderRowsToRelOutput,
   resolveNormalizedColumnSource,
   getNormalizedTableBinding,
   type NormalizedPhysicalTableBinding,
@@ -139,6 +141,14 @@ async function executeRelNodeResult<TContext>(
   node: RelNode,
   context: RelExecutionContext<TContext>,
 ): Promise<SqlqlResult<QueryRow[]>> {
+  const remoteRowsResult = await tryExecuteRemoteSubtreeResult(node, context);
+  if (Result.isError(remoteRowsResult)) {
+    return remoteRowsResult;
+  }
+  if (remoteRowsResult.value) {
+    return Result.ok(remoteRowsResult.value);
+  }
+
   switch (node.kind) {
     case "scan":
       return executeScanResult(node, context);
@@ -167,6 +177,140 @@ async function executeRelNodeResult<TContext>(
           message: "SQL-shaped rel nodes are not executable in the current provider runtime.",
         }),
       );
+  }
+}
+
+async function tryExecuteRemoteSubtreeResult<TContext>(
+  node: RelNode,
+  context: RelExecutionContext<TContext>,
+): Promise<SqlqlResult<QueryRow[] | null>> {
+  if (node.kind === "sql") {
+    return Result.ok(null);
+  }
+
+  const normalizedBinding = node.kind === "scan"
+    ? getNormalizedTableBinding(context.schema, node.table)
+    : null;
+  if (node.kind === "scan" && normalizedBinding?.kind !== "view") {
+    return Result.ok(null);
+  }
+
+  const fragmentResult = buildProviderFragmentForRelResult(node, context.schema, context.context);
+  if (Result.isError(fragmentResult)) {
+    if (node.kind === "scan" && normalizedBinding?.kind === "view") {
+      return Result.ok(null);
+    }
+    return fragmentResult;
+  }
+  const fragment = fragmentResult.value;
+  if (!fragment) {
+    return Result.ok(null);
+  }
+
+  const provider = resolveProviderForNode(node, fragment.provider, context);
+  if (!provider) {
+    return Result.err(
+      new SqlqlExecutionError({
+        operation: "execute relational node",
+        message: `Missing provider adapter: ${fragment.provider}`,
+      }),
+    );
+  }
+
+  const capabilityResult = await tryExecutionStepAsync("check subtree provider capability", () =>
+    Promise.resolve(provider.canExecute(fragment, context.context))
+  );
+  if (Result.isError(capabilityResult)) {
+    return capabilityResult;
+  }
+
+  const capability = normalizeCapability(capabilityResult.value);
+  if (!capability.supported) {
+    return Result.ok(null);
+  }
+
+  const compiledResult = await tryExecutionStepAsync("compile subtree provider fragment", () =>
+    Promise.resolve(provider.compile(fragment, context.context)).then(unwrapProviderOperationResult)
+  );
+  if (Result.isError(compiledResult)) {
+    return compiledResult;
+  }
+
+  const rowsResult = await tryExecutionStepAsync("execute subtree provider fragment", () =>
+    Promise.resolve(provider.execute(compiledResult.value, context.context)).then(
+      unwrapProviderOperationResult,
+    )
+  );
+  if (Result.isError(rowsResult)) {
+    return rowsResult;
+  }
+
+  if (fragment.kind === "rel") {
+    return tryExecutionStep("map provider rows to logical rel output rows", () =>
+      mapProviderRowsToRelOutput(rowsResult.value, fragment.rel, context.schema)
+    );
+  }
+
+  if (node.kind === "scan") {
+    const physicalBinding = normalizedBinding?.kind === "physical"
+      ? normalizedBinding
+      : (node.entity ? createPhysicalBindingFromEntity(node.entity) : null);
+    const tableDefinition = context.schema.tables[node.table]
+      ?? (node.entity ? createTableDefinitionFromEntity(node.entity) : undefined);
+    const projectedResult = tryExecutionStep("map provider rows to logical rows", () =>
+      mapProviderRowsToLogical(
+        rowsResult.value as QueryRow[],
+        node.select,
+        physicalBinding,
+        tableDefinition,
+      )
+    );
+    if (Result.isError(projectedResult)) {
+      return projectedResult;
+    }
+
+    const alias = node.alias ?? node.table;
+    return Result.ok(projectedResult.value.map((row) => prefixRow(row, alias)));
+  }
+
+  return Result.ok(rowsResult.value);
+}
+
+function resolveProviderForNode<TContext>(
+  node: RelNode,
+  providerName: string,
+  context: RelExecutionContext<TContext>,
+): ProviderAdapter<TContext> | undefined {
+  return context.providers[providerName] ?? findNodeProviderAdapter(node, providerName);
+}
+
+function findNodeProviderAdapter<TContext>(
+  node: RelNode,
+  providerName: string,
+): ProviderAdapter<TContext> | undefined {
+  switch (node.kind) {
+    case "scan": {
+      if (!node.entity || node.entity.provider !== providerName) {
+        return undefined;
+      }
+      return getDataEntityAdapter(node.entity) as ProviderAdapter<TContext> | undefined;
+    }
+    case "filter":
+    case "project":
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return findNodeProviderAdapter(node.input, providerName);
+    case "join":
+    case "set_op":
+      return findNodeProviderAdapter(node.left, providerName)
+        ?? findNodeProviderAdapter(node.right, providerName);
+    case "with":
+      return node.ctes.map((cte) => findNodeProviderAdapter(cte.query, providerName)).find(Boolean)
+        ?? findNodeProviderAdapter(node.body, providerName);
+    case "sql":
+      return undefined;
   }
 }
 

@@ -1568,6 +1568,183 @@ describe("query/provider runtime", () => {
     ]);
   });
 
+  it("pushes down single-provider view scans before cross-provider lookup joins", async () => {
+    const productsEntity = createDataEntityHandle({
+      entity: "products_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        name: { source: "name", type: "text", nullable: false },
+      },
+    });
+    const productAccessEntity = createDataEntityHandle({
+      entity: "product_access_raw",
+      provider: "warehouse",
+      columns: {
+        product_id: { source: "product_id", type: "text", nullable: false },
+      },
+    });
+    const viewCountsEntity = createDataEntityHandle({
+      entity: "product_view_counts",
+      provider: "kv",
+      columns: {
+        product_id: { source: "product_id", type: "text", nullable: false },
+        view_count: { source: "view_count", type: "integer", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table, view }) => {
+      const products = table(productsEntity, {
+        columns: ({ col }) => ({
+          id: col.id("id"),
+          name: col.string("name", { nullable: false }),
+        }),
+      });
+
+      const productAccess = table(productAccessEntity, {
+        columns: ({ col }) => ({
+          product_id: col.string("product_id", { nullable: false }),
+        }),
+      });
+
+      const activeProducts = view({
+        rel: ({ scan, join, col, expr }) =>
+          join({
+            left: scan(products),
+            right: scan(productAccess),
+            on: expr.eq(col(products, "id"), col(productAccess, "product_id")),
+            type: "inner",
+          }),
+        columns: {
+          id: { source: "products.id", type: "text", nullable: false, primaryKey: true },
+          name: { source: "products.name", type: "text", nullable: false },
+        },
+      });
+
+      const productViewCounts = table(viewCountsEntity, {
+        columns: ({ col }) => ({
+          product_id: col.string("product_id", { nullable: false }),
+          view_count: col.integer("view_count", { nullable: false }),
+        }),
+      });
+
+      return {
+        tables: {
+          products,
+          productAccess,
+          active_products: activeProducts,
+          product_view_counts: productViewCounts,
+        },
+      };
+    });
+
+    let warehouseRelExecutions = 0;
+    let warehouseScanExecutions = 0;
+    let kvLookupCalls = 0;
+    let kvScanExecutions = 0;
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "rel";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "rel") {
+            warehouseScanExecutions += 1;
+            return Result.ok([]);
+          }
+
+          warehouseRelExecutions += 1;
+          const products = [
+            { id: "p1", name: "Edge Router" },
+            { id: "p2", name: "Backup Service" },
+          ];
+
+          return Result.ok(
+            products.map((product) =>
+              Object.fromEntries(
+                fragment.rel.output.map((output) => {
+                  if (output.name.endsWith(".id") || output.name === "id") {
+                    return [output.name, product.id] as const;
+                  }
+                  if (output.name.endsWith(".name") || output.name === "name") {
+                    return [output.name, product.name] as const;
+                  }
+                  return [output.name, null] as const;
+                }),
+              ),
+            ),
+          );
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+      kv: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "kv",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute() {
+          kvScanExecutions += 1;
+          return Result.ok([]);
+        },
+        async lookupMany(request) {
+          kvLookupCalls += 1;
+          return Result.ok(
+            request.keys.includes("p1")
+              ? [{ product_id: "p1", view_count: 12 }]
+              : [],
+          );
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT p.name, v.view_count
+        FROM active_products p
+        LEFT JOIN product_view_counts v ON v.product_id = p.id
+        ORDER BY v.view_count DESC, p.name
+      `,
+    });
+
+    expect(rows).toEqual([
+      { name: "Edge Router", view_count: 12 },
+      { name: "Backup Service", view_count: null },
+    ]);
+    expect(warehouseRelExecutions).toBe(1);
+    expect(warehouseScanExecutions).toBe(0);
+    expect(kvLookupCalls).toBe(1);
+    expect(kvScanExecutions).toBe(0);
+
+    const session = executableSchema.createSession({
+      context: {},
+      sql: `
+        SELECT p.name, v.view_count
+        FROM active_products p
+        LEFT JOIN product_view_counts v ON v.product_id = p.id
+        ORDER BY v.view_count DESC, p.name
+      `,
+    });
+    const plan = session.getPlan();
+    expect(plan.steps.filter((step) => step.kind === "remote_fragment")).toHaveLength(1);
+    expect(plan.steps.some((step) => step.kind === "lookup_join")).toBe(true);
+    expect(plan.steps.some((step) => step.kind === "scan")).toBe(false);
+  });
+
   it("exposes scan stages in session plans", () => {
     const schema = defineSchema({
       tables: {

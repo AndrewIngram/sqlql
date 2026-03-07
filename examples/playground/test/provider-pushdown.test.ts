@@ -199,4 +199,49 @@ ORDER BY view_count DESC;
       expect((row.view_count as number) % 10).toBe(0);
     }
   });
+
+  it("executes active_products to product_view_counts as one sql query plus one kv lookup", { timeout: 15_000 }, async () => {
+    const scenario = SCENARIO_PRESETS[0];
+    if (!scenario) {
+      throw new Error("Missing scenario preset.");
+    }
+
+    const prepared = await preparePlaygroundInput(
+      DEFAULT_FACADE_SCHEMA_CODE,
+      serializeJson(scenario.rows),
+    );
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) {
+      return;
+    }
+
+    const compiled = compilePreparedPlaygroundQuery(
+      prepared,
+      `
+SELECT p.name, v.view_count
+FROM active_products p
+LEFT JOIN product_view_counts v ON v.product_id = p.id
+ORDER BY v.view_count DESC, p.name;
+      `.trim(),
+    );
+
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) {
+      return;
+    }
+
+    const bundle = await createSession(compiled, scenario.context);
+    const plan = bundle.session.getPlan();
+    expect(plan.steps.filter((step) => step.kind === "remote_fragment")).toHaveLength(1);
+    expect(plan.steps.some((step) => step.kind === "lookup_join")).toBe(true);
+    expect(plan.steps.some((step) => step.kind === "scan")).toBe(false);
+
+    const snapshot = await runSessionToCompletion(bundle.session, []);
+
+    expect(snapshot.executedOperations).toHaveLength(2);
+    expect(snapshot.executedOperations.map((operation) => operation.kind)).toEqual([
+      "sql_query",
+      "kv_lookup",
+    ]);
+  });
 });

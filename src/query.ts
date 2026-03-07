@@ -11,6 +11,7 @@ import {
 } from "./errors";
 import {
   normalizeCapability,
+  resolveTableProvider,
   unwrapProviderOperationResult,
   validateProviderBindingsResult,
   type ProviderAdapter,
@@ -889,7 +890,7 @@ function createRelExecutionSession<TContext>(
   rel: RelNode,
   diagnostics: SqlqlDiagnostic[] = [],
 ): QuerySession {
-  const plan = buildRelExecutionPlan(rel, diagnostics);
+  const plan = buildRelExecutionPlan(input, rel, diagnostics);
   const states = new Map<string, QueryStepState>(
     plan.steps.map((step) => [
       step.id,
@@ -1066,7 +1067,11 @@ function createRelExecutionSession<TContext>(
   };
 }
 
-function buildRelExecutionPlan(rel: RelNode, diagnostics: SqlqlDiagnostic[] = []): QueryExecutionPlan {
+function buildRelExecutionPlan<TContext>(
+  input: QuerySessionInput<TContext>,
+  rel: RelNode,
+  diagnostics: SqlqlDiagnostic[] = [],
+): QueryExecutionPlan {
   let stepCounter = 0;
   const steps: QueryExecutionPlanStep[] = [];
   const scopes: QueryExecutionPlanScope[] = [
@@ -1083,6 +1088,11 @@ function buildRelExecutionPlan(rel: RelNode, diagnostics: SqlqlDiagnostic[] = []
   };
 
   const visit = (node: RelNode, scopeId = "scope_root"): string => {
+    const remoteFragmentStepId = tryPlanRemoteFragmentStep(node, scopeId);
+    if (remoteFragmentStepId) {
+      return remoteFragmentStepId;
+    }
+
     switch (node.kind) {
       case "scan": {
         const id = nextId("scan");
@@ -1163,6 +1173,32 @@ function buildRelExecutionPlan(rel: RelNode, diagnostics: SqlqlDiagnostic[] = []
         return id;
       }
       case "join": {
+        const lookupJoin = resolveSyncLookupJoinCandidate(node, input);
+        if (lookupJoin) {
+          const leftId = visit(node.left, scopeId);
+          const id = nextId("lookup_join");
+          steps.push({
+            id,
+            kind: "lookup_join",
+            dependsOn: [leftId],
+            summary: `Lookup join ${lookupJoin.leftTable}.${lookupJoin.leftKey} -> ${lookupJoin.rightTable}.${lookupJoin.rightKey}`,
+            phase: "fetch",
+            operation: {
+              name: "lookup_join",
+              details: {
+                leftProvider: lookupJoin.leftProvider,
+                rightProvider: lookupJoin.rightProvider,
+                joinType: lookupJoin.joinType,
+                on: `${lookupJoin.leftTable}.${lookupJoin.leftKey} = ${lookupJoin.rightTable}.${lookupJoin.rightKey}`,
+              },
+            },
+            outputs: node.output.map((column) => column.name),
+            sqlOrigin: "FROM",
+            scopeId,
+          });
+          return id;
+        }
+
         const leftId = visit(node.left, scopeId);
         const rightId = visit(node.right, scopeId);
         const id = nextId("join");
@@ -1430,6 +1466,50 @@ function buildRelExecutionPlan(rel: RelNode, diagnostics: SqlqlDiagnostic[] = []
     }
   };
 
+  const tryPlanRemoteFragmentStep = (node: RelNode, scopeId: string): string | null => {
+    if (node.kind === "scan" || node.kind === "sql") {
+      return null;
+    }
+
+    const resolutionResult = resolveSyncProviderCapabilityForRel(input, node);
+    if (Result.isError(resolutionResult)) {
+      return null;
+    }
+
+    const resolution = resolutionResult.value;
+    if (
+      !resolution ||
+      !resolution.fragment ||
+      !resolution.provider ||
+      !resolution.report?.supported
+    ) {
+      return null;
+    }
+
+    const id = nextId("remote_fragment");
+    steps.push({
+      id,
+      kind: "remote_fragment",
+      dependsOn: [],
+      summary: `Execute provider fragment (${resolution.fragment.provider})`,
+      phase: "fetch",
+      operation: {
+        name: "provider_fragment",
+        details: {
+          provider: resolution.fragment.provider,
+        },
+      },
+      request: {
+        fragment: resolution.fragment.kind,
+      },
+      outputs: node.output.map((column) => column.name),
+      sqlOrigin: "SELECT",
+      scopeId,
+      ...(resolution.diagnostics.length > 0 ? { diagnostics: resolution.diagnostics } : {}),
+    });
+    return id;
+  };
+
   visit(rel, "scope_root");
 
   return {
@@ -1437,6 +1517,96 @@ function buildRelExecutionPlan(rel: RelNode, diagnostics: SqlqlDiagnostic[] = []
     scopes,
     ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
+}
+
+function resolveSyncLookupJoinCandidate<TContext>(
+  join: Extract<RelNode, { kind: "join" }>,
+  input: QuerySessionInput<TContext>,
+): {
+  leftProvider: string;
+  rightProvider: string;
+  leftTable: string;
+  rightTable: string;
+  leftKey: string;
+  rightKey: string;
+  joinType: "inner" | "left";
+} | null {
+  if (join.joinType !== "inner" && join.joinType !== "left") {
+    return null;
+  }
+
+  const leftScan = findFirstScanForPlan(join.left);
+  const rightScan = findFirstScanForPlan(join.right);
+  if (!leftScan || !rightScan) {
+    return null;
+  }
+  if ((!input.schema.tables[leftScan.table] && !leftScan.entity) || (!input.schema.tables[rightScan.table] && !rightScan.entity)) {
+    return null;
+  }
+
+  const leftBinding = getNormalizedTableBinding(input.schema, leftScan.table);
+  const rightBinding = getNormalizedTableBinding(input.schema, rightScan.table);
+  if (leftBinding?.kind === "view" || rightBinding?.kind === "view") {
+    return null;
+  }
+
+  const leftProvider = leftScan.entity?.provider ?? resolveTableProvider(input.schema, leftScan.table);
+  const rightProvider = rightScan.entity?.provider ?? resolveTableProvider(input.schema, rightScan.table);
+  if (leftProvider === rightProvider) {
+    return null;
+  }
+
+  const rightAdapter = input.providers[rightProvider];
+  if (!rightAdapter?.lookupMany) {
+    return null;
+  }
+
+  const capability = rightAdapter.canExecute(
+    {
+      kind: "scan",
+      provider: rightProvider,
+      table: rightScan.entity?.entity ?? rightScan.table,
+      request: {
+        table: rightScan.entity?.entity ?? rightScan.table,
+        select: rightScan.select,
+      },
+    },
+    input.context,
+  );
+  if (isPromiseLike(capability)) {
+    return null;
+  }
+
+  return {
+    leftProvider,
+    rightProvider,
+    leftTable: leftScan.table,
+    rightTable: rightScan.table,
+    leftKey: join.leftKey.column,
+    rightKey: join.rightKey.column,
+    joinType: join.joinType,
+  };
+}
+
+function findFirstScanForPlan(node: RelNode): Extract<RelNode, { kind: "scan" }> | null {
+  switch (node.kind) {
+    case "scan":
+      return node;
+    case "filter":
+    case "project":
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return findFirstScanForPlan(node.input);
+    case "join":
+    case "set_op":
+      return findFirstScanForPlan(node.left) ?? findFirstScanForPlan(node.right);
+    case "with":
+      return findFirstScanForPlan(node.body);
+    case "sql":
+      return null;
+  }
 }
 
 function formatColumnRef(ref: { alias?: string; table?: string; column: string }): string {
