@@ -22,6 +22,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@sqlql/drizzle": "workspace:*",
     "@xyflow/react": "^12.9.0",
+    "better-result": "^2.7.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dagre": "^0.8.5",

@@ -96,6 +96,15 @@ const PGLITE_DECLARATION_IMPORTS = import.meta.glob("../node_modules/@electric-s
   query: "?raw",
 }) as Record<string, string>;
 
+const BETTER_RESULT_DECLARATION_IMPORTS = import.meta.glob(
+  "../node_modules/better-result/dist/index.d.mts",
+  {
+    eager: true,
+    import: "default",
+    query: "?raw",
+  },
+) as Record<string, string>;
+
 const MIRRORED_KV_PROVIDER_CORE_SOURCE = kvProviderCoreSourceText.replace(
   /from "\.\.\/\.\.\/\.\.\/src\/index"/gu,
   'from "sqlql"',
@@ -124,6 +133,15 @@ const PGLITE_DECLARATION_FILES = mapVirtualFiles(
   "/node_modules/@electric-sql/pglite/",
   `${NODE_MODULES_ROOT_PATH}/@electric-sql/pglite`,
 );
+
+const BETTER_RESULT_DECLARATION_FILE = Object.values(BETTER_RESULT_DECLARATION_IMPORTS)[0];
+if (typeof BETTER_RESULT_DECLARATION_FILE !== "string") {
+  throw new Error("Unable to load better-result declarations for playground workspace.");
+}
+
+const BETTER_RESULT_DECLARATION_FILES: Record<string, string> = {
+  [`${NODE_MODULES_ROOT_PATH}/better-result/index.d.ts`]: BETTER_RESULT_DECLARATION_FILE,
+};
 
 const HOST_PACKAGE_DECLARATION_FILES: Record<string, string> = {
   [`${NODE_MODULES_ROOT_PATH}/@playground/runtime/index.d.ts`]: `
@@ -204,6 +222,7 @@ const STATIC_DECLARATION_FILES = {
   ...DRIZZLE_DECLARATION_FILES,
   ...PGLITE_DECLARATION_FILES,
   ...PGLITE_ROOT_DECLARATION_FILES,
+  ...BETTER_RESULT_DECLARATION_FILES,
   ...HOST_PACKAGE_DECLARATION_FILES,
 };
 

@@ -13,6 +13,9 @@ export default defineConfig(() => {
         "@": resolve(rootDir, "./src"),
       },
     },
+    worker: {
+      format: "es" as const,
+    },
     server: {
       host: true,
       port: 5174,

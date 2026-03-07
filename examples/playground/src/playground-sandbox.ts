@@ -2,6 +2,7 @@ import * as drizzleOrmModule from "drizzle-orm";
 import * as drizzlePgCoreModule from "drizzle-orm/pg-core";
 import * as drizzlePgliteModule from "drizzle-orm/pglite";
 import * as pgliteModule from "@electric-sql/pglite";
+import * as betterResultModule from "better-result";
 import {
   defineSchema,
   type ExecutableSchema,
@@ -177,6 +178,7 @@ async function buildExternalRuntimeModules(
 ): Promise<Record<string, unknown>> {
   const runtime = await getPlaygroundPgliteRuntime();
   return {
+    "better-result": betterResultModule,
     "drizzle-orm": drizzleOrmModule,
     "drizzle-orm/pg-core": drizzlePgCoreModule,
     "drizzle-orm/pglite": drizzlePgliteModule,
