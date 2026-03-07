@@ -1,4 +1,4 @@
-import { type SchemaDefinition } from "sqlql";
+import { type SchemaDefinition } from "../../../src/index";
 import type * as Monaco from "monaco-editor";
 
 const SQL_KEYWORDS = [

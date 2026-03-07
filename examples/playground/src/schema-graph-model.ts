@@ -1,6 +1,10 @@
 import dagre from "dagre";
 import { MarkerType, Position, type Edge, type Node } from "@xyflow/react";
-import type { SchemaDefinition, SqlScalarType, TableColumnDefinition } from "sqlql";
+import type {
+  SchemaDefinition,
+  SqlScalarType,
+  TableColumnDefinition,
+} from "../../../src/index";
 
 const NODE_WIDTH = 380;
 const HEADER_HEIGHT = 42;

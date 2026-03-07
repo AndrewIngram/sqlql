@@ -24,6 +24,7 @@ import {
   inferRouteFamilyForFragment,
   isRelProjectColumnMapping,
   normalizeDataEntityShape,
+  type DataEntityColumnMetadata,
   type DataEntityShape,
   type DataEntityHandle,
   type DataEntityReadMetadataMap,
@@ -110,12 +111,77 @@ type InferDrizzleTableColumns<TConfig> = TConfig extends DrizzleProviderTableCon
     : Extract<keyof InferDrizzleEntityRow<TConfig>, string>
   : string;
 
+type InferDrizzleColumnRead<TColumn> = TColumn extends {
+  _: {
+    data: infer TData;
+    notNull: infer TNotNull;
+  };
+}
+  ? TNotNull extends true
+    ? TData
+    : TData | null
+  : unknown;
+
+type InferDrizzleScalarTypeFromColumnMetadata<
+  TColumnType extends string,
+  TDataType extends string,
+> = TColumnType extends `${string}Timestamp${string}`
+  ? "timestamp"
+  : TColumnType extends `${string}DateTime${string}`
+    ? "datetime"
+    : TColumnType extends `${string}Date${string}`
+      ? "date"
+      : TDataType extends "boolean"
+        ? "boolean"
+        : TDataType extends "json"
+          ? "json"
+          : TDataType extends "arraybuffer"
+            ? "blob"
+            : TColumnType extends `${string}Real${string}` | `${string}Double${string}` | `${string}Float${string}`
+              ? "real"
+              : TColumnType extends
+                    | `${string}Int${string}`
+                    | `${string}Serial${string}`
+                    | `${string}Numeric${string}`
+                    | `${string}Decimal${string}`
+                ? "integer"
+                : TDataType extends "number"
+                  ? "integer"
+                  : TDataType extends "date"
+                    ? "timestamp"
+                    : TDataType extends "string"
+                      ? "text"
+                      : never;
+
+type InferDrizzleColumnSqlqlType<TColumn> = TColumn extends {
+  _: {
+    columnType: infer TColumnType extends string;
+    dataType: infer TDataType extends string;
+  };
+}
+  ? InferDrizzleScalarTypeFromColumnMetadata<TColumnType, TDataType>
+  : never;
+
+type InferDrizzleEntityColumnMetadataFromColumns<TColumns extends Record<string, unknown>> = {
+  [K in Extract<keyof TColumns, string>]: DataEntityColumnMetadata<InferDrizzleColumnRead<TColumns[K]>> & {
+    source: K;
+  } & ([InferDrizzleColumnSqlqlType<TColumns[K]>] extends [never]
+      ? {}
+      : {
+          type: InferDrizzleColumnSqlqlType<TColumns[K]>;
+        });
+};
+
 type InferDrizzleEntityColumnMetadata<TConfig> = TConfig extends { shape: infer TShape }
   ? InferDataEntityShapeMetadata<
       InferDrizzleTableColumns<TConfig>,
       Extract<TShape, DataEntityShape<InferDrizzleTableColumns<TConfig>>>
     >
-  : DataEntityReadMetadataMap<InferDrizzleTableColumns<TConfig>, InferDrizzleEntityRow<TConfig>>;
+  : TConfig extends DrizzleProviderTableConfig<any, infer TTable, any>
+    ? TTable extends Table
+      ? InferDrizzleEntityColumnMetadataFromColumns<TTable["_"]["columns"]>
+      : DataEntityReadMetadataMap<InferDrizzleTableColumns<TConfig>, InferDrizzleEntityRow<TConfig>>
+    : DataEntityReadMetadataMap<InferDrizzleTableColumns<TConfig>, InferDrizzleEntityRow<TConfig>>;
 
 export function createDrizzleProvider<
   TContext,

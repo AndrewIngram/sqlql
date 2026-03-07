@@ -1,4 +1,4 @@
-import type { QueryRow, TableColumnDefinition, TableDefinition } from "sqlql";
+import type { QueryRow, TableColumnDefinition, TableDefinition } from "../../../src/index";
 
 import { isColumnNullable, readColumnEnumValues, readColumnType } from "./types";
 

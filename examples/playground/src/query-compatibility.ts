@@ -3,7 +3,7 @@ import {
   lowerSqlToRel,
   type RelNode,
   type SchemaDefinition,
-} from "sqlql";
+} from "../../../src/index";
 
 import type {
   CatalogQueryEntry,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { QueryExecutionPlanScope, QueryExecutionPlanStep } from "sqlql";
+import type { QueryExecutionPlanScope, QueryExecutionPlanStep } from "../../../src/index";
 
 import {
   buildPlanGraphLayout,

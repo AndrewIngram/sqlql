@@ -10,7 +10,7 @@ import {
   type ScanOrderBy,
   type TableDefinition,
   type TableScanRequest,
-} from "sqlql";
+} from "../../../src/index";
 
 export const KV_PROVIDER_NAME = "kvProvider";
 export const KV_INPUT_TABLE_NAME = "kv_product_views";
@@ -47,6 +47,12 @@ export interface KvEntityMappingConfig<TContext, TColumns extends string = strin
 }
 
 type KvEntityMappingMap<TContext> = Record<string, KvEntityMappingConfig<TContext, string>>;
+
+type InferKvProviderContext<TEntities extends KvEntityMappingMap<any>> = {
+  [K in keyof TEntities]: TEntities[K] extends KvEntityMappingConfig<infer TContext, string>
+    ? TContext
+    : never;
+}[keyof TEntities];
 
 export interface CreateKvProviderOptions<
   TContext,
@@ -207,7 +213,16 @@ function inferEntityHandleColumns<TConfig extends KvEntityMappingConfig<any, str
 
 export function createKvProvider<
   TContext,
-  TEntities extends KvEntityMappingMap<TContext> = KvEntityMappingMap<TContext>,
+  const TEntities extends KvEntityMappingMap<TContext> = KvEntityMappingMap<TContext>,
+>(
+  options: CreateKvProviderOptions<TContext, TEntities>,
+): ProviderAdapter<TContext> & {
+  entities: { [K in keyof TEntities]: DataEntityHandle<TEntities[K]["columns"][number]> };
+};
+
+export function createKvProvider<
+  const TEntities extends KvEntityMappingMap<any>,
+  TContext = InferKvProviderContext<TEntities>,
 >(
   options: CreateKvProviderOptions<TContext, TEntities>,
 ): ProviderAdapter<TContext> & {

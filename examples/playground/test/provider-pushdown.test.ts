@@ -133,7 +133,7 @@ function parseViewCounterKey(raw: string): { userId: string; productId: string }
 }
 
 export function createProvider(runtime: KvProviderFactoryRuntime) {
-  return createKvProvider({
+  return createKvProvider<QueryContext>({
     name: "kvProvider",
     rows: runtime.rows,
     recordOperation: runtime.recordOperation,

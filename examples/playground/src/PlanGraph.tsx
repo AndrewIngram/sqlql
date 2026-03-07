@@ -12,7 +12,11 @@ import {
   type NodeProps,
   type NodeTypes,
 } from "@xyflow/react";
-import type { QueryExecutionPlanScope, QueryExecutionPlanStep, QueryStepState } from "sqlql";
+import type {
+  QueryExecutionPlanScope,
+  QueryExecutionPlanStep,
+  QueryStepState,
+} from "../../../src/index";
 
 import { cn } from "@/lib/utils";
 import {

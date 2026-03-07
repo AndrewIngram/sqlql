@@ -4,7 +4,7 @@ import type {
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
   QueryStepState,
-} from "sqlql";
+} from "../../../src/index";
 
 const NODE_WIDTH = 320;
 const NODE_HEIGHT = 170;

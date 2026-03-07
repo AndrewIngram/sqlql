@@ -1,4 +1,8 @@
-import type { SchemaDefinition, SqlScalarType, TableColumnDefinition } from "sqlql";
+import type {
+  SchemaDefinition,
+  SqlScalarType,
+  TableColumnDefinition,
+} from "../../../src/index";
 
 export interface PlaygroundContext {
   orgId: string;
