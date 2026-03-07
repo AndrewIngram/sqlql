@@ -86,11 +86,29 @@ function matchesClause(row: QueryRow, clause: ScanFilterClause): boolean {
       return typeof value === "number" && value <= Number(clause.value);
     case "in":
       return clause.values.includes(value);
+    case "not_in":
+      return !clause.values.includes(value);
+    case "like":
+      return typeof value === "string" && typeof clause.value === "string" && matchesLike(value, clause.value);
+    case "not_like":
+      return typeof value === "string" && typeof clause.value === "string" && !matchesLike(value, clause.value);
+    case "is_distinct_from":
+      return value !== clause.value;
+    case "is_not_distinct_from":
+      return value === clause.value;
     case "is_null":
       return value == null;
     case "is_not_null":
       return value != null;
   }
+}
+
+function matchesLike(value: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/%/g, ".*")
+    .replace(/_/g, ".");
+  return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
 function compareNullableValues(left: unknown, right: unknown): number {

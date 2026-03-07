@@ -254,10 +254,11 @@ describe("drizzle adapter", () => {
       provider: "warehouse",
       rel: sqlRel,
     };
-    expect(provider.canExecute(relFragment, {})).toEqual({
+    expect(provider.canExecute(relFragment, {})).toEqual(expect.objectContaining({
       supported: false,
+      routeFamily: "rel-core",
       reason: "rel fragment must not contain sql nodes.",
-    });
+    }));
     await expect(provider.compile(relFragment, {})).rejects.toThrow(
       "Unsupported relational fragment for drizzle provider.",
     );

@@ -1,6 +1,8 @@
 import {
   bindAdapterEntities,
+  collectCapabilityAtomsForFragment,
   createDataEntityHandle,
+  inferRouteFamilyForFragment,
   isRelProjectColumnMapping,
   normalizeDataEntityShape,
   type DataEntityShape,
@@ -8,6 +10,7 @@ import {
   type DataEntityReadMetadataMap,
   type InferDataEntityShapeMetadata,
   type ProviderAdapter,
+  type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
   type ProviderFragment,
@@ -258,6 +261,24 @@ export function createObjectionProvider<
     >;
   };
 } {
+  const declaredAtoms: readonly ProviderCapabilityAtom[] = [
+    "scan.project",
+    "scan.filter.basic",
+    "scan.filter.set_membership",
+    "scan.sort",
+    "scan.limit_offset",
+    "lookup.bulk",
+    "aggregate.group_by",
+    "join.inner",
+    "join.left",
+    "join.right_full",
+    "set_op.union_all",
+    "set_op.union_distinct",
+    "set_op.intersect",
+    "set_op.except",
+    "cte.non_recursive",
+    "window.rank_basic",
+  ];
   const providerName = options.name ?? "objection";
   const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
@@ -272,16 +293,23 @@ export function createObjectionProvider<
   const adapter = {
     name: providerName,
     entities: handles,
+    routeFamilies: ["scan", "lookup", "aggregate", "rel-core", "rel-advanced"] as const,
+    capabilityAtoms: [...declaredAtoms],
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
         case "scan":
           return !!entityConfigs[fragment.table];
         case "rel": {
           const strategy = resolveObjectionRelCompileStrategy(fragment.rel, entityConfigs);
+          const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
+          const missingAtoms = requiredAtoms.filter((atom) => !declaredAtoms.includes(atom));
           return strategy
             ? true
             : {
                 supported: false,
+                routeFamily: inferRouteFamilyForFragment(fragment),
+                requiredAtoms,
+                missingAtoms,
                 reason: hasSqlNode(fragment.rel)
                   ? "rel fragment must not contain sql nodes."
                   : "Rel fragment is not supported for single-query Objection pushdown.",
@@ -481,6 +509,7 @@ function canCompileBasicRel<TContext>(
     case "scan":
       return !!entityConfigs[node.table];
     case "filter":
+      return !node.expr && canCompileBasicRel(node.input, entityConfigs);
     case "project":
     case "aggregate":
     case "sort":
@@ -679,7 +708,7 @@ async function buildObjectionBasicRelSingleQueryBuilder<TContext>(
     }
   }
   for (const filter of plan.pipeline.filters) {
-    for (const clause of filter.where) {
+    for (const clause of filter.where ?? []) {
       query = applyWhereClause(query, clause, plan.joinPlan.aliases);
     }
   }
@@ -890,7 +919,7 @@ async function buildObjectionWithRelSingleQueryBuilder<TContext>(
     query = applyWhereClause(query, clause, aliases);
   }
   for (const filter of body.filters) {
-    for (const clause of filter.where) {
+    for (const clause of filter.where ?? []) {
       query = applyWhereClause(query, clause, aliases);
     }
   }
@@ -1356,6 +1385,16 @@ function applyWhereClause<TContext>(
       return query.where(column, "<=", clause.value);
     case "in":
       return query.whereIn(column, clause.values);
+    case "not_in":
+      return query.where(column, "not in", clause.values);
+    case "like":
+      return query.where(column, "like", clause.value);
+    case "not_like":
+      return query.where(column, "not like", clause.value);
+    case "is_distinct_from":
+      return query.where(column, "is distinct from", clause.value);
+    case "is_not_distinct_from":
+      return query.where(column, "is not distinct from", clause.value);
     case "is_null":
       return query.whereNull(column);
     case "is_not_null":

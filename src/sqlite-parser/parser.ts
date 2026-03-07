@@ -27,10 +27,21 @@ type BinaryOperatorSpec =
   | {
       kind: "in";
       precedence: number;
+      negated?: boolean;
     }
   | {
       kind: "is";
       precedence: number;
+    }
+  | {
+      kind: "like";
+      precedence: number;
+      negated?: boolean;
+    }
+  | {
+      kind: "is_distinct";
+      precedence: number;
+      negated?: boolean;
     };
 
 export function parseSqliteSelectAst(sql: string): SelectAst {
@@ -428,10 +439,13 @@ class SqliteSelectParser {
       }
 
       if (spec.kind === "in") {
+        if (spec.negated) {
+          this.expectKeyword("NOT");
+        }
         this.expectKeyword("IN");
         left = {
           type: "binary_expr",
-          operator: "IN",
+          operator: spec.negated ? "NOT IN" : "IN",
           left,
           right: this.parseInRightSide(),
         };
@@ -445,6 +459,38 @@ class SqliteSelectParser {
         left = {
           type: "binary_expr",
           operator,
+          left,
+          right,
+        };
+        continue;
+      }
+
+      if (spec.kind === "like") {
+        if (spec.negated) {
+          this.expectKeyword("NOT");
+        }
+        this.expectKeyword("LIKE");
+        const right = this.parseExpression(spec.precedence + 1);
+        left = {
+          type: "binary_expr",
+          operator: spec.negated ? "NOT LIKE" : "LIKE",
+          left,
+          right,
+        };
+        continue;
+      }
+
+      if (spec.kind === "is_distinct") {
+        this.expectKeyword("IS");
+        if (spec.negated) {
+          this.expectKeyword("NOT");
+        }
+        this.expectKeyword("DISTINCT");
+        this.expectKeyword("FROM");
+        const right = this.parseExpression(spec.precedence + 1);
+        left = {
+          type: "binary_expr",
+          operator: spec.negated ? "IS NOT DISTINCT FROM" : "IS DISTINCT FROM",
           left,
           right,
         };
@@ -597,6 +643,10 @@ class SqliteSelectParser {
       };
     }
 
+    if (this.matchKeyword("CASE")) {
+      return this.parseCaseExpression();
+    }
+
     if (this.isIdentifierLike(token)) {
       const nameToken = this.consume();
       const name = nameToken.text;
@@ -633,6 +683,28 @@ class SqliteSelectParser {
   parseFunctionCall(name: string, upperName: string): ExpressionAst {
     if (isAggregateFunctionName(upperName)) {
       return this.parseAggregateFunctionCall(upperName);
+    }
+
+    if (upperName === "CAST") {
+      const value = this.parseExpression();
+      this.expectKeyword("AS");
+      const targetType = this.parseIdentifier();
+      this.expectSymbol(")");
+      return {
+        type: "function",
+        name: {
+          name: [{ value: upperName }],
+        },
+        args: {
+          value: [
+            value,
+            {
+              type: "string",
+              value: targetType,
+            },
+          ],
+        },
+      };
     }
 
     const args: ExpressionAst[] = [];
@@ -762,6 +834,31 @@ class SqliteSelectParser {
     return specification;
   }
 
+  parseCaseExpression(): ExpressionAst {
+    const args: ExpressionAst[] = [];
+
+    while (this.matchKeyword("WHEN")) {
+      args.push(this.parseExpression());
+      this.expectKeyword("THEN");
+      args.push(this.parseExpression());
+    }
+
+    if (this.matchKeyword("ELSE")) {
+      args.push(this.parseExpression());
+    }
+
+    this.expectKeyword("END");
+    return {
+      type: "function",
+      name: {
+        name: [{ value: "CASE" }],
+      },
+      args: {
+        value: args,
+      },
+    };
+  }
+
   consumeFrameClauseRaw(): string {
     const parts: string[] = [];
     let depth = 0;
@@ -816,13 +913,55 @@ class SqliteSelectParser {
         precedence: 3,
       };
     }
+    if (this.currentIsKeyword("NOT")) {
+      const next = this.current(1);
+      if (next?.kind === "keyword" && next.upper === "IN") {
+        return {
+          kind: "in",
+          precedence: 3,
+          negated: true,
+        };
+      }
+      if (next?.kind === "keyword" && next.upper === "LIKE") {
+        return {
+          kind: "like",
+          precedence: 3,
+          negated: true,
+        };
+      }
+    }
     if (this.currentIsKeyword("IN")) {
       return {
         kind: "in",
         precedence: 3,
       };
     }
+    if (this.currentIsKeyword("LIKE")) {
+      return {
+        kind: "like",
+        precedence: 3,
+      };
+    }
     if (this.currentIsKeyword("IS")) {
+      const next = this.current(1);
+      if (next?.kind === "keyword" && next.upper === "DISTINCT") {
+        return {
+          kind: "is_distinct",
+          precedence: 3,
+        };
+      }
+      if (
+        next?.kind === "keyword" &&
+        next.upper === "NOT" &&
+        this.current(2)?.kind === "keyword" &&
+        this.current(2).upper === "DISTINCT"
+      ) {
+        return {
+          kind: "is_distinct",
+          precedence: 3,
+          negated: true,
+        };
+      }
       return {
         kind: "is",
         precedence: 3,
@@ -848,6 +987,14 @@ class SqliteSelectParser {
       }
 
       if (token.text === "+" || token.text === "-") {
+        return {
+          kind: "simple",
+          operator: token.text,
+          precedence: 4,
+        };
+      }
+
+      if (token.text === "||") {
         return {
           kind: "simple",
           operator: token.text,
@@ -945,8 +1092,8 @@ class SqliteSelectParser {
     }
   }
 
-  current(): Token {
-    return this.#tokens[this.#index] ?? this.#tokens[this.#tokens.length - 1]!;
+  current(offset = 0): Token {
+    return this.#tokens[this.#index + offset] ?? this.#tokens[this.#tokens.length - 1]!;
   }
 
   consume(): Token {

@@ -4,8 +4,11 @@ import {
   validateProviderBindings,
   type ProviderAdapter,
   type ProviderCompiledPlan,
+  type ProviderCapabilityReport,
   type ProviderFragment,
   type ProvidersMap,
+  type QueryFallbackPolicy,
+  type SqlqlDiagnostic,
 } from "./provider";
 import { countRelNodes, type RelNode } from "./rel";
 import { executeRelWithProviders } from "./executor";
@@ -17,6 +20,8 @@ import {
   resolveSchemaLinkedEnums,
 } from "./schema";
 import type { QueryRow, SchemaDefinition, SchemaDslDefinition, SchemaDslHelpers } from "./schema";
+
+export type { QueryFallbackPolicy, SqlqlDiagnostic } from "./provider";
 
 export interface QueryGuardrails {
   maxPlannerNodes: number;
@@ -34,12 +39,23 @@ export const DEFAULT_QUERY_GUARDRAILS: QueryGuardrails = {
   timeoutMs: 30_000,
 };
 
+export const DEFAULT_QUERY_FALLBACK_POLICY: Required<QueryFallbackPolicy> = {
+  allowFallback: true,
+  warnOnFallback: true,
+  rejectOnMissingAtom: false,
+  rejectOnEstimatedCost: false,
+  maxLocalRows: Number.POSITIVE_INFINITY,
+  maxLookupFanout: Number.POSITIVE_INFINITY,
+  maxJoinExpansionRisk: Number.POSITIVE_INFINITY,
+};
+
 export interface QueryInput<TContext> {
   schema: SchemaDefinition;
   providers: ProvidersMap<TContext>;
   context: TContext;
   sql: string;
   queryGuardrails?: Partial<QueryGuardrails>;
+  fallbackPolicy?: QueryFallbackPolicy;
   constraintValidation?: ConstraintValidationOptions;
 }
 
@@ -103,11 +119,13 @@ export interface QueryExecutionPlanStep {
   outputs?: string[];
   sqlOrigin?: QuerySqlOrigin;
   scopeId?: string;
+  diagnostics?: SqlqlDiagnostic[];
 }
 
 export interface QueryExecutionPlan {
   steps: QueryExecutionPlanStep[];
   scopes?: QueryExecutionPlanScope[];
+  diagnostics?: SqlqlDiagnostic[];
 }
 
 export type QueryStepStatus = "ready" | "running" | "done" | "failed";
@@ -129,6 +147,7 @@ export interface QueryStepState {
   routeUsed?: QueryStepRoute;
   notes?: string[];
   error?: string;
+  diagnostics?: SqlqlDiagnostic[];
 }
 
 export interface QueryStepEvent {
@@ -148,6 +167,7 @@ export interface QueryStepEvent {
   routeUsed?: QueryStepRoute;
   notes?: string[];
   error?: string;
+  diagnostics?: SqlqlDiagnostic[];
 }
 
 export interface QuerySessionOptions {
@@ -165,6 +185,7 @@ export interface ExecutableSchemaQueryInput<TContext> {
   context: TContext;
   sql: string;
   queryGuardrails?: Partial<QueryGuardrails>;
+  fallbackPolicy?: QueryFallbackPolicy;
   constraintValidation?: ConstraintValidationOptions;
 }
 
@@ -192,6 +213,13 @@ interface ExecutableSchemaRuntime<TContext> {
   providers: ProvidersMap<TContext>;
 }
 
+interface QueryCapabilityResolution<TContext> {
+  fragment: ProviderFragment | null;
+  provider: ProviderAdapter<TContext> | null;
+  report: ProviderCapabilityReport | null;
+  diagnostics: SqlqlDiagnostic[];
+}
+
 function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrails {
   return {
     maxPlannerNodes: overrides?.maxPlannerNodes ?? DEFAULT_QUERY_GUARDRAILS.maxPlannerNodes,
@@ -201,6 +229,43 @@ function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrail
     maxLookupBatches: overrides?.maxLookupBatches ?? DEFAULT_QUERY_GUARDRAILS.maxLookupBatches,
     timeoutMs: overrides?.timeoutMs ?? DEFAULT_QUERY_GUARDRAILS.timeoutMs,
   };
+}
+
+function resolveFallbackPolicy(
+  queryPolicy?: QueryFallbackPolicy,
+  providerPolicy?: QueryFallbackPolicy,
+): Required<QueryFallbackPolicy> {
+  return {
+    ...DEFAULT_QUERY_FALLBACK_POLICY,
+    ...providerPolicy,
+    ...queryPolicy,
+  };
+}
+
+function makeDiagnostic(
+  code: string,
+  severity: SqlqlDiagnostic["severity"],
+  message: string,
+  details?: Record<string, unknown>,
+  diagnosticClass: SqlqlDiagnostic["class"] = "0A000",
+): SqlqlDiagnostic {
+  return {
+    code,
+    class: diagnosticClass,
+    severity,
+    message,
+    ...(details ? { details } : {}),
+  };
+}
+
+export class SqlqlDiagnosticError extends Error {
+  readonly diagnostics: SqlqlDiagnostic[];
+
+  constructor(message: string, diagnostics: SqlqlDiagnostic[]) {
+    super(message);
+    this.name = "SqlqlDiagnosticError";
+    this.diagnostics = diagnostics;
+  }
 }
 
 function enforceExecutionRowLimit(rows: QueryRow[], guardrails: QueryGuardrails): void {
@@ -233,6 +298,170 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     if (timer) {
       clearTimeout(timer);
     }
+  }
+}
+
+function summarizeCapabilityReason(report: ProviderCapabilityReport | null): string {
+  if (!report) {
+    return "Provider pushdown is not available for this query shape.";
+  }
+  if (report.reason && report.reason.length > 0) {
+    return report.reason;
+  }
+  if (report.missingAtoms && report.missingAtoms.length > 0) {
+    return `Missing provider capability atoms: ${report.missingAtoms.join(", ")}.`;
+  }
+  return "Provider pushdown is not available for this query shape.";
+}
+
+function buildCapabilityDiagnostics<TContext>(
+  provider: ProviderAdapter<TContext> | null,
+  fragment: ProviderFragment | null,
+  report: ProviderCapabilityReport | null,
+  queryPolicy?: QueryFallbackPolicy,
+): SqlqlDiagnostic[] {
+  const diagnostics = [...(report?.diagnostics ?? [])];
+  if (!provider || !fragment || !report || report.supported) {
+    return diagnostics;
+  }
+
+  const policy = resolveFallbackPolicy(queryPolicy, provider.fallbackPolicy);
+  const details: Record<string, unknown> = {
+    provider: provider.name,
+    fragment: fragment.kind,
+  };
+  if (report.routeFamily) {
+    details.routeFamily = report.routeFamily;
+  }
+  if (report.requiredAtoms?.length) {
+    details.requiredAtoms = report.requiredAtoms;
+  }
+  if (report.missingAtoms?.length) {
+    details.missingAtoms = report.missingAtoms;
+  }
+  if (report.estimatedRows != null) {
+    details.estimatedRows = report.estimatedRows;
+  }
+  if (report.estimatedCost != null) {
+    details.estimatedCost = report.estimatedCost;
+  }
+
+  diagnostics.push(
+    makeDiagnostic(
+      policy.allowFallback ? "SQLQL_WARN_FALLBACK" : "SQLQL_ERR_FALLBACK",
+      policy.allowFallback ? "warning" : "error",
+      summarizeCapabilityReason(report),
+      details,
+      policy.allowFallback ? "0A000" : "42000",
+    ),
+  );
+
+  return diagnostics;
+}
+
+async function resolveProviderCapabilityForRel<TContext>(
+  input: QueryInput<TContext>,
+  rel: RelNode,
+): Promise<QueryCapabilityResolution<TContext>> {
+  const fragment = buildProviderFragmentForRel(rel, input.schema, input.context);
+  if (!fragment) {
+    return {
+      fragment: null,
+      provider: null,
+      report: null,
+      diagnostics: [],
+    };
+  }
+
+  const provider = input.providers[fragment.provider] ?? null;
+  if (!provider) {
+    return {
+      fragment,
+      provider: null,
+      report: null,
+      diagnostics: [],
+    };
+  }
+
+  const report = normalizeCapability(await provider.canExecute(fragment, input.context));
+  return {
+    fragment,
+    provider,
+    report,
+    diagnostics: buildCapabilityDiagnostics(provider, fragment, report, input.fallbackPolicy),
+  };
+}
+
+function resolveSyncProviderCapabilityForRel<TContext>(
+  input: QueryInput<TContext>,
+  rel: RelNode,
+): QueryCapabilityResolution<TContext> | null {
+  const fragment = buildProviderFragmentForRel(rel, input.schema, input.context);
+  if (!fragment) {
+    return {
+      fragment: null,
+      provider: null,
+      report: null,
+      diagnostics: [],
+    };
+  }
+
+  const provider = input.providers[fragment.provider] ?? null;
+  if (!provider) {
+    return {
+      fragment,
+      provider: null,
+      report: null,
+      diagnostics: [],
+    };
+  }
+
+  const capability = provider.canExecute(fragment, input.context);
+  if (isPromiseLike(capability)) {
+    return null;
+  }
+
+  const report = normalizeCapability(capability);
+  return {
+    fragment,
+    provider,
+    report,
+    diagnostics: buildCapabilityDiagnostics(provider, fragment, report, input.fallbackPolicy),
+  };
+}
+
+function maybeRejectFallback<TContext>(
+  input: QueryInput<TContext>,
+  resolution: QueryCapabilityResolution<TContext>,
+): void {
+  if (!resolution.provider || !resolution.report || resolution.report.supported) {
+    return;
+  }
+
+  const policy = resolveFallbackPolicy(input.fallbackPolicy, resolution.provider.fallbackPolicy);
+  const exceedsEstimatedCost =
+    policy.rejectOnEstimatedCost &&
+    resolution.report.estimatedCost != null &&
+    Number.isFinite(policy.maxJoinExpansionRisk) &&
+    resolution.report.estimatedCost > policy.maxJoinExpansionRisk;
+
+  if (!policy.allowFallback || policy.rejectOnMissingAtom || exceedsEstimatedCost) {
+    const diagnostics = resolution.diagnostics.length > 0
+      ? resolution.diagnostics
+      : [
+          makeDiagnostic(
+            "SQLQL_ERR_FALLBACK",
+            "error",
+            summarizeCapabilityReason(resolution.report),
+            {
+              provider: resolution.provider.name,
+              fragment: resolution.fragment?.kind,
+              missingAtoms: resolution.report.missingAtoms,
+            },
+            "42000",
+          ),
+        ];
+    throw new SqlqlDiagnosticError(summarizeCapabilityReason(resolution.report), diagnostics);
   }
 }
 
@@ -269,23 +498,18 @@ async function maybeExecuteWholeQueryFragment<TContext>(
   input: QueryInput<TContext>,
   rel: RelNode,
 ): Promise<QueryRow[] | null> {
-  const fragment = buildProviderFragmentForRel(rel, input.schema, input.context);
-  if (!fragment) {
+  const resolution = await resolveProviderCapabilityForRel(input, rel);
+  if (!resolution.fragment || !resolution.provider || !resolution.report) {
     return null;
   }
 
-  const provider = input.providers[fragment.provider];
-  if (!provider) {
+  if (!resolution.report.supported) {
+    maybeRejectFallback(input, resolution);
     return null;
   }
 
-  const capability = normalizeCapability(await provider.canExecute(fragment, input.context));
-  if (!capability.supported) {
-    return null;
-  }
-
-  const compiled = await provider.compile(fragment, input.context);
-  return provider.execute(compiled, input.context);
+  const compiled = await resolution.provider.compile(resolution.fragment, input.context);
+  return resolution.provider.execute(compiled, input.context);
 }
 
 function createProviderFragmentSession<TContext>(
@@ -295,6 +519,7 @@ function createProviderFragmentSession<TContext>(
   providerName: string,
   fragment: ProviderFragment,
   rel: RelNode,
+  diagnostics: SqlqlDiagnostic[] = [],
 ): QuerySession {
   let executed = false;
   let result: QueryRow[] | null = null;
@@ -318,6 +543,7 @@ function createProviderFragmentSession<TContext>(
         request: {
           fragment: fragment.kind,
         },
+        ...(diagnostics.length > 0 ? { diagnostics } : {}),
       },
     ],
     scopes: [
@@ -327,6 +553,7 @@ function createProviderFragmentSession<TContext>(
         label: "Root query",
       },
     ],
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 
   let state: QueryStepState = {
@@ -335,6 +562,7 @@ function createProviderFragmentSession<TContext>(
     status: "ready",
     summary: `Execute provider fragment (${providerName})`,
     dependsOn: [],
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 
   const run = async (): Promise<QueryRow[]> => {
@@ -375,6 +603,7 @@ function createProviderFragmentSession<TContext>(
       endedAt,
       durationMs: endedAt - startedAt,
       ...(input.options?.captureRows === "full" ? { rows } : {}),
+      ...(diagnostics.length > 0 ? { diagnostics } : {}),
     };
 
     return rows;
@@ -400,6 +629,7 @@ function createProviderFragmentSession<TContext>(
           ...(state.rowCount != null ? { rowCount: state.rowCount } : {}),
           ...(state.outputRowCount != null ? { outputRowCount: state.outputRowCount } : {}),
           ...(input.options?.captureRows === "full" ? { rows: result ?? [] } : {}),
+          ...(diagnostics.length > 0 ? { diagnostics } : {}),
         };
 
         input.options?.onEvent?.(event);
@@ -424,8 +654,9 @@ function createRelExecutionSession<TContext>(
   input: QuerySessionInput<TContext>,
   guardrails: QueryGuardrails,
   rel: RelNode,
+  diagnostics: SqlqlDiagnostic[] = [],
 ): QuerySession {
-  const plan = buildRelExecutionPlan(rel);
+  const plan = buildRelExecutionPlan(rel, diagnostics);
   const states = new Map<string, QueryStepState>(
     plan.steps.map((step) => [
       step.id,
@@ -435,6 +666,7 @@ function createRelExecutionSession<TContext>(
         status: "ready",
         summary: step.summary,
         dependsOn: step.dependsOn,
+        ...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
       },
     ]),
   );
@@ -511,6 +743,7 @@ function createRelExecutionSession<TContext>(
           ...(routeUsed ? { routeUsed } : {}),
           ...(isRoot ? { rowCount: rows.length, outputRowCount: rows.length } : {}),
           ...(isRoot && input.options?.captureRows === "full" ? { rows } : {}),
+          ...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
         };
         states.set(step.id, nextState);
 
@@ -527,6 +760,7 @@ function createRelExecutionSession<TContext>(
           ...(routeUsed ? { routeUsed } : {}),
           ...(isRoot ? { rowCount: rows.length, outputRowCount: rows.length } : {}),
           ...(isRoot && input.options?.captureRows === "full" ? { rows } : {}),
+          ...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
         };
         return event;
       });
@@ -543,6 +777,7 @@ function createRelExecutionSession<TContext>(
             endedAt,
             durationMs: endedAt - (rootState.startedAt ?? startedAt),
             error: error instanceof Error ? error.message : String(error),
+            ...(diagnostics.length > 0 ? { diagnostics } : {}),
           });
         }
       }
@@ -574,7 +809,7 @@ function createRelExecutionSession<TContext>(
   };
 }
 
-function buildRelExecutionPlan(rel: RelNode): QueryExecutionPlan {
+function buildRelExecutionPlan(rel: RelNode, diagnostics: SqlqlDiagnostic[] = []): QueryExecutionPlan {
   let stepCounter = 0;
   const steps: QueryExecutionPlanStep[] = [];
   const scopes: QueryExecutionPlanScope[] = [
@@ -632,9 +867,17 @@ function buildRelExecutionPlan(rel: RelNode): QueryExecutionPlan {
           operation: {
             name: "filter",
             details: {
-              clauseCount: node.where.length,
+              clauseCount: node.where?.length ?? (node.expr ? 1 : 0),
             },
           },
+          ...(node.where || node.expr
+            ? {
+                request: {
+                  ...(node.where ? { where: node.where } : {}),
+                  ...(node.expr ? { expr: node.expr } : {}),
+                },
+              }
+            : {}),
           outputs: node.output.map((column) => column.name),
           sqlOrigin: "WHERE",
           scopeId,
@@ -935,6 +1178,7 @@ function buildRelExecutionPlan(rel: RelNode): QueryExecutionPlan {
   return {
     steps,
     scopes,
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 }
 
@@ -961,33 +1205,24 @@ function tryCreateSyncProviderFragmentSession<TContext>(
   guardrails: QueryGuardrails,
   rel: RelNode,
 ): QuerySession | null {
-  const fragment = buildProviderFragmentForRel(rel, input.schema, input.context);
-  if (!fragment) {
+  const resolution = resolveSyncProviderCapabilityForRel(input, rel);
+  if (!resolution || !resolution.fragment || !resolution.provider || !resolution.report) {
     return null;
   }
 
-  const provider = input.providers[fragment.provider];
-  if (!provider) {
-    return null;
-  }
-
-  const capability = provider.canExecute(fragment, input.context);
-  if (isPromiseLike(capability)) {
-    return null;
-  }
-
-  const normalized = normalizeCapability(capability);
-  if (!normalized.supported) {
+  if (!resolution.report.supported) {
+    maybeRejectFallback(input, resolution);
     return null;
   }
 
   return createProviderFragmentSession(
     input,
     guardrails,
-    provider,
-    fragment.provider,
-    fragment,
+    resolution.provider,
+    resolution.fragment.provider,
+    resolution.fragment,
     rel,
+    resolution.diagnostics,
   );
 }
 
@@ -1021,9 +1256,18 @@ function createQuerySessionInternal<TContext>(input: QuerySessionInput<TContext>
     return providerSession;
   }
 
+  const capabilityResolution = resolveSyncProviderCapabilityForRel(resolvedInput, lowered.rel);
+  if (capabilityResolution) {
+    maybeRejectFallback(resolvedInput, capabilityResolution);
+  }
   const expandedRel = expandRelViews(lowered.rel, resolvedInput.schema, resolvedInput.context);
   assertNoSqlNodesWithoutProviderFragment(expandedRel);
-  return createRelExecutionSession(resolvedInput, guardrails, expandedRel);
+  return createRelExecutionSession(
+    resolvedInput,
+    guardrails,
+    expandedRel,
+    capabilityResolution?.diagnostics ?? [],
+  );
 }
 
 async function queryInternal<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
@@ -1074,17 +1318,22 @@ export interface ExplainResult {
   rel: RelNode;
   plannerNodeCount: number;
   guardrails: QueryGuardrails;
+  diagnostics?: SqlqlDiagnostic[];
 }
 
 function explainInternal<TContext>(input: QueryInput<TContext>): ExplainResult {
   const resolvedInput = normalizeRuntimeSchema(input);
   const guardrails = resolveGuardrails(input.queryGuardrails);
   const lowered = lowerSqlToRel(resolvedInput.sql, resolvedInput.schema);
+  const capabilityResolution = resolveSyncProviderCapabilityForRel(resolvedInput, lowered.rel);
 
   return {
     rel: lowered.rel,
     plannerNodeCount: countRelNodes(lowered.rel),
     guardrails,
+    ...(capabilityResolution?.diagnostics.length
+      ? { diagnostics: capabilityResolution.diagnostics }
+      : {}),
   };
 }
 

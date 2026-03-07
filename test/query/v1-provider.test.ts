@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  SqlqlDiagnosticError,
   createDataEntityHandle,
   defineSchema,
   type ProviderAdapter,
@@ -98,6 +99,31 @@ function applyFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {
           return false;
         }
         break;
+      case "not_in":
+        if (clause.values.includes(value)) {
+          return false;
+        }
+        break;
+      case "like":
+        if (typeof value !== "string" || typeof clause.value !== "string" || !matchesLike(value, clause.value)) {
+          return false;
+        }
+        break;
+      case "not_like":
+        if (typeof value !== "string" || typeof clause.value !== "string" || matchesLike(value, clause.value)) {
+          return false;
+        }
+        break;
+      case "is_distinct_from":
+        if (value === clause.value) {
+          return false;
+        }
+        break;
+      case "is_not_distinct_from":
+        if (value !== clause.value) {
+          return false;
+        }
+        break;
       case "is_null":
         if (value != null) {
           return false;
@@ -112,6 +138,14 @@ function applyFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {
   }
 
   return true;
+}
+
+function matchesLike(value: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/%/g, ".*")
+    .replace(/_/g, ".");
+  return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
 describe("query/v1 provider runtime", () => {
@@ -789,5 +823,191 @@ describe("query/v1 provider runtime", () => {
     const plan = session.getPlan();
     expect(plan.steps.length).toBeGreaterThan(0);
     expect(plan.steps.some((step) => step.kind === "scan")).toBe(true);
+  });
+
+  it("includes fallback diagnostics in explain output for unsupported rel pushdown", () => {
+    const schema = defineSchema({
+      tables: {
+        orders: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            user_id: "text",
+          },
+        },
+        users: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            email: "text",
+          },
+        },
+      },
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return {
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return [];
+          }
+          return scanRows(
+            fragment.table === "orders"
+              ? [{ id: "o1", user_id: "u1" }]
+              : [{ id: "u1", email: "a@example.com" }],
+            fragment.request,
+          );
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const explained = executableSchema.explain({
+      context: {},
+      sql: `
+        SELECT o.id, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+      `,
+    });
+
+    expect(explained.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "SQLQL_WARN_FALLBACK",
+        severity: "warning",
+      }),
+    ]));
+  });
+
+  it("rejects fallback when query policy forbids missing capability atoms", async () => {
+    const schema = defineSchema({
+      tables: {
+        orders: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            user_id: "text",
+          },
+        },
+        users: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            email: "text",
+          },
+        },
+      },
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return {
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return [];
+          }
+          return scanRows([], fragment.request);
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    await expect(executableSchema.query({
+      context: {},
+      fallbackPolicy: {
+        rejectOnMissingAtom: true,
+      },
+      sql: `
+        SELECT o.id, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+      `,
+    })).rejects.toBeInstanceOf(SqlqlDiagnosticError);
+  });
+
+  it("executes scalar expressions and missing operators locally when scan pushdown is the only provider capability", async () => {
+    const schema = defineSchema({
+      tables: {
+        users: {
+          provider: "warehouse",
+          columns: {
+            id: "text",
+            email: "text",
+            score: { type: "integer" },
+          },
+        },
+      },
+    });
+
+    const executableSchema = createExecutableSchemaFromProviders(schema, {
+      warehouse: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return {
+            provider: "warehouse",
+            kind: fragment.kind,
+            payload: fragment,
+          };
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return [];
+          }
+          return scanRows([
+            { id: "u1", email: "Alpha@Example.com", score: 10 },
+            { id: "u2", email: "beta@sample.com", score: 7 },
+            { id: "u3", email: "Gamma@Example.com", score: 4 },
+          ], fragment.request);
+        },
+      } satisfies Omit<ProviderAdapter, "name">,
+    });
+
+    const rows = await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT
+          id,
+          LOWER(email) AS email_lower,
+          score + 2 AS bumped_score,
+          CASE
+            WHEN score >= 8 THEN 'high'
+            ELSE 'low'
+          END AS bucket
+        FROM users
+        WHERE email LIKE '%@Example.com' AND id NOT IN ('u3')
+        ORDER BY id ASC
+      `,
+    });
+
+    expect(rows).toEqual([
+      {
+        id: "u1",
+        email_lower: "alpha@example.com",
+        bumped_score: 12,
+        bucket: "high",
+      },
+    ]);
   });
 });

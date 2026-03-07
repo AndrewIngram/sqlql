@@ -72,7 +72,13 @@ interface SelectWindowProjection {
   function: Extract<RelNode, { kind: "window" }>["functions"][number];
 }
 
-type SelectProjection = SelectColumnProjection | SelectWindowProjection;
+interface SelectExprProjection {
+  kind: "expr";
+  output: string;
+  expr: RelExpr;
+}
+
+type SelectProjection = SelectColumnProjection | SelectWindowProjection | SelectExprProjection;
 
 interface ParsedOrderTerm {
   source: {
@@ -111,6 +117,7 @@ interface InSubqueryFilter {
 interface ParsedWhereFilters {
   literals: LiteralFilter[];
   inSubqueries: InSubqueryFilter[];
+  residualExpr?: RelExpr;
 }
 
 let physicalStepIdCounter = 0;
@@ -424,10 +431,19 @@ function expandRelViewsInternal<TContext>(
         node: {
           ...node,
           input: input.node,
-          where: node.where.map((clause) => ({
-            ...clause,
-            column: rewriteColumnNameWithAliases(clause.column, input.aliases),
-          })),
+          ...(node.where
+            ? {
+                where: node.where.map((clause) => ({
+                  ...clause,
+                  column: rewriteColumnNameWithAliases(clause.column, input.aliases),
+                })),
+              }
+            : {}),
+          ...(node.expr
+            ? {
+                expr: mapRelExprRefs(node.expr, input.aliases),
+              }
+            : {}),
         },
         aliases: input.aliases,
       };
@@ -801,6 +817,24 @@ function mapRelExprRefs(expr: RelExpr, aliases: Map<string, ViewAliasColumnMap>)
   }
 }
 
+function mapRelExprRefsForAliasSource(expr: RelExpr, aliasToSource: AliasToSourceMap): RelExpr {
+  switch (expr.kind) {
+    case "literal":
+      return expr;
+    case "column":
+      return {
+        kind: "column",
+        ref: mapColumnRefForAlias(expr.ref, aliasToSource),
+      };
+    case "function":
+      return {
+        kind: "function",
+        name: expr.name,
+        args: expr.args.map((arg) => mapRelExprRefsForAliasSource(arg, aliasToSource)),
+      };
+  }
+}
+
 function qualifyExprColumns(expr: RelExpr, alias: string): RelExpr {
   switch (expr.kind) {
     case "literal":
@@ -842,6 +876,28 @@ function collectExprColumns(expr: RelExpr): Set<string> {
 
   visit(expr);
   return columns;
+}
+
+function collectRelExprRefs(expr: RelExpr): RelColumnRef[] {
+  const refs: RelColumnRef[] = [];
+
+  const visit = (current: RelExpr): void => {
+    switch (current.kind) {
+      case "literal":
+        return;
+      case "column":
+        refs.push(current.ref);
+        return;
+      case "function":
+        for (const arg of current.args) {
+          visit(arg);
+        }
+        return;
+    }
+  };
+
+  visit(expr);
+  return refs;
 }
 
 function toColumnName(ref: RelColumnRef): string {
@@ -1045,10 +1101,19 @@ function normalizeRelForProvider(node: RelNode, schema: SchemaDefinition): RelNo
         return {
           ...current,
           input: visit(current.input),
-          where: current.where.map((clause) => ({
-            ...clause,
-            column: mapColumnNameForAlias(clause.column, aliasToSource),
-          })),
+          ...(current.where
+            ? {
+                where: current.where.map((clause) => ({
+                  ...clause,
+                  column: mapColumnNameForAlias(clause.column, aliasToSource),
+                })),
+              }
+            : {}),
+          ...(current.expr
+            ? {
+                expr: mapRelExprRefsForAliasSource(current.expr, aliasToSource),
+              }
+            : {}),
         };
       case "project":
         return {
@@ -1060,7 +1125,10 @@ function normalizeRelForProvider(node: RelNode, schema: SchemaDefinition): RelNo
                   ...column,
                   source: mapColumnRefForAlias(column.source, aliasToSource),
                 }
-              : column),
+              : {
+                  ...column,
+                  expr: mapRelExprRefsForAliasSource(column.expr, aliasToSource),
+                }),
         };
       case "join":
         return {
@@ -1772,6 +1840,14 @@ function tryLowerSimpleSelect(
         columnsByAlias.get(projection.source.alias)?.add(projection.source.column);
         continue;
       }
+      if (projection.kind === "expr") {
+        for (const ref of collectRelExprRefs(projection.expr)) {
+          if (ref.alias) {
+            columnsByAlias.get(ref.alias)?.add(ref.column);
+          }
+        }
+        continue;
+      }
       for (const partition of projection.function.partitionBy) {
         if (partition.alias) {
           columnsByAlias.get(partition.alias)?.add(partition.column);
@@ -1795,6 +1871,13 @@ function tryLowerSimpleSelect(
   }
   for (const filter of whereFilters.inSubqueries) {
     columnsByAlias.get(filter.alias)?.add(filter.column);
+  }
+  if (whereFilters.residualExpr) {
+    for (const ref of collectRelExprRefs(whereFilters.residualExpr)) {
+      if (ref.alias) {
+        columnsByAlias.get(ref.alias)?.add(ref.column);
+      }
+    }
   }
 
   for (const term of orderBy) {
@@ -1922,6 +2005,17 @@ function tryLowerSimpleSelect(
     };
   }
 
+  if (whereFilters.residualExpr) {
+    current = {
+      id: nextRelId("filter"),
+      kind: "filter",
+      convention: "local",
+      input: current,
+      expr: whereFilters.residualExpr,
+      output: current.output,
+    };
+  }
+
   if (aggregateMode) {
     current = {
       id: nextRelId("aggregate"),
@@ -2019,16 +2113,23 @@ function tryLowerSimpleSelect(
                 output: projection.output,
               })
       : safeProjections.map((projection) => ({
-          kind: "column" as const,
-          source:
-            projection.kind === "column"
-              ? {
-                  alias: projection.source.alias,
-                  column: projection.source.column,
-                }
-              : {
-                  column: projection.function.as,
-                },
+          ...(projection.kind === "expr"
+            ? {
+                kind: "expr" as const,
+                expr: projection.expr,
+              }
+            : {
+                kind: "column" as const,
+                source:
+                  projection.kind === "column"
+                    ? {
+                        alias: projection.source.alias,
+                        column: projection.source.column,
+                      }
+                    : {
+                        column: projection.function.as,
+                      },
+              }),
           output: projection.output,
         })),
     output: (aggregateMode ? safeAggregateProjections : safeProjections).map((projection) => ({
@@ -2163,10 +2264,21 @@ function parseProjection(
       aliasToBinding,
       windowDefinitions,
     );
-    if (!windowProjection) {
+    if (windowProjection) {
+      out.push(windowProjection);
+      continue;
+    }
+
+    const expr = lowerSqlAstToRelExpr(entry.expr, bindings, aliasToBinding);
+    if (!expr) {
       return null;
     }
-    out.push(windowProjection);
+
+    out.push({
+      kind: "expr",
+      expr,
+      output: typeof entry.as === "string" && entry.as.length > 0 ? entry.as : "expr",
+    });
   }
 
   return out;
@@ -2246,6 +2358,272 @@ function parseWindowProjection(
       orderBy,
     },
   };
+}
+
+function lowerSqlAstToRelExpr(
+  raw: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+): RelExpr | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const expr = raw as {
+    type?: unknown;
+    value?: unknown;
+    table?: unknown;
+    column?: unknown;
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+    name?: unknown;
+    args?: { value?: unknown };
+    ast?: unknown;
+  };
+
+  switch (expr.type) {
+    case "string":
+      return { kind: "literal", value: String(expr.value ?? "") };
+    case "number":
+      return typeof expr.value === "number" ? { kind: "literal", value: expr.value } : null;
+    case "bool":
+      return typeof expr.value === "boolean" ? { kind: "literal", value: expr.value } : null;
+    case "null":
+      return { kind: "literal", value: null };
+    case "column_ref": {
+      const resolved = resolveColumnRef(expr, bindings, aliasToBinding);
+      if (!resolved) {
+        return null;
+      }
+      return {
+        kind: "column",
+        ref: {
+          alias: resolved.alias,
+          column: resolved.column,
+        },
+      };
+    }
+    case "binary_expr":
+      return lowerBinaryExprToRelExpr(expr, bindings, aliasToBinding);
+    case "function":
+      return lowerFunctionExprToRelExpr(expr, bindings, aliasToBinding);
+    default:
+      if ("ast" in expr) {
+        return null;
+      }
+      return null;
+  }
+}
+
+function lowerBinaryExprToRelExpr(
+  expr: {
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+  },
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+): RelExpr | null {
+  const operator = typeof expr.operator === "string" ? expr.operator.toUpperCase() : null;
+  if (!operator) {
+    return null;
+  }
+
+  if (operator === "BETWEEN") {
+    const range = expr.right as { type?: unknown; value?: unknown } | undefined;
+    if (range?.type !== "expr_list" || !Array.isArray(range.value) || range.value.length !== 2) {
+      return null;
+    }
+    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
+    const low = lowerSqlAstToRelExpr(range.value[0], bindings, aliasToBinding);
+    const high = lowerSqlAstToRelExpr(range.value[1], bindings, aliasToBinding);
+    if (!left || !low || !high) {
+      return null;
+    }
+    return {
+      kind: "function",
+      name: "between",
+      args: [left, low, high],
+    };
+  }
+
+  if (operator === "IN" || operator === "NOT IN") {
+    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
+    const values = parseExprListToRelExprArgs(expr.right, bindings, aliasToBinding);
+    if (!left || !values) {
+      return null;
+    }
+    return {
+      kind: "function",
+      name: operator === "NOT IN" ? "not_in" : "in",
+      args: [left, ...values],
+    };
+  }
+
+  if (operator === "IS" || operator === "IS NOT") {
+    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
+    const rightLiteral = parseLiteral(expr.right);
+    if (!left || rightLiteral !== null) {
+      return null;
+    }
+    return {
+      kind: "function",
+      name: operator === "IS NOT" ? "is_not_null" : "is_null",
+      args: [left],
+    };
+  }
+
+  const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
+  const right = lowerSqlAstToRelExpr(expr.right, bindings, aliasToBinding);
+  if (!left || !right) {
+    return null;
+  }
+
+  const mapped = mapBinaryOperatorToRelFunction(operator);
+  if (!mapped) {
+    return null;
+  }
+
+  return {
+    kind: "function",
+    name: mapped,
+    args: [left, right],
+  };
+}
+
+function lowerFunctionExprToRelExpr(
+  expr: {
+    name?: unknown;
+    args?: { value?: unknown };
+    over?: unknown;
+  },
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+): RelExpr | null {
+  if (expr.over) {
+    return null;
+  }
+
+  const rawName = (expr.name as { name?: Array<{ value?: unknown }> } | undefined)?.name?.[0]?.value;
+  if (typeof rawName !== "string") {
+    return null;
+  }
+
+  const normalized = rawName.toLowerCase();
+  const args = parseFunctionArgsToRelExpr(expr.args?.value, bindings, aliasToBinding);
+  if (!args) {
+    return null;
+  }
+
+  if (normalized === "not") {
+    return args.length === 1
+      ? {
+          kind: "function",
+          name: "not",
+          args,
+        }
+      : null;
+  }
+
+  if (
+    normalized !== "lower" &&
+    normalized !== "upper" &&
+    normalized !== "trim" &&
+    normalized !== "length" &&
+    normalized !== "substr" &&
+    normalized !== "substring" &&
+    normalized !== "coalesce" &&
+    normalized !== "nullif" &&
+    normalized !== "abs" &&
+    normalized !== "round" &&
+    normalized !== "cast" &&
+    normalized !== "case"
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "function",
+    name: normalized === "substring" ? "substr" : normalized,
+    args,
+  };
+}
+
+function parseFunctionArgsToRelExpr(
+  raw: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+): RelExpr[] | null {
+  if (raw == null) {
+    return [];
+  }
+  const values = Array.isArray(raw) ? raw : [raw];
+  const args: RelExpr[] = [];
+  for (const value of values) {
+    const arg = lowerSqlAstToRelExpr(value, bindings, aliasToBinding);
+    if (!arg) {
+      return null;
+    }
+    args.push(arg);
+  }
+  return args;
+}
+
+function parseExprListToRelExprArgs(
+  raw: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+): RelExpr[] | null {
+  const expr = raw as { type?: unknown; value?: unknown };
+  if (expr?.type !== "expr_list" || !Array.isArray(expr.value)) {
+    return null;
+  }
+  return parseFunctionArgsToRelExpr(expr.value, bindings, aliasToBinding);
+}
+
+function mapBinaryOperatorToRelFunction(operator: string): string | null {
+  switch (operator) {
+    case "=":
+      return "eq";
+    case "!=":
+    case "<>":
+      return "neq";
+    case ">":
+      return "gt";
+    case ">=":
+      return "gte";
+    case "<":
+      return "lt";
+    case "<=":
+      return "lte";
+    case "AND":
+      return "and";
+    case "OR":
+      return "or";
+    case "+":
+      return "add";
+    case "-":
+      return "subtract";
+    case "*":
+      return "multiply";
+    case "/":
+      return "divide";
+    case "%":
+      return "mod";
+    case "||":
+      return "concat";
+    case "LIKE":
+      return "like";
+    case "NOT LIKE":
+      return "not_like";
+    case "IS DISTINCT FROM":
+      return "is_distinct_from";
+    case "IS NOT DISTINCT FROM":
+      return "is_not_distinct_from";
+    default:
+      return null;
+  }
 }
 
 function readWindowFunctionName(
@@ -2587,17 +2965,38 @@ function parseWhereFilters(
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
 ): ParsedWhereFilters | null {
+  if (!where) {
+    return {
+      literals: [],
+      inSubqueries: [],
+    };
+  }
+
   const parts = flattenConjunctiveWhere(where);
   if (parts == null) {
-    return null;
+    const residualExpr = lowerSqlAstToRelExpr(where, bindings, aliasToBinding);
+    if (!residualExpr) {
+      return null;
+    }
+    return {
+      literals: [],
+      inSubqueries: [],
+      residualExpr,
+    };
   }
 
   const literals: LiteralFilter[] = [];
   const inSubqueries: InSubqueryFilter[] = [];
+  const residualParts: RelExpr[] = [];
   for (const part of parts) {
     const parsed = parseLiteralFilter(part, bindings, aliasToBinding);
     if (!parsed) {
-      return null;
+      const residual = lowerSqlAstToRelExpr(part, bindings, aliasToBinding);
+      if (!residual) {
+        return null;
+      }
+      residualParts.push(residual);
+      continue;
     }
     if ("subquery" in parsed) {
       inSubqueries.push(parsed);
@@ -2606,10 +3005,25 @@ function parseWhereFilters(
     literals.push(parsed);
   }
 
-  return {
-    literals,
-    inSubqueries,
-  };
+  const residualExpr = residualParts.reduce<RelExpr | null>((acc, current) =>
+    acc
+      ? {
+          kind: "function",
+          name: "and",
+          args: [acc, current],
+        }
+      : current, null);
+
+  return residualExpr
+    ? {
+        literals,
+        inSubqueries,
+        residualExpr,
+      }
+    : {
+        literals,
+        inSubqueries,
+      };
 }
 
 function parseLiteralFilter(
@@ -2659,6 +3073,23 @@ function parseLiteralFilter(
     };
   }
 
+  if (operator === "not_in") {
+    const col = resolveColumnRef(expr.left, bindings, aliasToBinding);
+    const values = tryParseLiteralExpressionList(expr.right);
+    if (!col || !values) {
+      return null;
+    }
+
+    return {
+      alias: col.alias,
+      clause: {
+        op: "not_in",
+        column: col.column,
+        values,
+      },
+    };
+  }
+
   if (operator === "is_null" || operator === "is_not_null") {
     const col = resolveColumnRef(expr.left, bindings, aliasToBinding);
     const value = parseLiteral(expr.right);
@@ -2671,6 +3102,23 @@ function parseLiteralFilter(
       clause: {
         op: operator,
         column: col.column,
+      },
+    };
+  }
+
+  if (operator === "like" || operator === "not_like") {
+    const col = resolveColumnRef(expr.left, bindings, aliasToBinding);
+    const value = parseLiteral(expr.right);
+    if (!col || typeof value !== "string") {
+      return null;
+    }
+
+    return {
+      alias: col.alias,
+      clause: {
+        op: operator,
+        column: col.column,
+        value,
       },
     };
   }
@@ -2796,10 +3244,6 @@ function flattenConjunctiveWhere(where: unknown): unknown[] | null {
     return null;
   }
 
-  if (expr.type === "function") {
-    return null;
-  }
-
   return [expr];
 }
 
@@ -2820,6 +3264,16 @@ function tryNormalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"
       return "lte";
     case "IN":
       return "in";
+    case "NOT IN":
+      return "not_in";
+    case "LIKE":
+      return "like";
+    case "NOT LIKE":
+      return "not_like";
+    case "IS DISTINCT FROM":
+      return "is_distinct_from";
+    case "IS NOT DISTINCT FROM":
+      return "is_not_distinct_from";
     case "IS":
       return "is_null";
     case "IS NOT":
@@ -2830,13 +3284,23 @@ function tryNormalizeBinaryOperator(raw: unknown): Exclude<ScanFilterClause["op"
 }
 
 function invertOperator(
-  op: Exclude<ScanFilterClause["op"], "in" | "is_null" | "is_not_null">,
-): Exclude<ScanFilterClause["op"], "in" | "is_null" | "is_not_null"> {
+  op: Exclude<
+    ScanFilterClause["op"],
+    "in" | "not_in" | "like" | "not_like" | "is_null" | "is_not_null"
+  >,
+): Exclude<
+  ScanFilterClause["op"],
+  "in" | "not_in" | "like" | "not_like" | "is_null" | "is_not_null"
+> {
   switch (op) {
     case "eq":
       return "eq";
     case "neq":
       return "neq";
+    case "is_distinct_from":
+      return "is_distinct_from";
+    case "is_not_distinct_from":
+      return "is_not_distinct_from";
     case "gt":
       return "lt";
     case "gte":

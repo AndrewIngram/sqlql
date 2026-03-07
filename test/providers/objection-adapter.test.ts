@@ -432,10 +432,12 @@ describe("objection adapter", () => {
       rel: withNode,
     }, {});
 
-    expect(result).toEqual({
+    expect(result).toEqual(expect.objectContaining({
       supported: false,
+      routeFamily: "rel-advanced",
+      requiredAtoms: expect.arrayContaining(["cte.non_recursive"]),
       reason: "Rel fragment is not supported for single-query Objection pushdown.",
-    });
+    }));
   });
 
   it("accepts with+window rel fragments for single-query pushdown", () => {

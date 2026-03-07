@@ -18,7 +18,7 @@ Implemented:
 - `RIGHT JOIN ... ON a = b`
 - `FULL JOIN ... ON a = b`
 - `WHERE` with boolean predicate trees (`AND`, `OR`, `NOT`)
-- Operators: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `BETWEEN`, `IS NULL`, `IS NOT NULL`
+- Operators: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `NOT LIKE`, `IS NULL`, `IS NOT NULL`, `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
 - `ORDER BY` column refs
 - `LIMIT`, `OFFSET`
 - `GROUP BY` + aggregate functions: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
@@ -29,10 +29,21 @@ Implemented:
 - Subqueries in predicates: `IN (SELECT ...)`, `EXISTS (SELECT ...)`
 - Scalar subqueries in `WHERE` and `SELECT`
 - Non-recursive `WITH` CTEs
+- First local scalar-expression layer for read queries:
+  - arithmetic `+`, `-`, `*`, `/`, `%`
+  - string concat
+  - `LOWER`, `UPPER`, `TRIM`, `LENGTH`, `SUBSTR`
+  - `COALESCE`, `NULLIF`
+  - `ABS`, `ROUND`
+  - `CAST`
+  - searched `CASE`
 - Core window functions:
   - ranking: `ROW_NUMBER`, `RANK`, `DENSE_RANK`
   - aggregate windows: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
   - `PARTITION BY` + `ORDER BY` with default frame behavior
+- Provider capability atoms and route-family metadata for pushdown/rejection decisions
+- Structured fallback diagnostics with SQLSTATE-like classes
+- Query/runtime fallback policy controls for unsupported or expensive provider pushdown
 - Aggregate route (`aggregate(...)`) with local fallback when route is unavailable
 - Join-aware dependency pushdown via `scan(...)` and optional `lookup(...)`
 - Dependency-aware parallel execution for independent branches:
@@ -49,6 +60,7 @@ Implemented:
 
 Unsupported:
 
+- Computed-expression pushdown is still partial and adapter-specific
 - Correlated subqueries
 - Subqueries in `FROM`
 - Recursive CTEs

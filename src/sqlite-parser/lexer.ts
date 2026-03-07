@@ -14,11 +14,15 @@ const KEYWORDS = new Set([
   "ASC",
   "BETWEEN",
   "BY",
+  "CASE",
+  "CAST",
   "COUNT",
   "CURRENT",
   "DENSE_RANK",
   "DESC",
   "DISTINCT",
+  "ELSE",
+  "END",
   "EXCEPT",
   "EXISTS",
   "FALSE",
@@ -37,6 +41,7 @@ const KEYWORDS = new Set([
   "LAST_VALUE",
   "LEAD",
   "LEFT",
+  "LIKE",
   "LIMIT",
   "MAX",
   "MIN",
@@ -59,12 +64,14 @@ const KEYWORDS = new Set([
   "ROWS",
   "SELECT",
   "SUM",
+  "THEN",
   "TRUE",
   "UNBOUNDED",
   "UNION",
   "UPDATE",
   "INSERT",
   "DELETE",
+  "WHEN",
   "WHERE",
   "WINDOW",
   "WITH",
@@ -178,6 +185,11 @@ export function tokenizeSql(input: string): Token[] {
 
     if (char === "!" && input[index + 1] === "=") {
       push("operator", "!=", index);
+      index += 2;
+      continue;
+    }
+    if (char === "|" && input[index + 1] === "|") {
+      push("operator", "||", index);
       index += 2;
       continue;
     }

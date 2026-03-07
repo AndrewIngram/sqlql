@@ -66,7 +66,8 @@ export interface RelScanNode extends RelNodeBase {
 export interface RelFilterNode extends RelNodeBase {
   kind: "filter";
   input: RelNode;
-  where: ScanFilterClause[];
+  where?: ScanFilterClause[];
+  expr?: RelExpr;
 }
 
 export interface RelProjectNode extends RelNodeBase {

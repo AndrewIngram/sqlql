@@ -197,7 +197,7 @@ describe("defineSchema", () => {
       provider: "warehouse",
     });
 
-    const schema = defineSchema(({ table }) => ({
+    const schema = defineSchema(({ table, col }) => ({
       tables: {
         myOrders: table({
           from: ordersEntity,
@@ -237,7 +237,7 @@ describe("defineSchema", () => {
       },
     });
 
-    const schema = defineSchema(({ table }) => ({
+    const schema = defineSchema(({ table, col }) => ({
       tables: {
         myOrders: table({
           from: ordersEntity,

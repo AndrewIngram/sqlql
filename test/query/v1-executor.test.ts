@@ -100,6 +100,31 @@ function applyFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {
           return false;
         }
         break;
+      case "not_in":
+        if (clause.values.includes(value)) {
+          return false;
+        }
+        break;
+      case "like":
+        if (typeof value !== "string" || typeof clause.value !== "string" || !matchesLike(value, clause.value)) {
+          return false;
+        }
+        break;
+      case "not_like":
+        if (typeof value !== "string" || typeof clause.value !== "string" || matchesLike(value, clause.value)) {
+          return false;
+        }
+        break;
+      case "is_distinct_from":
+        if (value === clause.value) {
+          return false;
+        }
+        break;
+      case "is_not_distinct_from":
+        if (value !== clause.value) {
+          return false;
+        }
+        break;
       case "is_null":
         if (value != null) {
           return false;
@@ -114,6 +139,14 @@ function applyFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {
   }
 
   return true;
+}
+
+function matchesLike(value: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/%/g, ".*")
+    .replace(/_/g, ".");
+  return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
 describe("query/v1 local executor", () => {

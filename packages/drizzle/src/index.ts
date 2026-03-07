@@ -19,7 +19,9 @@ import {
 } from "drizzle-orm";
 import {
   bindAdapterEntities,
+  collectCapabilityAtomsForFragment,
   createDataEntityHandle,
+  inferRouteFamilyForFragment,
   isRelProjectColumnMapping,
   normalizeDataEntityShape,
   type DataEntityShape,
@@ -27,6 +29,7 @@ import {
   type DataEntityReadMetadataMap,
   type InferDataEntityShapeMetadata,
   type ProviderAdapter,
+  type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
   type ProviderFragment,
@@ -131,6 +134,24 @@ export function createDrizzleProvider<
     >;
   };
 } {
+  const declaredAtoms: readonly ProviderCapabilityAtom[] = [
+    "scan.project",
+    "scan.filter.basic",
+    "scan.filter.set_membership",
+    "scan.sort",
+    "scan.limit_offset",
+    "lookup.bulk",
+    "aggregate.group_by",
+    "join.inner",
+    "join.left",
+    "join.right_full",
+    "set_op.union_all",
+    "set_op.union_distinct",
+    "set_op.intersect",
+    "set_op.except",
+    "cte.non_recursive",
+    "window.rank_basic",
+  ];
   const providerName = options.name ?? "drizzle";
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
@@ -146,15 +167,22 @@ export function createDrizzleProvider<
   const adapter = {
     name: providerName,
     entities: handles,
+    routeFamilies: ["scan", "lookup", "aggregate", "rel-core", "rel-advanced"] as const,
+    capabilityAtoms: [...declaredAtoms],
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
         case "scan":
           return !!tableConfigs[fragment.table];
         case "rel": {
           const strategy = resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
+          const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
+          const missingAtoms = requiredAtoms.filter((atom) => !declaredAtoms.includes(atom));
           if (strategy && !isStrategyAvailableOnDrizzleDb(strategy, options.db)) {
             return {
               supported: false,
+              routeFamily: inferRouteFamilyForFragment(fragment),
+              requiredAtoms,
+              missingAtoms,
               reason: `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`,
             };
           }
@@ -162,6 +190,9 @@ export function createDrizzleProvider<
             ? true
             : {
                 supported: false,
+                routeFamily: inferRouteFamilyForFragment(fragment),
+                requiredAtoms,
+                missingAtoms,
                 reason: hasSqlNode(fragment.rel)
                   ? "rel fragment must not contain sql nodes."
                   : "Rel fragment is not supported for single-query drizzle pushdown.",
@@ -644,6 +675,21 @@ function toSqlCondition<TColumn extends string>(
       }
       return inArray(source, values as never[]);
     }
+    case "not_in": {
+      const values = clause.values.filter((value) => value != null);
+      if (values.length === 0) {
+        return sql`true`;
+      }
+      return sql`${source} not in ${values as never[]}`;
+    }
+    case "like":
+      return sql`${source} like ${clause.value as never}`;
+    case "not_like":
+      return sql`${source} not like ${clause.value as never}`;
+    case "is_distinct_from":
+      return sql`${source} is distinct from ${clause.value as never}`;
+    case "is_not_distinct_from":
+      return sql`${source} is not distinct from ${clause.value as never}`;
     case "is_null":
       return isNull(source);
     case "is_not_null":
@@ -689,6 +735,7 @@ function canCompileBasicRel(
     case "scan":
       return !!tableConfigs[node.table];
     case "filter":
+      return !node.expr && canCompileBasicRel(node.input, tableConfigs);
     case "project":
     case "aggregate":
     case "sort":
@@ -1006,7 +1053,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
   }
 
   for (const filterNode of plan.pipeline.filters) {
-    for (const clause of filterNode.where) {
+    for (const clause of filterNode.where ?? []) {
       whereClauses.push(toSqlConditionFromRelFilterClause(clause, plan.joinPlan.aliases));
     }
   }
@@ -1326,7 +1373,7 @@ async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
     );
   }
   for (const filter of body.filters) {
-    for (const clause of filter.where) {
+    for (const clause of filter.where ?? []) {
       whereClauses.push(
         toSqlConditionFromSource(
           clause,
@@ -1965,6 +2012,21 @@ function toSqlConditionFromSource(
       }
       return inArray(source, values as never[]);
     }
+    case "not_in": {
+      const values = clause.values.filter((value) => value != null);
+      if (values.length === 0) {
+        return sql`true`;
+      }
+      return sql`${source} not in ${values as never[]}`;
+    }
+    case "like":
+      return sql`${source} like ${clause.value as never}`;
+    case "not_like":
+      return sql`${source} not like ${clause.value as never}`;
+    case "is_distinct_from":
+      return sql`${source} is distinct from ${clause.value as never}`;
+    case "is_not_distinct_from":
+      return sql`${source} is not distinct from ${clause.value as never}`;
     case "is_null":
       return isNull(source);
     case "is_not_null":
@@ -2151,7 +2213,7 @@ async function executeDrizzleRelFilter<TContext>(
   const rows = (await executeDrizzleRelNode(filter.input, context)) as InternalRow[];
   let out = [...rows];
 
-  for (const clause of filter.where) {
+  for (const clause of filter.where ?? []) {
     out = out.filter((row) => matchesClause(row, clause));
   }
 
@@ -2431,6 +2493,22 @@ function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): 
       const set = new Set(clause.values.filter((entry) => entry != null));
       return value != null && set.has(value);
     }
+    case "not_in": {
+      const set = new Set(clause.values.filter((entry) => entry != null));
+      return value != null && !set.has(value);
+    }
+    case "like":
+      return typeof value === "string" && typeof clause.value === "string"
+        ? matchesLikePattern(value, clause.value)
+        : false;
+    case "not_like":
+      return typeof value === "string" && typeof clause.value === "string"
+        ? !matchesLikePattern(value, clause.value)
+        : false;
+    case "is_distinct_from":
+      return value !== clause.value;
+    case "is_not_distinct_from":
+      return value === clause.value;
     case "is_null":
       return value == null;
     case "is_not_null":
@@ -2438,6 +2516,14 @@ function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): 
     default:
       return false;
   }
+}
+
+function matchesLikePattern(value: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/%/g, ".*")
+    .replace(/_/g, ".");
+  return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
 function evaluateAggregateMetric(

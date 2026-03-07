@@ -39,13 +39,18 @@ function toEntityColumns(
 
 function toEntityColumnsFromBindings(
   bindings: Record<string, NormalizedColumnBinding>,
+  fallbackDefinitions?: Record<string, TableColumnDefinition>,
 ): DataEntityColumnMap<string> {
   return Object.fromEntries(
     Object.entries(bindings).flatMap(([columnName, binding]) =>
       isNormalizedSourceColumnBinding(binding)
         ? [[
             columnName,
-            toEntityColumnMetadata(columnName, binding.definition, binding.source),
+            toEntityColumnMetadata(
+              columnName,
+              binding.definition ?? fallbackDefinitions?.[columnName],
+              binding.source,
+            ),
           ] as const]
         : [],
     ),
@@ -82,15 +87,23 @@ function toLensDefinition(
   columnName: string,
   definition: TableColumnDefinition,
 ): SchemaColumnLensDefinition {
+  return toLensDefinitionFromSource(columnName, definition, columnName);
+}
+
+function toLensDefinitionFromSource(
+  columnName: string,
+  definition: TableColumnDefinition,
+  source: string,
+): SchemaColumnLensDefinition {
   if (typeof definition === "string") {
     return {
-      source: columnName,
+      source,
       type: definition,
     };
   }
 
   const lens: SchemaColumnLensDefinition = {
-    source: columnName,
+    source,
   };
   lens.type = definition.type;
   if (definition.nullable != null) {
@@ -196,7 +209,7 @@ export function createExecutableSchemaFromProviders<
             provider: providerName,
             adapter,
             columns: binding?.kind === "physical"
-              ? toEntityColumnsFromBindings(binding.columnBindings)
+              ? toEntityColumnsFromBindings(binding.columnBindings, tableDefinition.columns)
               : toEntityColumns(tableDefinition.columns),
           });
         }
@@ -214,10 +227,11 @@ export function createExecutableSchemaFromProviders<
                         ? [[
                             columnName,
                             {
-                              source: columnBinding.source,
-                              ...(typeof columnBinding.definition === "string"
-                                ? { type: columnBinding.definition }
-                                : columnBinding.definition ?? {}),
+                              ...toLensDefinitionFromSource(
+                                columnName,
+                                columnBinding.definition ?? tableDefinition.columns[columnName] ?? "text",
+                                columnBinding.source,
+                              ),
                               ...(columnBinding.coerce ? { coerce: columnBinding.coerce } : {}),
                             },
                           ] as const]

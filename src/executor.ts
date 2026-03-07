@@ -196,8 +196,12 @@ async function executeFilter<TContext>(
   const rows = (await executeRelNode(filter.input, context)) as InternalRow[];
   let out = [...rows];
 
-  for (const clause of filter.where) {
+  for (const clause of filter.where ?? []) {
     out = out.filter((row) => matchesClause(row, clause));
+  }
+
+  if (filter.expr) {
+    out = out.filter((row) => Boolean(evaluateRelExpr(filter.expr!, row)));
   }
 
   return out;
@@ -855,6 +859,22 @@ function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): 
       const set = new Set(clause.values.filter((entry) => entry != null));
       return value != null && set.has(value);
     }
+    case "not_in": {
+      const set = new Set(clause.values.filter((entry) => entry != null));
+      return value != null && !set.has(value);
+    }
+    case "like":
+      return typeof value === "string" && typeof clause.value === "string"
+        ? testSqlLikePattern(value, clause.value)
+        : false;
+    case "not_like":
+      return typeof value === "string" && typeof clause.value === "string"
+        ? !testSqlLikePattern(value, clause.value)
+        : false;
+    case "is_distinct_from":
+      return value !== clause.value;
+    case "is_not_distinct_from":
+      return value === clause.value;
     case "is_null":
       return value == null;
     case "is_not_null":
@@ -899,10 +919,116 @@ function evaluateRelExpr(expr: RelExpr, row: InternalRow): unknown {
           return toFiniteNumber(args[0], "MULTIPLY") * toFiniteNumber(args[1], "MULTIPLY");
         case "divide":
           return toFiniteNumber(args[0], "DIVIDE") / toFiniteNumber(args[1], "DIVIDE");
+        case "mod":
+          return toFiniteNumber(args[0], "MOD") % toFiniteNumber(args[1], "MOD");
+        case "concat":
+          return args.map((arg) => (arg == null ? "" : String(arg))).join("");
+        case "like":
+          return typeof args[0] === "string" && typeof args[1] === "string"
+            ? testSqlLikePattern(args[0], args[1])
+            : false;
+        case "not_like":
+          return typeof args[0] === "string" && typeof args[1] === "string"
+            ? !testSqlLikePattern(args[0], args[1])
+            : false;
+        case "in":
+          return args[0] != null && args.slice(1).some((arg) => arg === args[0]);
+        case "not_in":
+          return args[0] != null && args.slice(1).every((arg) => arg !== args[0]);
+        case "is_null":
+          return args[0] == null;
+        case "is_not_null":
+          return args[0] != null;
+        case "is_distinct_from":
+          return args[0] !== args[1];
+        case "is_not_distinct_from":
+          return args[0] === args[1];
+        case "between":
+          return args[0] != null && args[1] != null && args[2] != null
+            ? compareNonNull(args[0], args[1]) >= 0 && compareNonNull(args[0], args[2]) <= 0
+            : false;
+        case "lower":
+          return args[0] == null ? null : String(args[0]).toLowerCase();
+        case "upper":
+          return args[0] == null ? null : String(args[0]).toUpperCase();
+        case "trim":
+          return args[0] == null ? null : String(args[0]).trim();
+        case "length":
+          return args[0] == null ? null : String(args[0]).length;
+        case "substr": {
+          if (args[0] == null || args[1] == null) {
+            return null;
+          }
+          const input = String(args[0]);
+          const start = Math.trunc(toFiniteNumber(args[1], "SUBSTR"));
+          const begin = start >= 0 ? Math.max(0, start - 1) : Math.max(input.length + start, 0);
+          if (args[2] == null) {
+            return input.slice(begin);
+          }
+          const length = Math.max(0, Math.trunc(toFiniteNumber(args[2], "SUBSTR")));
+          return input.slice(begin, begin + length);
+        }
+        case "coalesce":
+          return args.find((arg) => arg != null) ?? null;
+        case "nullif":
+          return args[0] === args[1] ? null : (args[0] ?? null);
+        case "abs":
+          return args[0] == null ? null : Math.abs(toFiniteNumber(args[0], "ABS"));
+        case "round": {
+          if (args[0] == null) {
+            return null;
+          }
+          const value = toFiniteNumber(args[0], "ROUND");
+          const precision = args[1] == null ? 0 : Math.trunc(toFiniteNumber(args[1], "ROUND"));
+          const scale = 10 ** precision;
+          return Math.round(value * scale) / scale;
+        }
+        case "cast":
+          return castValue(args[0], args[1]);
+        case "case": {
+          const lastIndex = args.length - 1;
+          const hasElse = args.length % 2 === 1;
+          for (let index = 0; index < (hasElse ? lastIndex : args.length); index += 2) {
+            if (args[index]) {
+              return args[index + 1] ?? null;
+            }
+          }
+          return hasElse ? (args[lastIndex] ?? null) : null;
+        }
         default:
           throw new UnsupportedRelExecutionError(`Unsupported computed expression function: ${expr.name}`);
       }
     }
+  }
+}
+
+function testSqlLikePattern(value: string, pattern: string): boolean {
+  const regex = new RegExp(
+    `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".")}$`,
+    "su",
+  );
+  return regex.test(value);
+}
+
+function castValue(value: unknown, target: unknown): unknown {
+  if (value == null) {
+    return null;
+  }
+  const normalized = String(target ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "text":
+      return String(value);
+    case "integer":
+    case "int":
+      return Math.trunc(Number(value));
+    case "real":
+    case "numeric":
+    case "float":
+      return Number(value);
+    case "boolean":
+      return Boolean(value);
+    default:
+      throw new UnsupportedRelExecutionError(`Unsupported CAST target type: ${String(target)}`);
   }
 }
 
@@ -1021,7 +1147,17 @@ function compareNonNull(left: unknown, right: unknown): number {
 
 function toFiniteNumber(
   value: unknown,
-  functionName: "SUM" | "AVG" | "ADD" | "SUBTRACT" | "MULTIPLY" | "DIVIDE",
+  functionName:
+    | "SUM"
+    | "AVG"
+    | "ADD"
+    | "SUBTRACT"
+    | "MULTIPLY"
+    | "DIVIDE"
+    | "MOD"
+    | "SUBSTR"
+    | "ABS"
+    | "ROUND",
 ): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {

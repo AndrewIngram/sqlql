@@ -1,6 +1,8 @@
 export * from "./schema";
 export {
+  DEFAULT_QUERY_FALLBACK_POLICY,
   DEFAULT_QUERY_GUARDRAILS,
+  SqlqlDiagnosticError,
   asProviderCompiledPlan,
   createExecutableSchema,
 } from "./query-v1";
@@ -12,6 +14,7 @@ export type {
   QueryExecutionPlan,
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
+  QueryFallbackPolicy,
   QueryGuardrails,
   QuerySession,
   QuerySessionOptions,

@@ -1881,6 +1881,11 @@ export type ScanFilterOperator =
   | "lt"
   | "lte"
   | "in"
+  | "not_in"
+  | "like"
+  | "not_like"
+  | "is_distinct_from"
+  | "is_not_distinct_from"
   | "is_null"
   | "is_not_null";
 
@@ -1894,7 +1899,17 @@ export interface ScalarFilterClause<
   TColumn extends string = string,
   TValue = unknown,
 > extends FilterClauseBase<TColumn> {
-  op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte";
+  op:
+    | "eq"
+    | "neq"
+    | "gt"
+    | "gte"
+    | "lt"
+    | "lte"
+    | "like"
+    | "not_like"
+    | "is_distinct_from"
+    | "is_not_distinct_from";
   value: TValue;
 }
 
@@ -1902,7 +1917,7 @@ export interface SetFilterClause<
   TColumn extends string = string,
   TValue = unknown,
 > extends FilterClauseBase<TColumn> {
-  op: "in";
+  op: "in" | "not_in";
   values: TValue[];
 }
 

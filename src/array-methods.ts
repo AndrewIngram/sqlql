@@ -313,6 +313,34 @@ function filterRows<TRow extends QueryRow, TColumn extends string>(
         });
         break;
       }
+      case "not_in": {
+        const set = new Set<unknown>(clause.values.filter((value) => value != null));
+        out = out.filter((row) => {
+          const value = row[clause.column];
+          return value != null && !set.has(value as unknown);
+        });
+        break;
+      }
+      case "like":
+        out = out.filter((row) =>
+          typeof row[clause.column] === "string" &&
+          typeof clause.value === "string" &&
+          matchesLikePattern(row[clause.column] as string, clause.value),
+        );
+        break;
+      case "not_like":
+        out = out.filter((row) =>
+          typeof row[clause.column] === "string" &&
+          typeof clause.value === "string" &&
+          !matchesLikePattern(row[clause.column] as string, clause.value),
+        );
+        break;
+      case "is_distinct_from":
+        out = out.filter((row) => row[clause.column] !== clause.value);
+        break;
+      case "is_not_distinct_from":
+        out = out.filter((row) => row[clause.column] === clause.value);
+        break;
       case "is_null":
         out = out.filter((row) => row[clause.column] == null);
         break;
@@ -323,6 +351,14 @@ function filterRows<TRow extends QueryRow, TColumn extends string>(
   }
 
   return out;
+}
+
+function matchesLikePattern(value: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/%/g, ".*")
+    .replace(/_/g, ".");
+  return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
 function projectRows(rows: QueryRow[], select: string[]): QueryRow[] {
