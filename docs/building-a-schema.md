@@ -79,66 +79,97 @@ import { createExecutableSchema } from "sqlql";
 
 const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
   const myOrders = table(dbProvider.entities.orders, {
-    columns: ({ col }) => ({
+    columns: ({ col, expr }) => ({
       id: col.id("id"),
-      vendorId: col.string("vendor_id", {
-        foreignKey: { table: "vendorsForOrg", column: "id" },
-      }),
+      vendorId: col.string("vendor_id"),
       status: col.string("status", {
         enum: ["pending", "paid", "shipped"] as const,
       }),
       totalCents: col.integer("total_cents"),
       createdAt: col.timestamp("created_at"),
+      totalDollars: col.real(
+        expr.divide(col("totalCents"), expr.literal(100)),
+        { nullable: false },
+      ),
+      isLargeOrder: col.boolean(
+        expr.gte(col("totalCents"), expr.literal(3000)),
+        { nullable: false },
+      ),
     }),
   });
 
-  const vendorsForOrg = table(dbProvider.entities.vendors, {
-    columns: ({ col }) => ({
-      id: col.id("id"),
-      name: col.string("name"),
-      tier: col.string("tier", {
-        enum: ["standard", "preferred"] as const,
+  const myOrderFacts = view(
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(myOrders),
+        right: scan(dbProvider.entities.vendors),
+        on: expr.eq(col(myOrders, "vendorId"), col(dbProvider.entities.vendors, "id")),
+        type: "inner",
       }),
-    }),
-  });
+    {
+      columns: ({ col }) => ({
+        orderId: col.id(myOrders, "id"),
+        vendorId: col.string(myOrders, "vendorId", { nullable: false }),
+        vendorName: col.string(dbProvider.entities.vendors, "name", { nullable: false }),
+        totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+        totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
+        isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
+      }),
+    },
+  );
 
-  const myVendorSpend = view({
-    rel: ({ scan, join, aggregate, col, expr, agg }) =>
+  const myVendorSpend = view(
+    ({ scan, aggregate, col, agg }) =>
       aggregate({
-        from: join({
-          left: scan(myOrders),
-          right: scan(vendorsForOrg),
-          on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
-          type: "inner",
-        }),
+        from: scan(myOrderFacts),
         groupBy: {
-          vendorId: col(vendorsForOrg, "id"),
-          vendorName: col(vendorsForOrg, "name"),
+          vendorId: col(myOrderFacts, "vendorId"),
+          vendorName: col(myOrderFacts, "vendorName"),
         },
         measures: {
-          spendCents: agg.sum(col(myOrders, "totalCents")),
+          spendCents: agg.sum(col(myOrderFacts, "totalCents")),
           orderCount: agg.count(),
         },
       }),
-    columns: ({ col }) => ({
-      vendorId: col.id("vendorId"),
-      vendorName: col.string("vendorName"),
-      spendCents: col.integer("spendCents"),
-      orderCount: col.integer("orderCount"),
-    }),
-  });
+    {
+      columns: ({ col }) => ({
+        vendorId: col.id("vendorId"),
+        vendorName: col.string("vendorName"),
+        spendCents: col.integer("spendCents"),
+        orderCount: col.integer("orderCount"),
+      }),
+    },
+  );
 
   return {
     tables: {
       myOrders,
-      vendorsForOrg,
+      myOrderFacts,
       myVendorSpend,
     },
   };
 });
 ```
 
-### 4) Query the facade
+When a view only needs a provider entity as a private source, `scan(...)` can read the `DataEntityHandle` directly. You only need `table(...)` when you want that source to be part of the public facade.
+
+### 4) Use calculated columns on a base table
+
+`virtuals` attaches calculated columns directly to a physical facade table. They behave like any other logical column in `SELECT`, `WHERE`, and `ORDER BY`.
+
+```ts
+const highValueOrders = await executableSchema.query({
+  context: { orgId: "org_1", userId: "u1" },
+  sql: `
+    SELECT id, totalDollars, isLargeOrder
+    FROM myOrders
+    WHERE totalDollars >= 20
+    ORDER BY totalDollars DESC
+  `,
+});
+```
+
+### 5) Query composed and aggregate views
 
 ```ts
 const rows = await executableSchema.query({
@@ -149,12 +180,21 @@ const rows = await executableSchema.query({
     ORDER BY spendCents DESC
   `,
 });
+
+const facts = await executableSchema.query({
+  context: { orgId: "org_1", userId: "u1" },
+  sql: `
+    SELECT orderId, vendorName, totalDollars
+    FROM myOrderFacts
+    ORDER BY totalDollars DESC
+  `,
+});
 ```
 
 ## Why this pattern stays clean
 
 - Physical concerns stay in provider config (`table`, `scope`, backend APIs).
-- Facade concerns stay in the executable schema (`table`, `view`, logical names).
+- Facade concerns stay in the executable schema (`table`, `virtuals`, `view`, logical names).
 - Scoped typed builders (`columns: ({ col }) => ...`) reduce ref/column drift.
 
 ## Troubleshooting checklist

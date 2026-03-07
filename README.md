@@ -51,49 +51,68 @@ const dbProvider = createDrizzleProvider<QueryContext>({
 
 const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
   const myOrders = table(dbProvider.entities.orders, {
-    columns: ({ col }) => ({
+    columns: ({ col, expr }) => ({
       id: col.id("id"),
       vendorId: col.string("vendor_id"),
       totalCents: col.integer("total_cents"),
+      createdAt: col.timestamp("created_at"),
+      totalDollars: col.real(
+        expr.divide(col("totalCents"), expr.literal(100)),
+        { nullable: false },
+      ),
+      isLargeOrder: col.boolean(
+        expr.gte(col("totalCents"), expr.literal(3000)),
+        { nullable: false },
+      ),
     }),
   });
 
-  const vendorsForOrg = table(dbProvider.entities.vendors, {
-    columns: ({ col }) => ({
-      id: col.id("id"),
-      name: col.string("name"),
-    }),
-  });
+  const myOrderFacts = view(
+    ({ scan, join, col, expr }) =>
+      join({
+        left: scan(myOrders),
+        right: scan(dbProvider.entities.vendors),
+        on: expr.eq(col(myOrders, "vendorId"), col(dbProvider.entities.vendors, "id")),
+        type: "inner",
+      }),
+    {
+      columns: ({ col }) => ({
+        orderId: col.id(myOrders, "id"),
+        vendorId: col.string(myOrders, "vendorId", { nullable: false }),
+        vendorName: col.string(dbProvider.entities.vendors, "name", { nullable: false }),
+        totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+        totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
+        isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
+      }),
+    },
+  );
 
   return {
     tables: {
       myOrders,
-      vendorsForOrg,
-      myVendorSpend: view({
-        rel: ({ scan, join, aggregate, col, expr, agg }) =>
+      myOrderFacts,
+      myVendorSpend: view(
+        ({ scan, aggregate, col, agg }) =>
           aggregate({
-            from: join({
-              left: scan(myOrders),
-              right: scan(vendorsForOrg),
-              on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
-              type: "inner",
-            }),
+            from: scan(myOrderFacts),
             groupBy: {
-              vendorId: col(vendorsForOrg, "id"),
-              vendorName: col(vendorsForOrg, "name"),
+              vendorId: col(myOrderFacts, "vendorId"),
+              vendorName: col(myOrderFacts, "vendorName"),
             },
             measures: {
-              totalSpendCents: agg.sum(col(myOrders, "totalCents")),
+              totalSpendCents: agg.sum(col(myOrderFacts, "totalCents")),
               orderCount: agg.count(),
             },
           }),
-        columns: ({ col }) => ({
-          vendorId: col.id("vendorId"),
-          vendorName: col.string("vendorName"),
-          totalSpendCents: col.integer("totalSpendCents"),
-          orderCount: col.integer("orderCount"),
-        }),
-      }),
+        {
+          columns: ({ col }) => ({
+            vendorId: col.id("vendorId"),
+            vendorName: col.string("vendorName"),
+            totalSpendCents: col.integer("totalSpendCents"),
+            orderCount: col.integer("orderCount"),
+          }),
+        },
+      ),
     },
   };
 });
@@ -104,6 +123,16 @@ const rows = await executableSchema.query({
     SELECT vendorName, totalSpendCents, orderCount
     FROM myVendorSpend
     ORDER BY totalSpendCents DESC
+  `,
+});
+
+const highValueOrders = await executableSchema.query({
+  context: { orgId: "org_1", userId: "u1" },
+  sql: `
+    SELECT orderId, vendorName, totalDollars, isLargeOrder
+    FROM myOrderFacts
+    WHERE totalDollars >= 20
+    ORDER BY totalDollars DESC
   `,
 });
 ```

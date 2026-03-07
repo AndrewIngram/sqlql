@@ -15,6 +15,6 @@ describe("playground/query-catalog", () => {
     const second = buildQueryCatalog(QUERY_PRESETS);
 
     expect(first.map((entry) => entry.id)).toEqual(second.map((entry) => entry.id));
-    expect(first[0]?.id).toBe("orders_with_vendors");
+    expect(first[0]?.id).toBe("orders_calculated_columns");
   });
 });

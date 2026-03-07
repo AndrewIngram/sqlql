@@ -25,8 +25,10 @@ describe("playground/schema-graph-model", () => {
       "active_products",
       "my_order_lines",
       "product_view_counts",
+      "product_engagement",
+      "product_performance",
     ]);
-    expect(layout.edges).toHaveLength(7);
+    expect(layout.edges).toHaveLength(8);
     expect(
       layout.edges
         .map(
@@ -41,6 +43,7 @@ describe("playground/schema-graph-model", () => {
       "my_order_lines.product_id->active_products.id",
       "my_orders.vendor_id->vendors_for_org.id",
       "product_access_for_user.product_id->products_for_org.id",
+      "product_performance.product_id->active_products.id",
       "product_view_counts.product_id->active_products.id",
     ]);
   });
@@ -101,6 +104,8 @@ describe("playground/schema-graph-model", () => {
       "status",
       "total_cents",
       "created_at",
+      "total_dollars",
+      "is_large_order",
     ]);
   });
 });

@@ -1,4 +1,10 @@
-import type { AggregateFunction, ScanFilterClause, ScanOrderBy, SchemaDefinition } from "./schema";
+import type {
+  AggregateFunction,
+  ScanFilterClause,
+  ScanOrderBy,
+  SchemaDataEntityHandle,
+  SchemaDefinition,
+} from "./schema";
 
 export type RelConvention = `provider:${string}` | "local";
 
@@ -55,6 +61,7 @@ export interface RelNodeBase {
 export interface RelScanNode extends RelNodeBase {
   kind: "scan";
   table: string;
+  entity?: SchemaDataEntityHandle<string>;
   alias?: string;
   select: string[];
   where?: ScanFilterClause[];
@@ -254,7 +261,19 @@ export function collectRelTables(node: RelNode): string[] {
 }
 
 export function validateRelAgainstSchema(node: RelNode, schema: SchemaDefinition): void {
-  const validateScanColumn = (tableName: string, column: string): void => {
+  const validateScanColumn = (
+    tableName: string,
+    column: string,
+    entity?: SchemaDataEntityHandle<string>,
+  ): void => {
+    if (entity?.columns) {
+      const logicalColumn = column.includes(".") ? column.slice(column.lastIndexOf(".") + 1) : column;
+      if (!(logicalColumn in entity.columns)) {
+        throw new Error(`Unknown column in relational plan: ${tableName}.${logicalColumn}`);
+      }
+      return;
+    }
+
     const table = schema.tables[tableName];
     if (!table) {
       return;
@@ -268,18 +287,18 @@ export function validateRelAgainstSchema(node: RelNode, schema: SchemaDefinition
   const visit = (current: RelNode, cteNames: Set<string>): void => {
     switch (current.kind) {
       case "scan":
-        if (!cteNames.has(current.table) && !schema.tables[current.table]) {
+        if (!cteNames.has(current.table) && !schema.tables[current.table] && !current.entity) {
           throw new Error(`Unknown table in relational plan: ${current.table}`);
         }
-        if (!cteNames.has(current.table) && schema.tables[current.table]) {
+        if (!cteNames.has(current.table) && (schema.tables[current.table] || current.entity)) {
           for (const column of current.select) {
-            validateScanColumn(current.table, column);
+            validateScanColumn(current.table, column, current.entity);
           }
           for (const clause of current.where ?? []) {
-            validateScanColumn(current.table, clause.column);
+            validateScanColumn(current.table, clause.column, current.entity);
           }
           for (const term of current.orderBy ?? []) {
-            validateScanColumn(current.table, term.column);
+            validateScanColumn(current.table, term.column, current.entity);
           }
         }
         return;

@@ -92,8 +92,11 @@ defineSchema(({ table, view }) => {
   return {
     tables: {
       myOrders,
-      spendByVendor: view({
-        rel: ({ scan, join, aggregate, col, expr, agg }) => {
+      spendByVendor: view(
+        ({ scan, join, aggregate, col, expr, agg }) => {
+          const entityScan = scan(vendorsEntity);
+          void entityScan;
+
           const okEntityColRef = col(vendorsEntity, "id");
           void okEntityColRef;
           // @ts-expect-error - column does not exist on vendorsEntity
@@ -119,11 +122,13 @@ defineSchema(({ table, view }) => {
             },
           });
         },
-        columns: ({ col }) => ({
-          vendorId: col.string("vendorId"),
-          spend: col.integer("spend"),
-        }),
-      }),
+        {
+          columns: ({ col }) => ({
+            vendorId: col.string("vendorId"),
+            spend: col.integer("spend"),
+          }),
+        },
+      ),
     },
   };
 });

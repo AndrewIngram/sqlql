@@ -62,32 +62,34 @@ describe("defineSchema", () => {
             total_cents: { source: "total_cents", type: "integer", nullable: false },
           },
         }),
-        my_order_stats: view({
-            rel: () =>
-              rel.aggregate({
-                from: rel.scan("my_orders"),
-                groupBy: { id: col("my_orders.id") },
-                measures: {
-                  spend: agg.sum(col("my_orders.total_cents")),
-                  rows: agg.count(),
+        my_order_stats: view(
+          () =>
+            rel.aggregate({
+              from: rel.scan("my_orders"),
+              groupBy: { order_id: col("my_orders.id") },
+              measures: {
+                spend: agg.sum(col("my_orders.total_cents")),
+                rows: agg.count(),
               },
             }),
-          columns: {
-            order_id: col("id"),
-            spend: col("spend"),
+          {
+            columns: ({ col }) => ({
+              order_id: col.string("order_id", { nullable: false }),
+              spend: col.integer("spend"),
+            }),
           },
-        }),
+        ),
       },
     }));
 
     const binding = getNormalizedTableBinding(schema, "my_order_stats");
     expect(binding?.kind).toBe("view");
     expect(binding?.columnBindings).toEqual({
-      order_id: { source: "id" },
-      spend: { source: "spend" },
+      order_id: { source: "order_id", definition: { type: "text", nullable: false } },
+      spend: { source: "spend", definition: { type: "integer" } },
     });
     expect(binding?.columnToSource).toEqual({
-      order_id: "id",
+      order_id: "order_id",
       spend: "spend",
     });
   });
@@ -124,8 +126,8 @@ describe("defineSchema", () => {
         tables: {
           myOrders,
           vendorsForOrg,
-          spendByVendor: view({
-            rel: () =>
+          spendByVendor: view(
+            () =>
               rel.aggregate({
                 from: rel.join({
                   left: rel.scan(myOrders),
@@ -133,19 +135,21 @@ describe("defineSchema", () => {
                   on: expr.eq(col(myOrders, "vendorId"), col(vendorsForOrg, "id")),
                 }),
                 groupBy: {
-                  id: col(vendorsForOrg, "id"),
-                  name: col(vendorsForOrg, "name"),
+                  vendor_id: col(vendorsForOrg, "id"),
+                  vendor_name: col(vendorsForOrg, "name"),
                 },
                 measures: {
                   spend: agg.sum(col(myOrders, "totalCents")),
                 },
               }),
-            columns: {
-              vendor_id: col("id"),
-              vendor_name: col("name"),
-              spend: col("spend"),
+            {
+              columns: ({ col }) => ({
+                vendor_id: col.string("vendor_id", { nullable: false }),
+                vendor_name: col.string("vendor_name", { nullable: false }),
+                spend: col.integer("spend"),
+              }),
             },
-          }),
+          ),
         },
       };
     });
@@ -153,13 +157,13 @@ describe("defineSchema", () => {
     const binding = getNormalizedTableBinding(schema, "spendByVendor");
     expect(binding?.kind).toBe("view");
     expect(binding?.columnBindings).toEqual({
-      vendor_id: { source: "id" },
-      vendor_name: { source: "name" },
-      spend: { source: "spend" },
+      vendor_id: { source: "vendor_id", definition: { type: "text", nullable: false } },
+      vendor_name: { source: "vendor_name", definition: { type: "text", nullable: false } },
+      spend: { source: "spend", definition: { type: "integer" } },
     });
     expect(binding?.columnToSource).toEqual({
-      vendor_id: "id",
-      vendor_name: "name",
+      vendor_id: "vendor_id",
+      vendor_name: "vendor_name",
       spend: "spend",
     });
 
@@ -272,6 +276,81 @@ describe("defineSchema", () => {
         totalCents: "total_cents",
         createdAt: "created_at",
       },
+    });
+  });
+
+  it("normalizes virtual columns on physical tables as expr bindings", () => {
+    const ordersEntity = createDataEntityHandle({
+      entity: "orders_raw",
+      provider: "warehouse",
+      columns: {
+        id: { source: "id", type: "text", nullable: false, primaryKey: true },
+        totalCents: { source: "total_cents", type: "integer", nullable: false },
+      },
+    });
+
+    const schema = defineSchema(({ table }) => ({
+      tables: {
+        myOrders: table(ordersEntity, {
+          columns: ({ col, expr }) => ({
+            id: col.id("id"),
+            totalCents: col.integer("totalCents"),
+            totalDollars: col.real(
+              expr.divide(col("totalCents"), expr.literal(100)),
+              { nullable: false },
+            ),
+            isLargeOrder: col.boolean(
+              expr.gte(col("totalCents"), expr.literal(3000)),
+              { nullable: false },
+            ),
+          }),
+        }),
+      },
+    }));
+
+    const binding = getNormalizedTableBinding(schema, "myOrders");
+    expect(binding?.kind).toBe("physical");
+    if (!binding || binding.kind !== "physical") {
+      throw new Error("Expected a physical table binding.");
+    }
+
+    expect(binding.columnBindings.id).toEqual({
+      kind: "source",
+      source: "id",
+      definition: { type: "text", nullable: false, primaryKey: true },
+    });
+    expect(binding.columnBindings.totalCents).toEqual({
+      kind: "source",
+      source: "total_cents",
+      definition: { type: "integer", nullable: false },
+    });
+    expect(binding.columnBindings.totalDollars).toMatchObject({
+      kind: "expr",
+      definition: { type: "real", nullable: false },
+      expr: {
+        kind: "function",
+        name: "divide",
+        args: [
+          { kind: "column", ref: { column: "totalCents" } },
+          { kind: "literal", value: 100 },
+        ],
+      },
+    });
+    expect(binding.columnBindings.isLargeOrder).toMatchObject({
+      kind: "expr",
+      definition: { type: "boolean", nullable: false },
+      expr: {
+        kind: "function",
+        name: "gte",
+        args: [
+          { kind: "column", ref: { column: "totalCents" } },
+          { kind: "literal", value: 3000 },
+        ],
+      },
+    });
+    expect(binding.columnToSource).toEqual({
+      id: "id",
+      totalCents: "total_cents",
     });
   });
 

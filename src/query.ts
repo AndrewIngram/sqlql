@@ -31,6 +31,7 @@ import {
   defineSchema,
   getNormalizedTableBinding,
   mapProviderRowsToLogical,
+  mapProviderRowsToRelOutput,
   resolveSchemaLinkedEnums,
 } from "./schema";
 import type { QueryRow, SchemaDefinition, SchemaDslDefinition, SchemaDslHelpers } from "./schema";
@@ -649,7 +650,23 @@ async function maybeExecuteWholeQueryFragment<TContext>(
     await resolution.provider.compile(resolution.fragment, input.context),
   );
   const executed = await resolution.provider.execute(compiled, input.context);
-  return unwrapProviderOperationResult(executed);
+  const rows = unwrapProviderOperationResult(executed);
+
+  if (resolution.fragment.kind === "rel") {
+    return mapProviderRowsToRelOutput(rows, rel, input.schema);
+  }
+
+  if (resolution.fragment.kind === "scan" && rel.kind === "scan") {
+    const binding = getNormalizedTableBinding(input.schema, rel.table);
+    return mapProviderRowsToLogical(
+      rows,
+      rel.select,
+      binding?.kind === "physical" ? binding : null,
+      input.schema.tables[rel.table],
+    );
+  }
+
+  return rows;
 }
 
 function enforcePlannerNodeLimitResult(
@@ -770,7 +787,16 @@ function createProviderFragmentSession<TContext>(
     }
 
     let rows = executeRowsResult.value;
-    if (fragment.kind === "scan" && rel.kind === "scan") {
+    if (fragment.kind === "rel") {
+      const mappedRowsResult = tryQueryStep("map provider rows to logical rel output rows", () =>
+        mapProviderRowsToRelOutput(rows, rel, input.schema)
+      );
+      if (Result.isError(mappedRowsResult)) {
+        state = setFailedStepState(state, mappedRowsResult.error, Date.now());
+        return mappedRowsResult;
+      }
+      rows = mappedRowsResult.value;
+    } else if (fragment.kind === "scan" && rel.kind === "scan") {
       const mappedRowsResult = tryQueryStep("map provider rows to logical rows", () => {
         const binding = getNormalizedTableBinding(input.schema, rel.table);
         return mapProviderRowsToLogical(
@@ -1518,18 +1544,20 @@ function createQuerySessionResult<TContext>(input: QuerySessionInput<TContext>):
     const plannerNodeCount = countRelNodes(lowered.rel);
 
     yield* enforcePlannerNodeLimitResult(plannerNodeCount, guardrails);
-
+    const expandedRel = yield* expandRelViewsResult(lowered.rel, resolvedInput.schema, resolvedInput.context);
     const providerSession = yield* tryCreateSyncProviderFragmentSession(
       resolvedInput,
       guardrails,
-      lowered.rel,
+      expandedRel,
     );
     if (providerSession) {
       return Result.ok(providerSession);
     }
 
-    const capabilityResolution = yield* resolveSyncProviderCapabilityForRelResult(resolvedInput, lowered.rel);
-    const expandedRel = yield* expandRelViewsResult(lowered.rel, resolvedInput.schema, resolvedInput.context);
+    const capabilityResolution = yield* resolveSyncProviderCapabilityForRelResult(
+      resolvedInput,
+      expandedRel,
+    );
     const executableRel = yield* assertNoSqlNodesWithoutProviderFragmentResult(expandedRel);
 
     return Result.ok(
@@ -1555,11 +1583,11 @@ async function queryInternalResult<TContext>(input: QueryInput<TContext>): Promi
     const plannerNodeCount = countRelNodes(lowered.rel);
 
     yield* enforcePlannerNodeLimitResult(plannerNodeCount, guardrails);
-
+    const expandedRel = yield* expandRelViewsResult(lowered.rel, resolvedInput.schema, resolvedInput.context);
     const remoteRows = yield* Result.await(
       withTimeoutResult(
         "execute whole provider fragment",
-        () => maybeExecuteWholeQueryFragment(resolvedInput, lowered.rel),
+        () => maybeExecuteWholeQueryFragment(resolvedInput, expandedRel),
         guardrails.timeoutMs,
       ),
     );
@@ -1568,7 +1596,6 @@ async function queryInternalResult<TContext>(input: QueryInput<TContext>): Promi
       return enforceExecutionRowLimitResult(remoteRows, guardrails);
     }
 
-    const expandedRel = yield* expandRelViewsResult(lowered.rel, resolvedInput.schema, resolvedInput.context);
     const executableRel = yield* assertNoSqlNodesWithoutProviderFragmentResult(expandedRel);
     const rows = yield* Result.await(
       withTimeoutResult(
