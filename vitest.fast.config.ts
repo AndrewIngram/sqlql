@@ -1,18 +1,13 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { SLOW_PLAYGROUND_TEST_FILES } from "./vitest.config";
+
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
-export const SLOW_PLAYGROUND_TEST_FILES = [
-  "examples/playground/test/preset-queries.test.ts",
-  "examples/playground/test/provider-pushdown.test.ts",
-  "examples/playground/test/session-replay.test.ts",
-  "examples/playground/test/validation.test.ts",
-  "examples/playground/test/workspace-typecheck.test.ts",
-];
-
 export default defineConfig({
+  cacheDir: "node_modules/.vite-fast",
   resolve: {
     alias: {
       sqlql: resolve(rootDir, "src/index.ts"),
@@ -26,6 +21,7 @@ export default defineConfig({
       "test/providers/**/*.test.ts",
       "examples/**/test/**/*.test.ts",
     ],
+    exclude: [...configDefaults.exclude, ...SLOW_PLAYGROUND_TEST_FILES],
     coverage: {
       reporter: ["text", "html"],
     },
