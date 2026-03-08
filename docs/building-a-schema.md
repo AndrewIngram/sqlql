@@ -74,7 +74,7 @@ const dbProvider = createDrizzleProvider<QueryContext>({
 ### 3) Build facade schema with `createSchemaBuilder(...)`
 
 ```ts
-import { createExecutableSchema, createSchemaBuilder } from "@tupl/core";
+import { createExecutableSchema, createSchemaBuilder } from "@tupl/schema";
 
 const builder = createSchemaBuilder<QueryContext>();
 

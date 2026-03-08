@@ -2,6 +2,7 @@
   "name": "@tupl/schema",
   "version": "0.7.0",
   "description": "Schema builder APIs for tupl",
+  "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/schema#readme",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -18,12 +19,17 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewIngram/tupl.git",
+    "directory": "packages/schema"
+  },
   "scripts": {
     "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --tsconfig tsconfig.build.json",
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "better-result": "^2.7.0"
+    "@tupl/core": "workspace:*"
   }
 }

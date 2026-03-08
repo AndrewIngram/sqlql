@@ -2,15 +2,17 @@ import {
   AdapterResult,
   bindAdapterEntities,
   createDataEntityHandle,
-  createSchemaBuilder,
-  createExecutableSchema,
-  toSqlDDL,
   type ProviderAdapter,
+} from "@tupl/core";
+import {
+  createExecutableSchema,
+  createSchemaBuilder,
+  toSqlDDL,
   type QueryRow,
   type SchemaDefinition,
   type ScanFilterClause,
   type TableScanRequest,
-} from "@tupl/core";
+} from "@tupl/schema";
 
 function createMemoryProvider<TContext>(
   schema: SchemaDefinition,

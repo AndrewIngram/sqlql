@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { Trash2 } from "lucide-react";
-import type { QueryRow, TableColumnDefinition, TableDefinition } from "@tupl/core";
+import type { QueryRow, TableColumnDefinition, TableDefinition } from "@tupl/schema";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";

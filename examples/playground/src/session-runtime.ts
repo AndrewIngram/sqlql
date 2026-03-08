@@ -6,13 +6,12 @@ import {
   type PhysicalPlan,
   type ProviderFragment,
   type QueryExecutionPlan,
-  type QueryRow,
   type QuerySession,
   type QueryStepState,
   type QueryStepEvent,
   type RelNode,
-  type SchemaDefinition,
 } from "@tupl/core";
+import type { QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { requestSandboxWorker } from "./playground-sandbox-client";

@@ -2,6 +2,7 @@
   "name": "@tupl/provider-kysely",
   "version": "0.7.0",
   "description": "Kysely provider adapter for tupl",
+  "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/provider-kysely#readme",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -14,6 +15,11 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewIngram/tupl.git",
+    "directory": "packages/provider-kysely"
   },
   "scripts": {
     "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle --tsconfig tsconfig.build.json",

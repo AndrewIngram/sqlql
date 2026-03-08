@@ -1,12 +1,12 @@
 import { z } from "zod";
+import { createDataEntityHandle } from "@tupl/core";
 import {
-  createDataEntityHandle,
   createSchemaBuilder,
   type QueryRow,
   type SchemaDefinition,
   type TableColumnDefinition,
   type TableDefinition,
-} from "@tupl/core";
+} from "@tupl/schema";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { REDIS_INPUT_TABLE_DEFINITION, REDIS_INPUT_TABLE_NAME } from "./redis-provider";

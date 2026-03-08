@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "@tupl/example-shared": "workspace:*",
+    "@tupl/schema": "workspace:*",
     "@tupl/provider-drizzle": "workspace:*",
     "better-sqlite3": "^12.6.2",
-    "drizzle-orm": "latest",
-    "@tupl/core": "workspace:*"
+    "drizzle-orm": "latest"
   }
 }

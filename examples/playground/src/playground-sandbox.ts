@@ -9,12 +9,11 @@ import {
   type ProviderAdapter,
   type ProviderFragment,
   type QueryExecutionPlan,
-  type QueryRow,
   type QuerySession,
   type QueryStepEvent,
   type RelNode,
-  type SchemaDefinition,
 } from "@tupl/core";
+import type { QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { createVirtualModuleRuntime } from "./playground-module-runtime";
 import {

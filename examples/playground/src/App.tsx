@@ -7,14 +7,11 @@ import { parseAsStringLiteral, useQueryState } from "nuqs";
 import type {
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
-  QueryRow,
   QuerySession,
   QueryStepEvent,
   QueryStepState,
-  SchemaDefinition,
-  SqlScalarType,
 } from "@tupl/core";
-import { toSqlDDL } from "@tupl/core";
+import { toSqlDDL, type QueryRow, type SchemaDefinition, type SqlScalarType } from "@tupl/schema";
 
 import { DataGrid } from "@/data-grid";
 import {

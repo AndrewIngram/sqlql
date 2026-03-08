@@ -47,18 +47,21 @@ importers:
       '@tupl/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@tupl/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
 
   examples/drizzle:
     dependencies:
-      '@tupl/core':
-        specifier: workspace:*
-        version: link:../../packages/core
       '@tupl/example-shared':
         specifier: workspace:*
         version: link:../_shared
       '@tupl/provider-drizzle':
         specifier: workspace:*
         version: link:../../packages/provider-drizzle
+      '@tupl/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2
@@ -68,15 +71,15 @@ importers:
 
   examples/kysely:
     dependencies:
-      '@tupl/core':
-        specifier: workspace:*
-        version: link:../../packages/core
       '@tupl/example-shared':
         specifier: workspace:*
         version: link:../_shared
       '@tupl/provider-kysely':
         specifier: workspace:*
         version: link:../../packages/provider-kysely
+      '@tupl/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2
@@ -86,15 +89,15 @@ importers:
 
   examples/objection:
     dependencies:
-      '@tupl/core':
-        specifier: workspace:*
-        version: link:../../packages/core
       '@tupl/example-shared':
         specifier: workspace:*
         version: link:../_shared
       '@tupl/provider-objection':
         specifier: workspace:*
         version: link:../../packages/provider-objection
+      '@tupl/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2
@@ -140,6 +143,9 @@ importers:
       '@tupl/provider-ioredis':
         specifier: workspace:*
         version: link:../../packages/provider-ioredis
+      '@tupl/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
       '@xyflow/react':
         specifier: ^12.9.0
         version: 12.10.1(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -273,9 +279,9 @@ importers:
 
   packages/schema:
     dependencies:
-      better-result:
-        specifier: ^2.7.0
-        version: 2.7.0
+      '@tupl/core':
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 

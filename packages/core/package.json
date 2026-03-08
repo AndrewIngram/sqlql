@@ -2,6 +2,7 @@
   "name": "@tupl/core",
   "version": "0.7.0",
   "description": "Core runtime and schema APIs for tupl",
+  "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/core#readme",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -17,6 +18,11 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewIngram/tupl.git",
+    "directory": "packages/core"
   },
   "scripts": {
     "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle",

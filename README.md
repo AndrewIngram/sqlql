@@ -29,7 +29,7 @@ Typical reasons to use `tupl`:
 ```ts
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@tupl/provider-drizzle";
-import { createExecutableSchema, createSchemaBuilder } from "@tupl/core";
+import { createExecutableSchema, createSchemaBuilder } from "@tupl/schema";
 
 type QueryContext = { orgId: string; userId: string; db: typeof db };
 
@@ -139,7 +139,7 @@ If your runtime handle is static, `db` can still be passed directly instead of u
 
 ```ts
 import { createIoredisProvider, type RedisLike } from "@tupl/provider-ioredis";
-import { createExecutableSchema, createSchemaBuilder } from "@tupl/core";
+import { createExecutableSchema, createSchemaBuilder } from "@tupl/schema";
 
 type QueryContext = {
   userId: string;

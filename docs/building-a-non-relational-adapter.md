@@ -19,9 +19,8 @@ import type {
   ProviderCompiledPlan,
   ProviderLookupManyRequest,
   ProviderCapabilityAtom,
-  QueryRow,
-  TableScanRequest,
 } from "@tupl/core";
+import type { QueryRow, TableScanRequest } from "@tupl/schema";
 
 type KvContext = {
   namespace: string;
