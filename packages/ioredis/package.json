@@ -1,7 +1,7 @@
 {
-  "name": "@sqlql/drizzle",
+  "name": "@sqlql/ioredis",
   "version": "0.6.0",
-  "description": "Drizzle adapter helpers for sqlql",
+  "description": "ioredis-backed lookup adapter helpers for sqlql",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -20,7 +20,8 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "drizzle-orm": "latest",
+    "better-result": "^2.7.0",
+    "ioredis": "latest",
     "sqlql": "workspace:*"
   }
 }

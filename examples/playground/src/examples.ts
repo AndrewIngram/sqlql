@@ -38,7 +38,7 @@ const userProductAccessEntity = createDataEntityHandle<"id" | "user_id" | "produ
   entity: "user_product_access",
 });
 const productViewCountsEntity = createDataEntityHandle<"product_id" | "view_count">({
-  provider: "kvProvider",
+  provider: "redisProvider",
   entity: "product_view_counts",
 });
 
@@ -271,7 +271,7 @@ export const FACADE_SCHEMA: SchemaDefinition = facadeSchemaBuilder.build();
 
 export const GENERATED_DB_MODULE_ID = "./generated-db";
 export const DB_PROVIDER_MODULE_ID = "./db-provider";
-export const KV_PROVIDER_MODULE_ID = "./kv-provider";
+export const REDIS_PROVIDER_MODULE_ID = "./redis-provider";
 export const CONTEXT_MODULE_ID = "./context";
 
 function dedent(text: string): string {
@@ -294,11 +294,13 @@ function dedent(text: string): string {
 
 export const DEFAULT_CONTEXT_CODE = dedent(`
   import { drizzle } from "drizzle-orm/pglite";
+  import type { RedisLike } from "@sqlql/ioredis";
 
   export type QueryContext = {
     orgId: string;
     userId: string;
     db: ReturnType<typeof drizzle>;
+    redis: RedisLike;
   };
 `);
 
@@ -422,72 +424,48 @@ export const DEFAULT_DB_PROVIDER_CODE = dedent(`
   });
 `);
 
-export const DEFAULT_KV_PROVIDER_CODE = dedent(`
+export const DEFAULT_REDIS_PROVIDER_CODE = dedent(`
   import {
-    createKvProvider,
-    playgroundKvRuntime,
-    type KvProviderFactoryRuntime,
-  } from "@playground/kv-provider-core";
+    createIoredisProvider,
+    playgroundIoredisRuntime,
+  } from "@playground/ioredis-provider-core";
   import type { QueryContext } from "${CONTEXT_MODULE_ID}";
 
-  function parseViewCounterKey(raw: string): { userId: string; productId: string } | null {
-    const separator = raw.indexOf(":");
-    if (separator <= 0 || separator >= raw.length - 1) {
-      return null;
-    }
-
-    const userId = raw.slice(0, separator).trim();
-    const productId = raw.slice(separator + 1).trim();
-    if (userId.length === 0 || productId.length === 0) {
-      return null;
-    }
-
-    return { userId, productId };
-  }
-
-  export function createProvider(runtime: KvProviderFactoryRuntime) {
-    return createKvProvider<QueryContext>({
-      name: "kvProvider",
-      rows: runtime.rows,
-      recordOperation: runtime.recordOperation,
-      entities: {
-        product_view_counts: {
-          entity: "product_view_counts",
-          columns: ["product_id", "view_count"] as const,
-          mapRow({
-            key,
-            value,
-            context,
-          }: {
-            key: string;
-            value: unknown;
-            context: QueryContext;
-          }) {
-            const parsed = parseViewCounterKey(key);
-            if (!parsed || parsed.userId !== context.userId) {
-              return null;
-            }
-            if (typeof value !== "number" || !Number.isFinite(value)) {
-              return null;
-            }
-            return {
-              product_id: parsed.productId,
-              view_count: Math.trunc(value),
-            };
-          },
+  export const redisProvider = createIoredisProvider<QueryContext>({
+    name: "redisProvider",
+    redis: (ctx: QueryContext) => ctx.redis,
+    recordOperation: playgroundIoredisRuntime.recordOperation,
+    entities: {
+      product_view_counts: {
+        entity: "product_view_counts",
+        lookupKey: "product_id",
+        columns: ["product_id", "view_count"] as const,
+        buildRedisKey({ key, context }) {
+          return \`product_view_counts:\${context.userId}:\${String(key)}\`;
+        },
+        decodeRow({ hash }) {
+          if (typeof hash.product_id !== "string" || typeof hash.view_count !== "string") {
+            return null;
+          }
+          const viewCount = Number(hash.view_count);
+          if (!Number.isFinite(viewCount)) {
+            return null;
+          }
+          return {
+            product_id: hash.product_id,
+            view_count: Math.trunc(viewCount),
+          };
         },
       },
-    });
-  }
-
-  export const kvProvider = createProvider(playgroundKvRuntime);
+    },
+  });
 `);
 
 export const DEFAULT_FACADE_SCHEMA_CODE = dedent(`
   import { createExecutableSchema, createSchemaBuilder } from "sqlql";
   import type { QueryContext } from "${CONTEXT_MODULE_ID}";
   import { dbProvider } from "${DB_PROVIDER_MODULE_ID}";
-  import { kvProvider } from "${KV_PROVIDER_MODULE_ID}";
+  import { redisProvider } from "${REDIS_PROVIDER_MODULE_ID}";
 
   const builder = createSchemaBuilder<QueryContext>();
 
@@ -651,7 +629,7 @@ export const DEFAULT_FACADE_SCHEMA_CODE = dedent(`
 
   const productViewCountsRef = builder.table(
     "product_view_counts",
-    kvProvider.entities.product_view_counts,
+    redisProvider.entities.product_view_counts,
     {
       columns: ({ col }) => ({
         product_id: col.string("product_id", {
@@ -783,7 +761,7 @@ ORDER BY order_id, product_sku;
   {
     id: "product_engagement",
     label: "Product engagement",
-    description: "Cross-provider facade view over SQL-backed products and KV view counters.",
+    description: "Cross-provider facade view over SQL-backed products and Redis-backed view counters.",
     sql: `
 SELECT product_name, product_category, view_count
 FROM product_engagement
@@ -1423,25 +1401,25 @@ const BASE_DOWNSTREAM_ROWS: DownstreamRows = {
     { id: "upa_17", user_id: "u_ava", product_id: "p_vision" },
     { id: "upa_18", user_id: "u_noah", product_id: "p_shield" },
   ],
-  kv_product_views: [
-    { key: "u_alex:p_router", value: 94 },
-    { key: "u_alex:p_backup", value: 72 },
-    { key: "u_alex:p_switch", value: 45 },
-    { key: "u_alex:p_support", value: 28 },
-    { key: "u_alex:p_archive", value: 17 },
-    { key: "u_jordan:p_router", value: 61 },
-    { key: "u_jordan:p_switch", value: 39 },
-    { key: "u_jordan:p_support", value: 26 },
-    { key: "u_taylor:p_switch", value: 33 },
-    { key: "u_taylor:p_support", value: 18 },
-    { key: "u_mina:p_backup", value: 21 },
-    { key: "u_sam:p_sensor", value: 102 },
-    { key: "u_sam:p_gateway", value: 67 },
-    { key: "u_sam:p_vision", value: 31 },
-    { key: "u_riley:p_gateway", value: 49 },
-    { key: "u_ava:p_sensor", value: 37 },
-    { key: "u_ava:p_vision", value: 22 },
-    { key: "u_noah:p_shield", value: 13 },
+  redis_product_view_counts: [
+    { user_id: "u_alex", product_id: "p_router", view_count: 94 },
+    { user_id: "u_alex", product_id: "p_backup", view_count: 72 },
+    { user_id: "u_alex", product_id: "p_switch", view_count: 45 },
+    { user_id: "u_alex", product_id: "p_support", view_count: 28 },
+    { user_id: "u_alex", product_id: "p_archive", view_count: 17 },
+    { user_id: "u_jordan", product_id: "p_router", view_count: 61 },
+    { user_id: "u_jordan", product_id: "p_switch", view_count: 39 },
+    { user_id: "u_jordan", product_id: "p_support", view_count: 26 },
+    { user_id: "u_taylor", product_id: "p_switch", view_count: 33 },
+    { user_id: "u_taylor", product_id: "p_support", view_count: 18 },
+    { user_id: "u_mina", product_id: "p_backup", view_count: 21 },
+    { user_id: "u_sam", product_id: "p_sensor", view_count: 102 },
+    { user_id: "u_sam", product_id: "p_gateway", view_count: 67 },
+    { user_id: "u_sam", product_id: "p_vision", view_count: 31 },
+    { user_id: "u_riley", product_id: "p_gateway", view_count: 49 },
+    { user_id: "u_ava", product_id: "p_sensor", view_count: 37 },
+    { user_id: "u_ava", product_id: "p_vision", view_count: 22 },
+    { user_id: "u_noah", product_id: "p_shield", view_count: 13 },
   ],
 };
 

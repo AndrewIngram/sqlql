@@ -14,6 +14,7 @@
     "paths": {
       "sqlql": ["./src/index.ts"],
       "@sqlql/drizzle": ["./packages/drizzle/src/index.ts"],
+      "@sqlql/ioredis": ["./packages/ioredis/src/index.ts"],
       "@sqlql/objection": ["./packages/objection/src/index.ts"],
       "@sqlql/kysely": ["./packages/kysely/src/index.ts"],
       "@sqlql/example-shared": ["./examples/_shared/src/index.ts"]

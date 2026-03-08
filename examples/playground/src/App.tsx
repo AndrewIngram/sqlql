@@ -31,14 +31,14 @@ import {
   DB_PROVIDER_MODULE_ID,
   DEFAULT_CONTEXT_CODE,
   DEFAULT_DB_PROVIDER_CODE,
-  DEFAULT_KV_PROVIDER_CODE,
+  DEFAULT_REDIS_PROVIDER_CODE,
   DEFAULT_QUERY_ID,
   DEFAULT_SCENARIO_ID,
   DEFAULT_FACADE_SCHEMA_CODE,
   GENERATED_DB_MODULE_ID,
-  KV_PROVIDER_MODULE_ID,
   FACADE_SCHEMA,
   QUERY_PRESETS,
+  REDIS_PROVIDER_MODULE_ID,
   SCENARIO_PRESETS,
   serializeJson,
 } from "@/examples";
@@ -60,10 +60,10 @@ import {
   PLAYGROUND_CONTEXT_FILE_URI,
   PLAYGROUND_DB_PROVIDER_FILE_URI,
   PLAYGROUND_GENERATED_DB_FILE_URI,
-  PLAYGROUND_KV_PROVIDER_FILE_URI,
+  PLAYGROUND_REDIS_PROVIDER_FILE_URI,
   PLAYGROUND_SCHEMA_FILE_URI,
 } from "@/playground-workspace";
-import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "@/kv-provider";
+import { REDIS_INPUT_TABLE_DEFINITION, REDIS_INPUT_TABLE_NAME } from "@/redis-provider";
 import { parseDownstreamRowsText, parseFacadeSchemaCode } from "@/validation";
 import { DOWNSTREAM_ROWS_SCHEMA, DOWNSTREAM_TABLE_NAMES } from "@/downstream-model";
 import {
@@ -103,7 +103,7 @@ import { cn } from "@/lib/utils";
 const SCHEMA_MODEL_PATH = PLAYGROUND_SCHEMA_FILE_URI;
 const SCHEMA_CONTEXT_MODEL_PATH = PLAYGROUND_CONTEXT_FILE_URI;
 const SCHEMA_PROVIDER_MODEL_PATH = PLAYGROUND_DB_PROVIDER_FILE_URI;
-const SCHEMA_KV_PROVIDER_MODEL_PATH = PLAYGROUND_KV_PROVIDER_FILE_URI;
+const SCHEMA_REDIS_PROVIDER_MODEL_PATH = PLAYGROUND_REDIS_PROVIDER_FILE_URI;
 const SCHEMA_GENERATED_MODEL_PATH = PLAYGROUND_GENERATED_DB_FILE_URI;
 const SCHEMA_DDL_MODEL_PATH = "inmemory://sqlql/schema.ddl.sql";
 const DOWNSTREAM_DDL_MODEL_PATH = "inmemory://sqlql/downstream-schema.ddl.sql";
@@ -126,8 +126,8 @@ type SchemaTab = "diagram" | "ddl";
 type QueryTab = "result" | "explain";
 type PostgresWorkspaceMode = "data" | "structure";
 type PostgresStructureTab = "table" | "diagram" | "ddl";
-type SchemaSourceTab = "schema" | "context" | "provider" | "kv_provider" | "generated";
-type DataSourceSection = "postgres" | "kv";
+type SchemaSourceTab = "schema" | "context" | "provider" | "redis_provider" | "generated";
+type DataSourceSection = "postgres" | "redis";
 
 interface EditableStructureColumn {
   name: string;
@@ -963,7 +963,7 @@ function ExecutedProviderOperationsPanel({
                         variant="outline"
                         className="h-5 rounded-sm px-1.5 text-[10px] font-medium"
                       >
-                        {isSql ? "SQL query" : "KV lookup"}
+                        {isSql ? "SQL query" : "Redis lookup"}
                       </Badge>
                     </div>
                   </div>
@@ -1114,7 +1114,9 @@ export function App(): React.JSX.Element {
 
   const [schemaCodeText, setSchemaCodeText] = useState(DEFAULT_FACADE_SCHEMA_CODE);
   const [providerCodeText, setProviderCodeText] = useState(DEFAULT_DB_PROVIDER_CODE);
-  const [kvProviderCodeText, setKvProviderCodeText] = useState(DEFAULT_KV_PROVIDER_CODE);
+  const [redisProviderCodeText, setRedisProviderCodeText] = useState(
+    DEFAULT_REDIS_PROVIDER_CODE,
+  );
   const contextCodeText = DEFAULT_CONTEXT_CODE;
   const [rowsJsonText, setRowsJsonText] = useState(
     defaultScenario ? serializeJson(defaultScenario.rows) : "{}\n",
@@ -1235,9 +1237,9 @@ export function App(): React.JSX.Element {
       [CONTEXT_MODULE_ID]: contextCodeText,
       [DB_PROVIDER_MODULE_ID]: providerCodeText,
       [GENERATED_DB_MODULE_ID]: generatedDbCodeText,
-      [KV_PROVIDER_MODULE_ID]: kvProviderCodeText,
+      [REDIS_PROVIDER_MODULE_ID]: redisProviderCodeText,
     }),
-    [contextCodeText, generatedDbCodeText, kvProviderCodeText, providerCodeText],
+    [contextCodeText, generatedDbCodeText, providerCodeText, redisProviderCodeText],
   );
   const schemaEditorPath = useMemo(() => {
     switch (activeSchemaSourceTab) {
@@ -1245,8 +1247,8 @@ export function App(): React.JSX.Element {
         return SCHEMA_CONTEXT_MODEL_PATH;
       case "provider":
         return SCHEMA_PROVIDER_MODEL_PATH;
-      case "kv_provider":
-        return SCHEMA_KV_PROVIDER_MODEL_PATH;
+      case "redis_provider":
+        return SCHEMA_REDIS_PROVIDER_MODEL_PATH;
       case "generated":
         return SCHEMA_GENERATED_MODEL_PATH;
       case "schema":
@@ -1277,9 +1279,15 @@ export function App(): React.JSX.Element {
     ensureModel(SCHEMA_MODEL_PATH, schemaCodeText);
     ensureModel(SCHEMA_CONTEXT_MODEL_PATH, contextCodeText);
     ensureModel(SCHEMA_PROVIDER_MODEL_PATH, providerCodeText);
-    ensureModel(SCHEMA_KV_PROVIDER_MODEL_PATH, kvProviderCodeText);
+    ensureModel(SCHEMA_REDIS_PROVIDER_MODEL_PATH, redisProviderCodeText);
     ensureModel(SCHEMA_GENERATED_MODEL_PATH, generatedDbCodeText);
-  }, [contextCodeText, generatedDbCodeText, kvProviderCodeText, providerCodeText, schemaCodeText]);
+  }, [
+    contextCodeText,
+    generatedDbCodeText,
+    providerCodeText,
+    redisProviderCodeText,
+    schemaCodeText,
+  ]);
   const queryCompatibilityById = useMemo(
     () => buildQueryCompatibilityMap(schemaParse, queryCatalog),
     [queryCatalog, schemaParse],
@@ -1345,7 +1353,10 @@ export function App(): React.JSX.Element {
     return buildPostgresDdlFromRows(downstreamStructureRowsByTable);
   }, [downstreamStructureRowsByTable]);
 
-  const downstreamTableNames = useMemo(() => [...DOWNSTREAM_TABLE_NAMES, KV_INPUT_TABLE_NAME], []);
+  const downstreamTableNames = useMemo(
+    () => [...DOWNSTREAM_TABLE_NAMES, REDIS_INPUT_TABLE_NAME],
+    [],
+  );
 
   const editableRowsByTable = useMemo(
     () =>
@@ -1363,18 +1374,18 @@ export function App(): React.JSX.Element {
       : (downstreamTableNames[0] ?? null);
 
   const currentDataTableDefinition =
-    currentDataTable === KV_INPUT_TABLE_NAME
-      ? KV_INPUT_TABLE_DEFINITION
+    currentDataTable === REDIS_INPUT_TABLE_NAME
+      ? REDIS_INPUT_TABLE_DEFINITION
       : currentDataTable
         ? downstreamStructureSchema.tables[currentDataTable]
         : undefined;
 
   const currentDataRows = currentDataTable ? (editableRowsByTable[currentDataTable] ?? []) : [];
   const currentStructureRows =
-    currentDataTable && currentDataTable !== KV_INPUT_TABLE_NAME
+    currentDataTable && currentDataTable !== REDIS_INPUT_TABLE_NAME
       ? (downstreamStructureRowsByTable[currentDataTable] ?? [])
       : [];
-  const selectedTableSupportsStructure = currentDataTable !== KV_INPUT_TABLE_NAME;
+  const selectedTableSupportsStructure = currentDataTable !== REDIS_INPUT_TABLE_NAME;
 
   const currentTableIssues =
     !rowsParse.ok && currentDataTable ? tableIssueLines(rowsParse.issues, currentDataTable) : [];
@@ -1385,15 +1396,17 @@ export function App(): React.JSX.Element {
     }
     return DOWNSTREAM_TABLE_NAMES.filter((tableName) => tableName.toLowerCase().includes(query));
   }, [downstreamTableFilter]);
-  const filteredKvTableNames = useMemo(() => {
+  const filteredRedisTableNames = useMemo(() => {
     const query = downstreamTableFilter.trim().toLowerCase();
     if (query.length === 0) {
-      return [KV_INPUT_TABLE_NAME];
+      return [REDIS_INPUT_TABLE_NAME];
     }
-    return KV_INPUT_TABLE_NAME.toLowerCase().includes(query) ? [KV_INPUT_TABLE_NAME] : [];
+    return REDIS_INPUT_TABLE_NAME.toLowerCase().includes(query)
+      ? [REDIS_INPUT_TABLE_NAME]
+      : [];
   }, [downstreamTableFilter]);
   const hasAnyFilteredTables =
-    filteredPostgresTableNames.length > 0 || filteredKvTableNames.length > 0;
+    filteredPostgresTableNames.length > 0 || filteredRedisTableNames.length > 0;
   const selectedDataRow =
     selectedDataRowIndex != null &&
     selectedDataRowIndex >= 0 &&
@@ -1615,8 +1628,8 @@ export function App(): React.JSX.Element {
   }, [postgresWorkspaceMode, selectedTableSupportsStructure]);
 
   useEffect(() => {
-    if (currentDataTable === KV_INPUT_TABLE_NAME) {
-      setOpenDataSourceSection("kv");
+    if (currentDataTable === REDIS_INPUT_TABLE_NAME) {
+      setOpenDataSourceSection("redis");
       return;
     }
     setOpenDataSourceSection("postgres");
@@ -1721,10 +1734,10 @@ export function App(): React.JSX.Element {
       return;
     }
 
-    if (sourcePath === SCHEMA_KV_PROVIDER_MODEL_PATH) {
-      if (nextValue !== kvProviderCodeText) {
+    if (sourcePath === SCHEMA_REDIS_PROVIDER_MODEL_PATH) {
+      if (nextValue !== redisProviderCodeText) {
         markScenarioCustom();
-        setKvProviderCodeText(nextValue);
+        setRedisProviderCodeText(nextValue);
       }
       return;
     }
@@ -1830,7 +1843,7 @@ export function App(): React.JSX.Element {
       uri === SCHEMA_MODEL_PATH ||
       uri === SCHEMA_CONTEXT_MODEL_PATH ||
       uri === SCHEMA_PROVIDER_MODEL_PATH ||
-      uri === SCHEMA_KV_PROVIDER_MODEL_PATH ||
+      uri === SCHEMA_REDIS_PROVIDER_MODEL_PATH ||
       uri === SCHEMA_GENERATED_MODEL_PATH
     ) {
       schemaEditorRef.current = editor;
@@ -2103,7 +2116,7 @@ export function App(): React.JSX.Element {
 
   const handleSelectDataTable = (tableName: string): void => {
     setSelectedDataTable(tableName);
-    setOpenDataSourceSection(tableName === KV_INPUT_TABLE_NAME ? "kv" : "postgres");
+    setOpenDataSourceSection(tableName === REDIS_INPUT_TABLE_NAME ? "redis" : "postgres");
   };
 
   const handleSetTableRows = (tableName: string, tableRows: QueryRow[]): void => {
@@ -2554,29 +2567,29 @@ export function App(): React.JSX.Element {
                         </Collapsible>
 
                         <Collapsible
-                          open={openDataSourceSection === "kv"}
+                          open={openDataSourceSection === "redis"}
                           onOpenChange={(open) => {
                             if (!open) {
                               return;
                             }
-                            setOpenDataSourceSection("kv");
+                            setOpenDataSourceSection("redis");
                           }}
                           className="overflow-hidden rounded-md border bg-white"
                         >
                           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
                             <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                              KV ({filteredKvTableNames.length})
+                              Redis ({filteredRedisTableNames.length})
                             </span>
-                            {openDataSourceSection === "kv" ? (
+                            {openDataSourceSection === "redis" ? (
                               <ChevronDown className="h-4 w-4 text-slate-500" />
                             ) : (
                               <ChevronRight className="h-4 w-4 text-slate-500" />
                             )}
                           </CollapsibleTrigger>
                           <CollapsibleContent className="border-t bg-slate-50/60 px-2 py-2">
-                            {filteredKvTableNames.length > 0 ? (
+                            {filteredRedisTableNames.length > 0 ? (
                               <div className="space-y-1">
-                                {filteredKvTableNames.map((tableName) => (
+                                {filteredRedisTableNames.map((tableName) => (
                                   <button
                                     type="button"
                                     key={tableName}
@@ -2594,7 +2607,7 @@ export function App(): React.JSX.Element {
                               </div>
                             ) : (
                               <div className="px-2 py-1 text-xs text-slate-500">
-                                No KV tables match the filter.
+                                No Redis tables match the filter.
                               </div>
                             )}
                           </CollapsibleContent>
@@ -3161,7 +3174,7 @@ export function App(): React.JSX.Element {
                           <TabsTrigger value="schema">schema.ts</TabsTrigger>
                           <TabsTrigger value="context">context.ts</TabsTrigger>
                           <TabsTrigger value="provider">db-provider.ts</TabsTrigger>
-                          <TabsTrigger value="kv_provider">kv-provider.ts</TabsTrigger>
+                          <TabsTrigger value="redis_provider">redis-provider.ts</TabsTrigger>
                           <TabsTrigger value="generated">generated-db.ts</TabsTrigger>
                         </TabsList>
                       </Tabs>
@@ -3262,7 +3275,7 @@ export function App(): React.JSX.Element {
                           <TabsTrigger value="schema">schema.ts</TabsTrigger>
                           <TabsTrigger value="context">context.ts</TabsTrigger>
                           <TabsTrigger value="provider">db-provider.ts</TabsTrigger>
-                          <TabsTrigger value="kv_provider">kv-provider.ts</TabsTrigger>
+                          <TabsTrigger value="redis_provider">redis-provider.ts</TabsTrigger>
                           <TabsTrigger value="generated">generated-db.ts</TabsTrigger>
                         </TabsList>
                       </Tabs>

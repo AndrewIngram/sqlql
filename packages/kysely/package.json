@@ -1,6 +1,6 @@
 {
   "name": "@sqlql/kysely",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Kysely provider adapter for sqlql",
   "license": "MIT",
   "type": "module",

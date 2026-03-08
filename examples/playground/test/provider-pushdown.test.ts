@@ -5,10 +5,10 @@ import {
   DEFAULT_DB_PROVIDER_CODE,
   DEFAULT_FACADE_SCHEMA_CODE,
   DEFAULT_GENERATED_DB_FILE_CODE,
-  QUERY_PRESETS,
-  SCENARIO_PRESETS,
   GENERATED_DB_MODULE_ID,
-  KV_PROVIDER_MODULE_ID,
+  QUERY_PRESETS,
+  REDIS_PROVIDER_MODULE_ID,
+  SCENARIO_PRESETS,
   serializeJson,
 } from "../src/examples";
 import {
@@ -33,6 +33,7 @@ describe("playground/provider-pushdown", () => {
         "orders_calculated_columns",
         "orders_with_vendors",
         "vendor_spend",
+        "items_with_products",
         "status_distinct",
         "paid_orders",
         "preferred_vendor_orders",
@@ -91,6 +92,10 @@ describe("playground/provider-pushdown", () => {
         if (presetId === "orders_with_vendors" || presetId === "vendor_spend") {
           expect(sqlText).toContain(" join ");
         }
+        if (presetId === "items_with_products") {
+          expect(sqlText).toContain(" join ");
+          expect(sqlText).toContain("order by");
+        }
         if (presetId === "vendor_spend") {
           expect(sqlText).toContain("group by");
         }
@@ -109,75 +114,66 @@ describe("playground/provider-pushdown", () => {
     },
   );
 
-  it("uses kv-provider module mapping code at runtime", async () => {
+  it("uses redis-provider module mapping code at runtime", async () => {
     const scenario = SCENARIO_PRESETS[0];
     if (!scenario) {
       throw new Error("Missing scenario preset.");
     }
 
-    const customKvProviderCode = `
-import { createKvProvider, playgroundKvRuntime, type KvProviderFactoryRuntime } from "@playground/kv-provider-core";
+    const customRedisProviderCode = `
+import type { RedisLike } from "@sqlql/ioredis";
+import { createIoredisProvider, playgroundIoredisRuntime } from "@playground/ioredis-provider-core";
 
-type QueryContext = { orgId: string; userId: string };
+type QueryContext = {
+  orgId: string;
+  userId: string;
+  redis: RedisLike;
+};
 
-function parseViewCounterKey(raw: string): { userId: string; productId: string } | null {
-  const separator = raw.indexOf(":");
-  if (separator <= 0 || separator >= raw.length - 1) {
-    return null;
-  }
-
-  const userId = raw.slice(0, separator).trim();
-  const productId = raw.slice(separator + 1).trim();
-  if (userId.length === 0 || productId.length === 0) {
-    return null;
-  }
-
-  return { userId, productId };
-}
-
-export function createProvider(runtime: KvProviderFactoryRuntime) {
-  return createKvProvider<QueryContext>({
-    name: "kvProvider",
-    rows: runtime.rows,
-    recordOperation: runtime.recordOperation,
-    entities: {
-      product_view_counts: {
-        entity: "product_view_counts",
-        columns: ["product_id", "view_count"] as const,
-        mapRow({ key, value, context }: { key: string; value: unknown; context: QueryContext }) {
-          const parsed = parseViewCounterKey(key);
-          if (!parsed || parsed.userId !== context.userId) {
-            return null;
-          }
-          if (typeof value !== "number") {
-            return null;
-          }
-          return {
-            product_id: parsed.productId,
-            view_count: value * 10,
-          };
-        },
+export const redisProvider = createIoredisProvider<QueryContext>({
+  name: "redisProvider",
+  redis: (ctx: QueryContext) => ctx.redis,
+  recordOperation: playgroundIoredisRuntime.recordOperation,
+  entities: {
+    product_view_counts: {
+      entity: "product_view_counts",
+      lookupKey: "product_id",
+      columns: ["product_id", "view_count"] as const,
+      buildRedisKey({ key, context }) {
+        return \`product_view_counts:\${context.userId}:\${String(key)}\`;
+      },
+      decodeRow({ hash }) {
+        if (typeof hash.product_id !== "string" || typeof hash.view_count !== "string") {
+          return null;
+        }
+        const viewCount = Number(hash.view_count);
+        if (!Number.isFinite(viewCount)) {
+          return null;
+        }
+        return {
+          product_id: hash.product_id,
+          view_count: viewCount * 10,
+        };
       },
     },
-  });
-}
-
-export const kvProvider = createProvider(playgroundKvRuntime);
+  },
+});
     `.trim();
 
     const compiled = await compilePlaygroundInput(
       DEFAULT_FACADE_SCHEMA_CODE,
       serializeJson(scenario.rows),
       `
-SELECT product_id, view_count
-FROM product_view_counts
+SELECT p.id AS product_id, v.view_count
+FROM active_products p
+LEFT JOIN product_view_counts v ON v.product_id = p.id
 ORDER BY view_count DESC;
       `.trim(),
       {
         modules: {
           [DB_PROVIDER_MODULE_ID]: DEFAULT_DB_PROVIDER_CODE,
           [GENERATED_DB_MODULE_ID]: DEFAULT_GENERATED_DB_FILE_CODE,
-          [KV_PROVIDER_MODULE_ID]: customKvProviderCode,
+          [REDIS_PROVIDER_MODULE_ID]: customRedisProviderCode,
         },
       },
     );
@@ -189,8 +185,10 @@ ORDER BY view_count DESC;
 
     const bundle = await createSession(compiled, scenario.context);
     const snapshot = await runSessionToCompletion(bundle.session, []);
-    expect(snapshot.executedOperations).toHaveLength(1);
-    expect(snapshot.executedOperations[0]?.kind).toBe("kv_lookup");
+    expect(snapshot.executedOperations.map((operation) => operation.kind)).toEqual([
+      "sql_query",
+      "redis_lookup",
+    ]);
 
     const rows = snapshot.result ?? [];
     expect(rows.length).toBeGreaterThan(0);
@@ -201,7 +199,7 @@ ORDER BY view_count DESC;
   });
 
   it(
-    "executes active_products to product_view_counts as one sql query plus one kv lookup",
+    "executes active_products to product_view_counts as one sql query plus one redis lookup",
     { timeout: 15_000 },
     async () => {
       const scenario = SCENARIO_PRESETS[0];
@@ -244,7 +242,7 @@ ORDER BY v.view_count DESC, p.name;
       expect(snapshot.executedOperations).toHaveLength(2);
       expect(snapshot.executedOperations.map((operation) => operation.kind)).toEqual([
         "sql_query",
-        "kv_lookup",
+        "redis_lookup",
       ]);
     },
   );

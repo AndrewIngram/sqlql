@@ -2,6 +2,10 @@
 
 This guide covers lookup-first systems such as Redis, KV stores, document stores, and index-backed adapters.
 
+For a concrete lookup-only Redis implementation, see `@sqlql/ioredis` in this repo.
+To expose those entities in a facade schema, use `createSchemaBuilder(...)` and finish with
+`createExecutableSchema(builder)`.
+
 The key rule is that non-relational adapters do not need to mimic the relational progression exactly.
 
 ## Lookup-First Skeleton

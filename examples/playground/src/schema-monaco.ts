@@ -9,7 +9,7 @@ const STATIC_WORKSPACE = buildPlaygroundWorkspaceSnapshot({
   schemaCode: "",
   contextCode: "",
   dbProviderCode: "",
-  kvProviderCode: "",
+  redisProviderCode: "",
   generatedDbCode: "",
 });
 

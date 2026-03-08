@@ -1045,7 +1045,9 @@ interface ScanBinding<TContext> {
   scan: Extract<RelNode, { kind: "scan" }>;
   tableName: string;
   table: object;
-  columns: DrizzleColumnMap<string>;
+  scanColumns: DrizzleColumnMap<string>;
+  columns: Record<string, AnyColumn | SQL>;
+  outputColumns: string[];
   tableConfig: DrizzleProviderTableConfig<TContext>;
 }
 
@@ -1069,6 +1071,11 @@ interface JoinPlan<TContext> {
   root: ScanBinding<TContext>;
   joins: JoinStep<TContext>[];
   aliases: Map<string, ScanBinding<TContext>>;
+}
+
+interface QualifiedJoinColumnRef {
+  alias: string;
+  column: string;
 }
 
 interface SingleQueryPlan<TContext> {
@@ -1178,7 +1185,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
 
   for (const joinStep of plan.joinPlan.joins) {
     if (joinStep.joinType === "semi") {
-      const leftColumn = resolveColumnRefFromAliasMap(plan.joinPlan.aliases, {
+      const leftColumn = resolveJoinKeyColumnRefFromAliasMap(plan.joinPlan.aliases, {
         alias: joinStep.leftKey.alias,
         column: joinStep.leftKey.column,
       });
@@ -1186,11 +1193,11 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
       whereClauses.push(sql`${leftColumn} in (${asDrizzleSubquerySql(subquery)})`);
       continue;
     }
-    const leftColumn = resolveColumnRefFromAliasMap(plan.joinPlan.aliases, {
+    const leftColumn = resolveJoinKeyColumnRefFromAliasMap(plan.joinPlan.aliases, {
       alias: joinStep.leftKey.alias,
       column: joinStep.leftKey.column,
     });
-    const rightColumn = resolveColumnRefFromAliasMap(plan.joinPlan.aliases, {
+    const rightColumn = resolveJoinKeyColumnRefFromAliasMap(plan.joinPlan.aliases, {
       alias: joinStep.rightKey.alias,
       column: joinStep.rightKey.column,
     });
@@ -1213,7 +1220,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
       ),
     );
     for (const clause of binding.scan.where ?? []) {
-      whereClauses.push(toSqlCondition(clause, binding.columns, binding.tableName));
+      whereClauses.push(toSqlCondition(clause, binding.scanColumns, binding.tableName));
     }
   }
 
@@ -1239,7 +1246,7 @@ async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
         toAliasColumnRef(columnRef.alias ?? columnRef.table, columnRef.column),
       ),
     );
-    builder = builder.groupBy(...groupByColumns) as typeof builder;
+    builder = builder.groupBy(...(groupByColumns as AnyColumn[])) as typeof builder;
   }
 
   if (plan.pipeline.sort) {
@@ -1944,6 +1951,15 @@ function buildJoinPlan<TContext>(
     };
   }
 
+  if (node.kind === "project") {
+    const root = createProjectedScanBinding(node, tableConfigs);
+    return {
+      root,
+      joins: [],
+      aliases: new Map([[root.alias, root]]),
+    };
+  }
+
   if (node.kind !== "join") {
     throw new UnsupportedSingleQueryPlanError(
       `Expected scan/join base node, received "${node.kind}".`,
@@ -1952,11 +1968,8 @@ function buildJoinPlan<TContext>(
 
   const left = buildJoinPlan(node.left, tableConfigs);
   if (node.joinType === "semi") {
-    const leftAlias = node.leftKey.alias ?? node.leftKey.table;
+    const leftRef = qualifyJoinColumnRef(node.leftKey, left.aliases);
     const rightAlias = node.rightKey.alias ?? node.rightKey.table;
-    if (!leftAlias) {
-      throw new UnsupportedSingleQueryPlanError("Join keys must be qualified with table aliases.");
-    }
 
     return {
       root: left.root,
@@ -1966,8 +1979,8 @@ function buildJoinPlan<TContext>(
           joinType: "semi",
           right: node.right,
           leftKey: {
-            alias: leftAlias,
-            column: node.leftKey.column,
+            alias: leftRef.alias,
+            column: leftRef.column,
           },
           rightKey: {
             ...(rightAlias ? { alias: rightAlias } : {}),
@@ -1980,7 +1993,10 @@ function buildJoinPlan<TContext>(
   }
 
   const right = buildJoinPlan(node.right, tableConfigs);
-  if (right.joins.length > 0) {
+  if (
+    right.joins.length > 0 &&
+    (node.joinType !== "inner" || right.joins.some((join) => join.joinType !== "inner"))
+  ) {
     throw new UnsupportedSingleQueryPlanError("Only left-deep join trees are supported.");
   }
 
@@ -1996,11 +2012,8 @@ function buildJoinPlan<TContext>(
     );
   }
 
-  const leftAlias = node.leftKey.alias ?? node.leftKey.table;
-  const rightAlias = node.rightKey.alias ?? node.rightKey.table;
-  if (!leftAlias || !rightAlias) {
-    throw new UnsupportedSingleQueryPlanError("Join keys must be qualified with table aliases.");
-  }
+  const leftRef = qualifyJoinColumnRef(node.leftKey, left.aliases);
+  const rightRef = qualifyJoinColumnRef(node.rightKey, right.aliases);
 
   const aliases = new Map(left.aliases);
   aliases.set(rightRoot.alias, rightRoot);
@@ -2016,14 +2029,15 @@ function buildJoinPlan<TContext>(
         joinType: node.joinType,
         right: rightRoot,
         leftKey: {
-          alias: leftAlias,
-          column: node.leftKey.column,
+          alias: leftRef.alias,
+          column: leftRef.column,
         },
         rightKey: {
-          alias: rightAlias,
-          column: node.rightKey.column,
+          alias: rightRef.alias,
+          column: rightRef.column,
         },
       },
+      ...right.joins,
     ],
     aliases,
   };
@@ -2043,8 +2057,80 @@ function createScanBinding<TContext>(
     scan,
     tableName: scan.table,
     table: tableConfig.table,
+    scanColumns: resolveColumns(tableConfig, scan.table),
     columns: resolveColumns(tableConfig, scan.table),
+    outputColumns: scan.select,
     tableConfig,
+  };
+}
+
+function qualifyJoinColumnRef<TContext>(
+  ref: { alias?: string; table?: string; column: string },
+  aliases: Map<string, ScanBinding<TContext>>,
+): QualifiedJoinColumnRef {
+  const explicitAlias = ref.alias ?? ref.table;
+  if (explicitAlias) {
+    return {
+      alias: explicitAlias,
+      column: ref.column,
+    };
+  }
+
+  let matchedAlias: string | null = null;
+  for (const [alias, binding] of aliases.entries()) {
+    if (!(ref.column in binding.columns)) {
+      continue;
+    }
+    if (matchedAlias && matchedAlias !== alias) {
+      throw new UnsupportedSingleQueryPlanError(
+        `Ambiguous unqualified join key "${ref.column}" in rel fragment.`,
+      );
+    }
+    matchedAlias = alias;
+  }
+
+  if (!matchedAlias) {
+    throw new UnsupportedSingleQueryPlanError(
+      `Unknown unqualified join key "${ref.column}" in rel fragment.`,
+    );
+  }
+
+  return {
+    alias: matchedAlias,
+    column: ref.column,
+  };
+}
+
+function createProjectedScanBinding<TContext>(
+  project: Extract<RelNode, { kind: "project" }>,
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+): ScanBinding<TContext> {
+  if (project.input.kind !== "scan") {
+    throw new UnsupportedSingleQueryPlanError(
+      "Projected join inputs must project directly from a scan.",
+    );
+  }
+
+  const base = createScanBinding(project.input, tableConfigs);
+  const aliases = new Map([[base.alias, base]]);
+  const columns: Record<string, AnyColumn | SQL> = {};
+
+  for (const rawMapping of project.columns) {
+    if (isRelProjectColumnMapping(rawMapping)) {
+      if (rawMapping.source.alias && rawMapping.source.alias !== base.alias) {
+        throw new UnsupportedSingleQueryPlanError(
+          `Projected scan column "${rawMapping.source.alias}.${rawMapping.source.column}" must reference alias "${base.alias}".`,
+        );
+      }
+    }
+
+    columns[rawMapping.output] = resolveProjectedSqlExpression(rawMapping, aliases, true);
+  }
+
+  return {
+    ...base,
+    columns,
+    outputColumns: project.columns.map((column) => column.output),
   };
 }
 
@@ -2054,8 +2140,8 @@ function buildSingleQuerySelection<TContext>(
   const selection: Record<string, unknown> = {};
 
   if (plan.pipeline.aggregate) {
-    const groupSources = new Map<string, AnyColumn>();
-    const groupSourcesByKey = new Map<string, AnyColumn>();
+    const groupSources = new Map<string, AnyColumn | SQL>();
+    const groupSourcesByKey = new Map<string, AnyColumn | SQL>();
     for (const groupBy of plan.pipeline.aggregate.groupBy) {
       const source = resolveColumnRefFromAliasMap(
         plan.joinPlan.aliases,
@@ -2119,7 +2205,7 @@ function buildSingleQuerySelection<TContext>(
   }
 
   for (const binding of plan.joinPlan.aliases.values()) {
-    for (const column of binding.scan.select) {
+    for (const column of binding.outputColumns) {
       selection[`${binding.alias}.${column}`] = resolveColumnRefFromAliasMap(
         plan.joinPlan.aliases,
         {
@@ -2315,7 +2401,7 @@ function toSqlConditionFromSource(clause: ScanFilterClause, source: AnyColumn | 
 function resolveColumnRefFromFilterColumn<TContext>(
   aliases: Map<string, ScanBinding<TContext>>,
   column: string,
-): AnyColumn {
+): AnyColumn | SQL {
   const idx = column.lastIndexOf(".");
   if (idx > 0) {
     const alias = column.slice(0, idx);
@@ -2340,7 +2426,7 @@ function toInlineColumnRef(column: string): { alias?: string; column: string } {
 function resolveColumnRefFromAliasMap<TContext>(
   aliases: Map<string, ScanBinding<TContext>>,
   ref: { alias?: string; column: string },
-): AnyColumn {
+): AnyColumn | SQL {
   if (ref.alias) {
     const binding = aliases.get(ref.alias);
     if (!binding) {
@@ -2355,7 +2441,7 @@ function resolveColumnRefFromAliasMap<TContext>(
     return source;
   }
 
-  let matched: AnyColumn | null = null;
+  let matched: AnyColumn | SQL | null = null;
   for (const binding of aliases.values()) {
     const source = binding.columns[ref.column];
     if (!source) {
@@ -2376,6 +2462,20 @@ function resolveColumnRefFromAliasMap<TContext>(
   }
 
   return matched;
+}
+
+function resolveJoinKeyColumnRefFromAliasMap<TContext>(
+  aliases: Map<string, ScanBinding<TContext>>,
+  ref: { alias?: string; column: string },
+): AnyColumn {
+  const source = resolveColumnRefFromAliasMap(aliases, ref);
+  if (looksLikeDrizzleColumn(source)) {
+    return source;
+  }
+  const qualified = ref.alias ? `${ref.alias}.${ref.column}` : ref.column;
+  throw new UnsupportedSingleQueryPlanError(
+    `Join keys must resolve to physical columns. "${qualified}" resolved to a computed expression.`,
+  );
 }
 
 function toAliasColumnRef(

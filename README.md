@@ -29,7 +29,7 @@ Typical reasons to use `sqlql`:
 ```ts
 import { and, eq } from "drizzle-orm";
 import { createDrizzleProvider } from "@sqlql/drizzle";
-import { createExecutableSchema } from "sqlql";
+import { createExecutableSchema, createSchemaBuilder } from "sqlql";
 
 type QueryContext = { orgId: string; userId: string; db: typeof db };
 
@@ -49,73 +49,69 @@ const dbProvider = createDrizzleProvider<QueryContext>({
   },
 });
 
-const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
-  const myOrders = table("myOrders", dbProvider.entities.orders, {
-    columns: ({ col, expr }) => ({
-      id: col.id("id"),
-      vendorId: col.string("vendor_id"),
-      totalCents: col.integer("total_cents"),
-      createdAt: col.timestamp("created_at"),
-      totalDollars: col.real(expr.divide(col("totalCents"), expr.literal(100)), {
-        nullable: false,
-      }),
-      isLargeOrder: col.boolean(expr.gte(col("totalCents"), expr.literal(3000)), {
-        nullable: false,
-      }),
+const builder = createSchemaBuilder<QueryContext>();
+
+const myOrders = builder.table("myOrders", dbProvider.entities.orders, {
+  columns: ({ col, expr }) => ({
+    id: col.id("id"),
+    vendorId: col.string("vendor_id"),
+    totalCents: col.integer("total_cents"),
+    createdAt: col.timestamp("created_at"),
+    totalDollars: col.real(expr.divide(col("totalCents"), expr.literal(100)), {
+      nullable: false,
     }),
-  });
-
-  const myOrderFacts = view(
-    "myOrderFacts",
-    ({ scan, join, col, expr }) =>
-      join({
-        left: scan(myOrders),
-        right: scan(dbProvider.entities.vendors),
-        on: expr.eq(col(myOrders, "vendorId"), col(dbProvider.entities.vendors, "id")),
-        type: "inner",
-      }),
-    {
-      columns: ({ col }) => ({
-        orderId: col.id(myOrders, "id"),
-        vendorId: col.string(myOrders, "vendorId", { nullable: false }),
-        vendorName: col.string(dbProvider.entities.vendors, "name", { nullable: false }),
-        totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
-        totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
-        isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
-      }),
-    },
-  );
-
-  return {
-    tables: {
-      myOrders,
-      myOrderFacts,
-      myVendorSpend: view(
-        "myVendorSpend",
-        ({ scan, aggregate, col, agg }) =>
-          aggregate({
-            from: scan(myOrderFacts),
-            groupBy: {
-              vendorId: col(myOrderFacts, "vendorId"),
-              vendorName: col(myOrderFacts, "vendorName"),
-            },
-            measures: {
-              totalSpendCents: agg.sum(col(myOrderFacts, "totalCents")),
-              orderCount: agg.count(),
-            },
-          }),
-        {
-          columns: ({ col }) => ({
-            vendorId: col.id("vendorId"),
-            vendorName: col.string("vendorName"),
-            totalSpendCents: col.integer("totalSpendCents"),
-            orderCount: col.integer("orderCount"),
-          }),
-        },
-      ),
-    },
-  };
+    isLargeOrder: col.boolean(expr.gte(col("totalCents"), expr.literal(3000)), {
+      nullable: false,
+    }),
+  }),
 });
+
+const myOrderFacts = builder.view(
+  "myOrderFacts",
+  ({ scan, join, col, expr }) =>
+    join({
+      left: scan(myOrders),
+      right: scan(dbProvider.entities.vendors),
+      on: expr.eq(col(myOrders, "vendorId"), col(dbProvider.entities.vendors, "id")),
+      type: "inner",
+    }),
+  {
+    columns: ({ col }) => ({
+      orderId: col.id(myOrders, "id"),
+      vendorId: col.string(myOrders, "vendorId", { nullable: false }),
+      vendorName: col.string(dbProvider.entities.vendors, "name", { nullable: false }),
+      totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+      totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
+      isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
+    }),
+  },
+);
+
+builder.view(
+  "myVendorSpend",
+  ({ scan, aggregate, col, agg }) =>
+    aggregate({
+      from: scan(myOrderFacts),
+      groupBy: {
+        vendorId: col(myOrderFacts, "vendorId"),
+        vendorName: col(myOrderFacts, "vendorName"),
+      },
+      measures: {
+        totalSpendCents: agg.sum(col(myOrderFacts, "totalCents")),
+        orderCount: agg.count(),
+      },
+    }),
+  {
+    columns: ({ col }) => ({
+      vendorId: col.id("vendorId"),
+      vendorName: col.string("vendorName"),
+      totalSpendCents: col.integer("totalSpendCents"),
+      orderCount: col.integer("orderCount"),
+    }),
+  },
+);
+
+const executableSchema = createExecutableSchema(builder);
 
 const rows = await executableSchema.query({
   context: { orgId: "org_1", userId: "u1", db },
@@ -142,35 +138,48 @@ If your runtime handle is static, `db` can still be passed directly instead of u
 ### Example B: Non-Relational Mapping Pattern
 
 ```ts
-import { createKvProvider } from "@playground/kv-provider-core";
-import { createExecutableSchema } from "sqlql";
+import { createIoredisProvider, type RedisLike } from "@sqlql/ioredis";
+import { createExecutableSchema, createSchemaBuilder } from "sqlql";
 
-const kvProvider = createKvProvider({
-  name: "kvProvider",
-  rows, // raw [{ key, value }]
+type QueryContext = {
+  userId: string;
+  redis: RedisLike;
+};
+
+const redisProvider = createIoredisProvider<QueryContext>({
+  name: "redisProvider",
+  redis: (ctx) => ctx.redis,
   entities: {
     product_view_counts: {
       entity: "product_view_counts",
+      lookupKey: "product_id",
       columns: ["product_id", "view_count"] as const,
-      mapRow({ key, value, context }) {
-        // example key: "${userId}:${productId}"
-        // map to relational row shape, or return null to skip
-        return mappedOrNull;
+      buildRedisKey({ key, context }) {
+        return `product_view_counts:${context.userId}:${String(key)}`;
+      },
+      decodeRow({ hash }) {
+        if (typeof hash.product_id !== "string" || typeof hash.view_count !== "string") {
+          return null;
+        }
+        return {
+          product_id: hash.product_id,
+          view_count: Number(hash.view_count),
+        };
       },
     },
   },
 });
 
-const executableSchema = createExecutableSchema(({ table }) => ({
-  tables: {
-    productViewCounts: table("productViewCounts", kvProvider.entities.product_view_counts, {
-      columns: ({ col }) => ({
-        productId: col.string("product_id"),
-        viewCount: col.integer("view_count"),
-      }),
-    }),
-  },
-}));
+const builder = createSchemaBuilder<QueryContext>();
+
+builder.table("productViewCounts", redisProvider.entities.product_view_counts, {
+  columns: ({ col }) => ({
+    productId: col.string("product_id"),
+    viewCount: col.integer("view_count"),
+  }),
+});
+
+const executableSchema = createExecutableSchema(builder);
 ```
 
 ## Limitations
