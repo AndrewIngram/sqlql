@@ -1,5 +1,5 @@
-import { Result } from "better-result";
 import {
+  AdapterResult,
   bindAdapterEntities,
   createDataEntityHandle,
   normalizeDataEntityShape,
@@ -242,14 +242,14 @@ export function createIoredisProvider<
       }
     },
     async compile(fragment) {
-      return Result.err(
+      return AdapterResult.err(
         new Error(
           `Ioredis provider does not compile ${fragment.kind} fragments in v1. Use lookupMany-backed plans instead.`,
         ),
       );
     },
     async execute(plan: ProviderCompiledPlan) {
-      return Result.err(
+      return AdapterResult.err(
         new Error(
           `Ioredis provider does not execute compiled ${plan.kind} plans in v1. Use lookupMany-backed plans instead.`,
         ),
@@ -258,7 +258,7 @@ export function createIoredisProvider<
     async lookupMany(request, context) {
       const entity = getEntityConfigOrThrow(entitiesByName, request.table);
       const validation = validateLookupRequest(request, entity);
-      if (Result.isError(validation)) {
+      if (AdapterResult.isError(validation)) {
         return validation;
       }
 
@@ -278,7 +278,7 @@ export function createIoredisProvider<
         }
         const [error, hash] = response;
         if (error) {
-          return Result.err(error);
+          return AdapterResult.err(error);
         }
 
         if (!hash || Object.keys(hash).length === 0) {
@@ -317,7 +317,7 @@ export function createIoredisProvider<
         },
       });
 
-      return Result.ok(filtered.map((row) => projectLookupRow(row, request.select)));
+      return AdapterResult.ok(filtered.map((row) => projectLookupRow(row, request.select)));
     },
   } satisfies ProviderAdapter<TContext> & {
     entities: {

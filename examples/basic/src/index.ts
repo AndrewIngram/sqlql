@@ -1,5 +1,5 @@
-import { Result } from "better-result";
 import {
+  AdapterResult,
   bindAdapterEntities,
   createDataEntityHandle,
   createSchemaBuilder,
@@ -23,7 +23,7 @@ function createMemoryProvider<TContext>(
       return fragment.kind === "scan";
     },
     async compile(fragment) {
-      return Result.ok({
+      return AdapterResult.ok({
         provider: "memory",
         kind: fragment.kind,
         payload: fragment,
@@ -32,12 +32,12 @@ function createMemoryProvider<TContext>(
     async execute(plan) {
       const fragment = plan.payload as { kind: "scan"; table: string; request: TableScanRequest };
       const rows = tables[fragment.table] ?? [];
-      return Result.ok(scanRows(rows, fragment.request));
+      return AdapterResult.ok(scanRows(rows, fragment.request));
     },
     async lookupMany(request) {
       const rows = tables[request.table] ?? [];
       const keys = new Set(request.keys);
-      return Result.ok(
+      return AdapterResult.ok(
         rows
           .filter((row) => keys.has(row[request.key]))
           .map((row) => projectRow(row, request.select)),

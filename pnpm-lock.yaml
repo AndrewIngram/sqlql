@@ -48,9 +48,6 @@ importers:
 
   examples/basic:
     dependencies:
-      better-result:
-        specifier: ^2.7.0
-        version: 2.7.0
       tupl:
         specifier: workspace:*
         version: link:../..
@@ -241,11 +238,9 @@ importers:
       '@tupl/core':
         specifier: workspace:*
         version: link:../core
-      better-result:
-        specifier: ^2.7.0
-        version: 2.7.0
+    devDependencies:
       drizzle-orm:
-        specifier: latest
+        specifier: ^0.45.1
         version: 0.45.1(@electric-sql/pglite@0.2.17)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.6.2)(knex@3.1.0(better-sqlite3@12.6.2))(kysely@0.28.11)
 
   packages/provider-ioredis:
@@ -253,9 +248,6 @@ importers:
       '@tupl/core':
         specifier: workspace:*
         version: link:../core
-      better-result:
-        specifier: ^2.7.0
-        version: 2.7.0
       ioredis:
         specifier: latest
         version: 5.10.0
@@ -265,11 +257,9 @@ importers:
       '@tupl/core':
         specifier: workspace:*
         version: link:../core
-      better-result:
-        specifier: ^2.7.0
-        version: 2.7.0
+    devDependencies:
       kysely:
-        specifier: '>=0.26'
+        specifier: ^0.28.11
         version: 0.28.11
 
   packages/provider-objection:
@@ -277,12 +267,13 @@ importers:
       '@tupl/core':
         specifier: workspace:*
         version: link:../core
-      better-result:
-        specifier: ^2.7.0
-        version: 2.7.0
+    devDependencies:
       knex:
-        specifier: '>=2'
+        specifier: ^3.1.0
         version: 3.1.0(better-sqlite3@12.6.2)
+      objection:
+        specifier: ^3.1.5
+        version: 3.1.5(knex@3.1.0(better-sqlite3@12.6.2))
 
 packages:
 

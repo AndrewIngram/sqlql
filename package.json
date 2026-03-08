@@ -1,7 +1,7 @@
 {
   "name": "tupl",
   "version": "0.6.0",
-  "description": "Thin wrapper package for @tupl/core",
+  "description": "Type-safe SQL facade runtime with schema and provider-based query execution",
   "homepage": "https://github.com/AndrewIngram/tupl#readme",
   "bugs": {
     "url": "https://github.com/AndrewIngram/tupl/issues"
@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle",
+    "build:public": "pnpm --filter @tupl/core build && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection build && pnpm build",
     "clean": "rm -rf dist examples/basic/dist",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "test": "vitest run",
@@ -52,6 +53,8 @@
     "example:playground:build": "pnpm --dir examples/playground build",
     "example:playground:start": "pnpm --dir examples/playground start",
     "example:playground:dev": "pnpm --dir examples/playground dev",
+    "publish:public": "pnpm --filter @tupl/core publish --access public && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection publish --access public && pnpm publish --access public",
+    "publish:public:dry-run": "pnpm --filter @tupl/core publish --access public --dry-run && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection publish --access public --dry-run && pnpm publish --access public --dry-run",
     "prepublishOnly": "pnpm --filter @tupl/core build && pnpm run build"
   },
   "dependencies": {

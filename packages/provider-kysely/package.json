@@ -17,13 +17,16 @@
   },
   "scripts": {
     "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle --tsconfig tsconfig.build.json",
+    "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "better-result": "^2.7.0",
     "@tupl/core": "workspace:*"
   },
   "peerDependencies": {
     "kysely": ">=0.26"
+  },
+  "devDependencies": {
+    "kysely": "^0.28.11"
   }
 }

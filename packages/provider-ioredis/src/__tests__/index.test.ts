@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { Result } from "better-result";
 import {
+  AdapterResult,
   type ProviderFragment,
 } from "@tupl/core";
 import {
@@ -91,10 +91,10 @@ describe("ioredis adapter", () => {
     expect(scanCapability.routeFamily).toBe("scan");
 
     expect(
-      Result.isError(await provider.compile(scanFragment, { tenant: "acme" })),
+      AdapterResult.isError(await provider.compile(scanFragment, { tenant: "acme" })),
     ).toBe(true);
     expect(
-      Result.isError(
+      AdapterResult.isError(
         await provider.execute(
           {
             provider: "redisProvider",
@@ -209,7 +209,7 @@ describe("ioredis adapter", () => {
       },
       { tenant: "acme" },
     );
-    expect(Result.isError(wrongKey)).toBe(true);
+    expect(AdapterResult.isError(wrongKey)).toBe(true);
 
     const wrongColumn = await provider.lookupMany!(
       {
@@ -220,6 +220,6 @@ describe("ioredis adapter", () => {
       },
       { tenant: "acme" },
     );
-    expect(Result.isError(wrongColumn)).toBe(true);
+    expect(AdapterResult.isError(wrongColumn)).toBe(true);
   });
 });

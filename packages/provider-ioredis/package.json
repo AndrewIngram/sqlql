@@ -17,10 +17,10 @@
   },
   "scripts": {
     "build": "tsdown src/index.ts --tsconfig tsconfig.build.json --format esm,cjs --sourcemap --clean --dts --unbundle",
+    "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "better-result": "^2.7.0",
     "ioredis": "latest",
     "@tupl/core": "workspace:*"
   }

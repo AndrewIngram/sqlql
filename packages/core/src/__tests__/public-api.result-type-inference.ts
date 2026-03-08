@@ -1,10 +1,12 @@
 import type { Result as BetterResult } from "better-result";
 
 import {
+  AdapterResult,
   createExecutableSchemaResult,
   createSchemaBuilder,
   resolveTableProviderResult,
   type ExecutableSchema,
+  type ProviderOperationResult,
   type QueryRow,
   type QuerySession,
   type SchemaDefinition,
@@ -42,3 +44,8 @@ type _createSessionResultStaysExplicit = Expect<
 declare const resolveTableProviderResultValue: ReturnType<typeof resolveTableProviderResult>;
 const _resolveTableProviderResultNarrows: BetterResult<string, TuplProviderBindingError> =
   resolveTableProviderResultValue;
+
+const adapterResultOkValue = AdapterResult.ok(1);
+
+const _adapterResultSurfaceMatchesProviderOperationResult: ProviderOperationResult<number, never> =
+  adapterResultOkValue;

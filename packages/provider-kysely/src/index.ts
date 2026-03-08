@@ -1,6 +1,6 @@
 import type { Selectable } from "kysely";
-import { Result } from "better-result";
 import {
+  AdapterResult,
   bindAdapterEntities,
   collectCapabilityAtomsForFragment,
   createDataEntityHandle,
@@ -276,9 +276,9 @@ export function createKyselyProvider<
       switch (fragment.kind) {
         case "scan":
           if (!entityConfigs[fragment.table]) {
-            return Result.err(new Error(`Unknown Kysely entity config: ${fragment.table}`));
+            return AdapterResult.err(new Error(`Unknown Kysely entity config: ${fragment.table}`));
           }
-          return Result.ok({
+          return AdapterResult.ok({
             provider: providerName,
             kind: "scan",
             payload: fragment,
@@ -286,9 +286,9 @@ export function createKyselyProvider<
         case "rel": {
           const strategy = resolveKyselyRelCompileStrategy(fragment.rel, entityConfigs);
           if (!strategy) {
-            return Result.err(new Error("Unsupported relational fragment for Kysely provider."));
+            return AdapterResult.err(new Error("Unsupported relational fragment for Kysely provider."));
           }
-          return Result.ok({
+          return AdapterResult.ok({
             provider: providerName,
             kind: "rel",
             payload: {
@@ -298,7 +298,7 @@ export function createKyselyProvider<
           });
         }
         default:
-          return Result.err(
+          return AdapterResult.err(
             new Error(`Unsupported Kysely fragment kind: ${(fragment as { kind?: unknown }).kind}`),
           );
       }
@@ -308,20 +308,20 @@ export function createKyselyProvider<
       switch (plan.kind) {
         case "scan": {
           const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
-          return Result.tryPromise({
+          return AdapterResult.tryPromise({
             try: () => executeScan(db, entityConfigs, fragment.request, context),
             catch: (error) => (error instanceof Error ? error : new Error(String(error))),
           });
         }
         case "rel": {
           const compiled = plan.payload as KyselyRelCompiledPlan;
-          return Result.tryPromise({
+          return AdapterResult.tryPromise({
             try: () => executeRelSingleQuery(db, entityConfigs, compiled.rel, compiled.strategy, context),
             catch: (error) => (error instanceof Error ? error : new Error(String(error))),
           });
         }
         default:
-          return Result.err(new Error(`Unsupported Kysely compiled plan kind: ${plan.kind}`));
+          return AdapterResult.err(new Error(`Unsupported Kysely compiled plan kind: ${plan.kind}`));
       }
     },
     async lookupMany(request, context) {
@@ -339,7 +339,7 @@ export function createKyselyProvider<
         ],
       };
 
-      return Result.tryPromise({
+      return AdapterResult.tryPromise({
         try: () => executeScan(db, entityConfigs, scanRequest, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });

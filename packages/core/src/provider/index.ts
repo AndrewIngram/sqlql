@@ -30,8 +30,10 @@ export type {
 } from "../model/data-entity";
 export type { TuplDiagnostic } from "../model/diagnostics";
 
+export const AdapterResult = Result;
+export type AdapterResult<T, E = Error> = BetterResult<T, E>;
 export type MaybePromise<T> = T | Promise<T>;
-export type ProviderOperationResult<T, E = Error> = BetterResult<T, E>;
+export type ProviderOperationResult<T, E = Error> = AdapterResult<T, E>;
 export type ProviderRuntimeBinding<TContext, TValue> =
   | TValue
   | ((context: TContext) => MaybePromise<TValue>);

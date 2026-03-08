@@ -11,7 +11,6 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "better-result": "^2.7.0",
     "tupl": "workspace:*"
   }
 }

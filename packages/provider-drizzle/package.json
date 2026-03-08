@@ -17,11 +17,16 @@
   },
   "scripts": {
     "build": "tsdown src/index.ts --tsconfig tsconfig.build.json --format esm,cjs --sourcemap --clean --dts --unbundle",
+    "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "better-result": "^2.7.0",
-    "drizzle-orm": "latest",
     "@tupl/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.28.3"
+  },
+  "devDependencies": {
+    "drizzle-orm": "^0.45.1"
   }
 }

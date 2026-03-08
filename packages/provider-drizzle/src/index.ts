@@ -1,4 +1,3 @@
-import { Result } from "better-result";
 import {
   type AnyColumn,
   type InferSelectModel,
@@ -19,6 +18,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import {
+  AdapterResult,
   bindAdapterEntities,
   collectCapabilityAtomsForFragment,
   createDataEntityHandle,
@@ -349,7 +349,7 @@ export function createDrizzleProvider<
     async compile(fragment, context) {
       switch (fragment.kind) {
         case "scan":
-          return Result.ok({
+          return AdapterResult.ok({
             provider: providerName,
             kind: fragment.kind,
             payload: fragment,
@@ -357,18 +357,18 @@ export function createDrizzleProvider<
         case "rel": {
           const strategy = resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
           if (!strategy) {
-            return Result.err(new Error("Unsupported relational fragment for drizzle provider."));
+            return AdapterResult.err(new Error("Unsupported relational fragment for drizzle provider."));
           }
           const db = await resolveDrizzleDb(options, context);
           if (!isStrategyAvailableOnDrizzleDb(strategy, db)) {
-            return Result.err(
+            return AdapterResult.err(
               new Error(
                 `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`,
               ),
             );
           }
 
-          return Result.ok({
+          return AdapterResult.ok({
             provider: providerName,
             kind: fragment.kind,
             payload: {
@@ -378,7 +378,7 @@ export function createDrizzleProvider<
           });
         }
         default:
-          return Result.err(
+          return AdapterResult.err(
             new Error(
               `Unsupported drizzle fragment kind: ${(fragment as { kind?: unknown }).kind}`,
             ),
@@ -386,13 +386,13 @@ export function createDrizzleProvider<
       }
     },
     async execute(plan, context) {
-      return Result.tryPromise({
+      return AdapterResult.tryPromise({
         try: () => executeDrizzlePlan(plan, options, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
     async lookupMany(request, context) {
-      return Result.tryPromise({
+      return AdapterResult.tryPromise({
         try: () => lookupManyWithDrizzle(options, request, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
