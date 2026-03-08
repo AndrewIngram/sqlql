@@ -1,4 +1,7 @@
-import type { ConstraintValidationOptions } from "./constraints";
+import {
+  type ConstraintValidationOptions,
+  validateTableConstraintRows,
+} from "./constraints";
 import { Result, type Result as BetterResult } from "better-result";
 import {
   SqlqlDiagnosticError,
@@ -21,7 +24,7 @@ import {
   type QueryFallbackPolicy,
   type SqlqlDiagnostic,
 } from "./provider";
-import { countRelNodes, type RelNode } from "./rel";
+import { countRelNodes, type RelExpr, type RelNode } from "./rel";
 import { executeRelWithProvidersResult } from "./executor";
 import {
   buildProviderFragmentForRelResult,
@@ -586,13 +589,30 @@ function maybeRejectFallbackResult<TContext>(
 }
 
 function hasSqlNode(node: RelNode): boolean {
+  const exprHasSqlNode = (expr: RelExpr): boolean => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return false;
+      case "function":
+        return expr.args.some(exprHasSqlNode);
+      case "subquery":
+        return hasSqlNode(expr.rel);
+    }
+  };
+
   switch (node.kind) {
     case "sql":
       return true;
     case "scan":
       return false;
     case "filter":
+      return hasSqlNode(node.input) || (node.expr ? exprHasSqlNode(node.expr) : false);
     case "project":
+      return (
+        hasSqlNode(node.input) ||
+        node.columns.some((column) => "expr" in column && exprHasSqlNode(column.expr))
+      );
     case "aggregate":
     case "window":
     case "sort":
@@ -641,14 +661,25 @@ async function maybeExecuteWholeQueryFragmentResult<TContext>(
 
   if (resolution.fragment.kind === "scan" && rel.kind === "scan") {
     const binding = getNormalizedTableBinding(input.schema, rel.table);
-    return Result.ok(
-      mapProviderRowsToLogical(
+    const mappedRows = mapProviderRowsToLogical(
         rows,
         rel.select,
         binding?.kind === "physical" ? binding : null,
         input.schema.tables[rel.table],
-      ),
-    );
+        {
+          enforceNotNull:
+            !input.constraintValidation || input.constraintValidation.mode === "off",
+          enforceEnum:
+            !input.constraintValidation || input.constraintValidation.mode === "off",
+        },
+      );
+    validateTableConstraintRows({
+      schema: input.schema,
+      tableName: rel.table,
+      rows: mappedRows,
+      ...(input.constraintValidation ? { options: input.constraintValidation } : {}),
+    });
+    return Result.ok(mappedRows);
   }
 
   return Result.ok(rows);
@@ -921,11 +952,20 @@ function createRelExecutionSession<TContext>(
     const rowsResult = await withTimeoutResult(
       "execute relational query",
       () =>
-        executeRelWithProvidersResult(rel, input.schema, input.providers, input.context, {
-          maxExecutionRows: guardrails.maxExecutionRows,
-          maxLookupKeysPerBatch: guardrails.maxLookupKeysPerBatch,
-          maxLookupBatches: guardrails.maxLookupBatches,
-        }).then(unwrapQueryResult),
+        executeRelWithProvidersResult(
+          rel,
+          input.schema,
+          input.providers,
+          input.context,
+          {
+            maxExecutionRows: guardrails.maxExecutionRows,
+            maxLookupKeysPerBatch: guardrails.maxLookupKeysPerBatch,
+            maxLookupBatches: guardrails.maxLookupBatches,
+          },
+          input.constraintValidation
+            ? { constraintValidation: input.constraintValidation }
+            : undefined,
+        ).then(unwrapQueryResult),
       guardrails.timeoutMs,
     );
     if (Result.isError(rowsResult)) {
@@ -1071,6 +1111,38 @@ function buildRelExecutionPlan<TContext>(
     return `${prefix}_${stepCounter}`;
   };
 
+  let whereSubqueryScopeCount = 0;
+  let selectSubqueryScopeCount = 0;
+
+  const visitExprSubqueries = (
+    expr: RelExpr,
+    owner: "WHERE" | "SELECT",
+    parentScopeId: string,
+  ): string[] => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return [];
+      case "function":
+        return [...new Set(expr.args.flatMap((arg) => visitExprSubqueries(arg, owner, parentScopeId)))];
+      case "subquery": {
+        const scopeId = nextId("scope_subquery");
+        const label =
+          owner === "WHERE"
+            ? `Subquery WHERE #${++whereSubqueryScopeCount}`
+            : `Subquery SELECT #${++selectSubqueryScopeCount}`;
+        scopes.push({
+          id: scopeId,
+          kind: "subquery",
+          label,
+          parentId: parentScopeId,
+        });
+        const rootStepId = visit(expr.rel, scopeId);
+        return [rootStepId];
+      }
+    }
+  };
+
   const visit = (node: RelNode, scopeId = "scope_root"): string => {
     const remoteFragmentStepId = tryPlanRemoteFragmentStep(node, scopeId);
     if (remoteFragmentStepId) {
@@ -1108,12 +1180,13 @@ function buildRelExecutionPlan<TContext>(
       }
       case "filter": {
         const inputId = visit(node.input, scopeId);
+        const subqueryDeps = node.expr ? visitExprSubqueries(node.expr, "WHERE", scopeId) : [];
         const id = nextId("filter");
         steps.push({
           id,
           kind: "filter",
-          dependsOn: [inputId],
-          summary: "Apply filter predicates",
+          dependsOn: [...new Set([inputId, ...subqueryDeps])],
+          summary: "Apply WHERE filter",
           phase: "transform",
           operation: {
             name: "filter",
@@ -1137,11 +1210,14 @@ function buildRelExecutionPlan<TContext>(
       }
       case "project": {
         const inputId = visit(node.input, scopeId);
+        const subqueryDeps = node.columns.flatMap((column) =>
+          "expr" in column ? visitExprSubqueries(column.expr, "SELECT", scopeId) : [],
+        );
         const id = nextId("projection");
         steps.push({
           id,
           kind: "projection",
-          dependsOn: [inputId],
+          dependsOn: [...new Set([inputId, ...subqueryDeps])],
           summary: "Project result rows",
           phase: "output",
           operation: {
@@ -1184,7 +1260,17 @@ function buildRelExecutionPlan<TContext>(
         }
 
         const leftId = visit(node.left, scopeId);
-        const rightId = visit(node.right, scopeId);
+        let rightScopeId = scopeId;
+        if (node.joinType === "semi") {
+          rightScopeId = nextId("scope_subquery");
+          scopes.push({
+            id: rightScopeId,
+            kind: "subquery",
+            label: `Subquery WHERE #${++whereSubqueryScopeCount}`,
+            parentId: scopeId,
+          });
+        }
+        const rightId = visit(node.right, rightScopeId);
         const id = nextId("join");
         steps.push({
           id,
@@ -1541,9 +1627,6 @@ function resolveSyncLookupJoinCandidate<TContext>(
     leftScan.entity?.provider ?? resolveTableProvider(input.schema, leftScan.table);
   const rightProvider =
     rightScan.entity?.provider ?? resolveTableProvider(input.schema, rightScan.table);
-  if (leftProvider === rightProvider) {
-    return null;
-  }
 
   const rightAdapter = input.providers[rightProvider];
   if (!rightAdapter?.lookupMany) {
@@ -1811,6 +1894,9 @@ async function queryInternalResult<TContext>(
               maxLookupKeysPerBatch: guardrails.maxLookupKeysPerBatch,
               maxLookupBatches: guardrails.maxLookupBatches,
             },
+            resolvedInput.constraintValidation
+              ? { constraintValidation: resolvedInput.constraintValidation }
+              : undefined,
           ).then(unwrapQueryResult),
         guardrails.timeoutMs,
       ),

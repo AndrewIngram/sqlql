@@ -4,12 +4,12 @@ import { Result } from "better-result";
 import {
   unwrapProviderOperationResult,
   type ProviderFragment,
-} from "../../src";
+} from "sqlql";
 import {
   createIoredisProvider,
   type RedisLike,
   type RedisPipelineLike,
-} from "../../packages/ioredis/src";
+} from "../index";
 
 class StubPipeline implements RedisPipelineLike {
   private readonly keys: string[] = [];

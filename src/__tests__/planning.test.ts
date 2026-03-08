@@ -1,8 +1,8 @@
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
-import { buildSchema, buildEntitySchema } from "../support/schema-builder";
-import { finalizeProviders } from "../support/executable-schema";
+import { buildSchema, buildEntitySchema } from "../../test/support/schema-builder";
+import { finalizeProviders } from "../../test/support/executable-schema";
 import {
   buildProviderFragmentForRelResult,
   expandRelViewsResult,
@@ -10,7 +10,7 @@ import {
   lowerSqlToRelResult,
   planPhysicalQuery,
   planPhysicalQueryResult,
-} from "../../src/planning";
+} from "../planning";
 
 describe("query/planning", () => {
   it("lowers simple select/join into relational operators", () => {

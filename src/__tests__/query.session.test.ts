@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createMethodsSession, queryWithMethods } from "../support/methods-provider";
-import { createArrayTableMethods } from "../../src/array-methods";
+import { createMethodsSession, queryWithMethods } from "../../test/support/methods-provider";
+import { createArrayTableMethods } from "../array-methods";
 
-import { defineTableMethods } from "../../src";
-import { commerceRows, commerceSchema } from "../support/commerce-fixture";
-import { buildEntitySchema } from "../support/schema-builder";
+import { defineTableMethods } from "sqlql";
+import { commerceRows, commerceSchema } from "../../test/support/commerce-fixture";
+import { buildEntitySchema } from "../../test/support/schema-builder";
 
 const EMPTY_CONTEXT = {} as const;
 

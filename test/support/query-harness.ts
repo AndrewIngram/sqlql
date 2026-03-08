@@ -201,7 +201,8 @@ function createMemoryProvider<TContext>(
 }
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
-  let out = rows.filter((row) => matchesFilters(row, request.where ?? []));
+  const normalizedRows = normalizeDateRows(rows);
+  let out = normalizedRows.filter((row) => matchesFilters(row, request.where ?? []));
 
   if (request.orderBy && request.orderBy.length > 0) {
     out = [...out].sort((left, right) => {
@@ -246,48 +247,58 @@ function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   });
 }
 
+function normalizeDateRows(rows: QueryRow[]): QueryRow[] {
+  return rows.map((row) => {
+    const next: QueryRow = {};
+    for (const [key, value] of Object.entries(row)) {
+      next[key] = value instanceof Date ? value.toISOString() : value;
+    }
+    return next;
+  });
+}
+
 function matchesFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {
   for (const clause of filters) {
     const value = row[clause.column];
 
     switch (clause.op) {
       case "eq":
-        if (value !== clause.value) {
+        if (value == null || clause.value == null || value !== clause.value) {
           return false;
         }
         break;
       case "neq":
-        if (value === clause.value) {
+        if (value == null || clause.value == null || value === clause.value) {
           return false;
         }
         break;
       case "gt":
-        if (value == null || clause.value == null || Number(value) <= Number(clause.value)) {
+        if (value == null || clause.value == null || compareNonNull(value, clause.value) <= 0) {
           return false;
         }
         break;
       case "gte":
-        if (value == null || clause.value == null || Number(value) < Number(clause.value)) {
+        if (value == null || clause.value == null || compareNonNull(value, clause.value) < 0) {
           return false;
         }
         break;
       case "lt":
-        if (value == null || clause.value == null || Number(value) >= Number(clause.value)) {
+        if (value == null || clause.value == null || compareNonNull(value, clause.value) >= 0) {
           return false;
         }
         break;
       case "lte":
-        if (value == null || clause.value == null || Number(value) > Number(clause.value)) {
+        if (value == null || clause.value == null || compareNonNull(value, clause.value) > 0) {
           return false;
         }
         break;
       case "in":
-        if (!clause.values.includes(value)) {
+        if (value == null || !clause.values.filter((entry) => entry != null).includes(value)) {
           return false;
         }
         break;
       case "not_in":
-        if (clause.values.includes(value)) {
+        if (value == null || clause.values.filter((entry) => entry != null).includes(value)) {
           return false;
         }
         break;
@@ -341,4 +352,23 @@ function matchesLike(value: string, pattern: string): boolean {
     .replace(/%/g, ".*")
     .replace(/_/g, ".");
   return new RegExp(`^${escaped}$`, "su").test(value);
+}
+
+function compareNonNull(left: unknown, right: unknown): number {
+  if (typeof left === "number" && typeof right === "number") {
+    return left === right ? 0 : left < right ? -1 : 1;
+  }
+
+  if (typeof left === "boolean" && typeof right === "boolean") {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
+  }
+
+  const leftString = String(left);
+  const rightString = String(right);
+  if (leftString === rightString) {
+    return 0;
+  }
+  return leftString < rightString ? -1 : 1;
 }

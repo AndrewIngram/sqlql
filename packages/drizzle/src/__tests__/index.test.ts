@@ -5,13 +5,13 @@ import {
   type ProviderFragment,
   type QueryRow,
   type RelNode,
-} from "../../src";
+} from "sqlql";
 import {
   createDrizzleProvider,
   impossibleCondition,
   runDrizzleScan,
   type DrizzleQueryExecutor,
-} from "../../packages/drizzle/src";
+} from "../index";
 
 type TestColumn = { name: string };
 type TestRow = Record<string, unknown>;

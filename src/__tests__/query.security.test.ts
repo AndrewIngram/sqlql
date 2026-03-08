@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { queryWithMethods } from "../support/methods-provider";
-import { createArrayTableMethods } from "../../src/array-methods";
-import { defineTableMethods } from "../../src";
-import { buildEntitySchema } from "../support/schema-builder";
+import { queryWithMethods } from "../../test/support/methods-provider";
+import { createArrayTableMethods } from "../array-methods";
+import { defineTableMethods } from "sqlql";
+import { buildEntitySchema } from "../../test/support/schema-builder";
 
 const EMPTY_CONTEXT = {} as const;
 

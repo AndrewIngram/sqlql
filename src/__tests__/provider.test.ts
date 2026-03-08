@@ -9,10 +9,10 @@ import {
   type QueryRow,
   type ScanFilterClause,
   type TableScanRequest,
-} from "../../src";
-import { validateProviderBindingsResult } from "../../src/provider";
-import { createExecutableSchemaFromProviders } from "../support/executable-schema";
-import { buildSchema, buildEntitySchema } from "../support/schema-builder";
+} from "sqlql";
+import { validateProviderBindingsResult } from "../provider";
+import { createExecutableSchemaFromProviders } from "../../test/support/executable-schema";
+import { buildSchema, buildEntitySchema } from "../../test/support/schema-builder";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {

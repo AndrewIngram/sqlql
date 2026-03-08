@@ -6,12 +6,12 @@ import {
   type QueryRow,
   type RelNode,
   type TableScanRequest,
-} from "../../src";
+} from "sqlql";
 import {
   createObjectionProvider,
   type KnexLike,
   type KnexLikeQueryBuilder,
-} from "../../packages/objection/src";
+} from "../index";
 
 interface ObjectionCalls {
   where: unknown[][];

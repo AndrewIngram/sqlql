@@ -1,6 +1,10 @@
 import { Result, type Result as BetterResult } from "better-result";
 
 import {
+  type ConstraintValidationOptions,
+  validateTableConstraintRows,
+} from "./constraints";
+import {
   SqlqlExecutionError,
   SqlqlGuardrailError,
   type SqlqlError,
@@ -54,8 +58,10 @@ interface RelExecutionContext<TContext> {
   providers: ProvidersMap<TContext>;
   context: TContext;
   guardrails: RelExecutionGuardrails;
+  constraintValidation?: ConstraintValidationOptions;
   lookupBatches: number;
   cteRows: Map<string, QueryRow[]>;
+  subqueryResults: Map<string, unknown>;
 }
 
 function toSqlqlExecutionError(error: unknown, operation: string): SqlqlError {
@@ -112,15 +118,25 @@ export async function executeRelWithProvidersResult<TContext>(
   providers: ProvidersMap<TContext>,
   context: TContext,
   guardrails: RelExecutionGuardrails,
+  options: {
+    constraintValidation?: ConstraintValidationOptions;
+  } = {},
 ): Promise<SqlqlResult<QueryRow[]>> {
   const executionContext: RelExecutionContext<TContext> = {
     schema,
     providers,
     context,
     guardrails,
+    ...(options.constraintValidation ? { constraintValidation: options.constraintValidation } : {}),
     lookupBatches: 0,
     cteRows: new Map<string, QueryRow[]>(),
+    subqueryResults: new Map<string, unknown>(),
   };
+
+  const subqueryPrepResult = await prepareSubqueryResultsResult(rel, executionContext);
+  if (Result.isError(subqueryPrepResult)) {
+    return subqueryPrepResult;
+  }
 
   const rowsResult = await executeRelNodeResult(rel, executionContext);
   if (Result.isError(rowsResult)) {
@@ -273,10 +289,25 @@ async function tryExecuteRemoteSubtreeResult<TContext>(
         node.select,
         physicalBinding,
         tableDefinition,
+        {
+          enforceNotNull: !context.constraintValidation || context.constraintValidation.mode === "off",
+          enforceEnum: !context.constraintValidation || context.constraintValidation.mode === "off",
+        },
       ),
     );
     if (Result.isError(projectedResult)) {
       return projectedResult;
+    }
+    const validatedResult = tryExecutionStep("validate scan result constraints", () => {
+      validateTableConstraintRows({
+        schema: context.schema,
+        tableName: node.table,
+        rows: projectedResult.value,
+        ...(context.constraintValidation ? { options: context.constraintValidation } : {}),
+      });
+    });
+    if (Result.isError(validatedResult)) {
+      return validatedResult;
     }
 
     const alias = node.alias ?? node.table;
@@ -472,10 +503,25 @@ async function executeScanResult<TContext>(
       scan.select,
       physicalBinding,
       tableDefinition,
+      {
+        enforceNotNull: !context.constraintValidation || context.constraintValidation.mode === "off",
+        enforceEnum: !context.constraintValidation || context.constraintValidation.mode === "off",
+      },
     ),
   );
   if (Result.isError(projectedResult)) {
     return projectedResult;
+  }
+  const validatedResult = tryExecutionStep("validate scan result constraints", () => {
+    validateTableConstraintRows({
+      schema: context.schema,
+      tableName: scan.table,
+      rows: projectedResult.value,
+      ...(context.constraintValidation ? { options: context.constraintValidation } : {}),
+    });
+  });
+  if (Result.isError(validatedResult)) {
+    return validatedResult;
   }
 
   const alias = scan.alias ?? scan.table;
@@ -502,7 +548,7 @@ async function executeFilterResult<TContext>(
 
   const filtered: InternalRow[] = [];
   for (const row of out) {
-    const exprResult = evaluateRelExprResult(filter.expr, row);
+    const exprResult = evaluateRelExprResult(filter.expr, row, context.subqueryResults);
     if (Result.isError(exprResult)) {
       return exprResult;
     }
@@ -570,13 +616,8 @@ async function maybeExecuteLookupJoinResult<TContext>(
     return Result.ok(null);
   }
 
-  const leftProviderName =
-    leftScan.entity?.provider ?? resolveTableProvider(context.schema, leftScan.table);
   const rightProviderName =
     rightScan.entity?.provider ?? resolveTableProvider(context.schema, rightScan.table);
-  if (leftProviderName === rightProviderName) {
-    return Result.ok(null);
-  }
 
   const rightProvider =
     context.providers[rightProviderName] ??
@@ -630,6 +671,7 @@ async function maybeExecuteLookupJoinResult<TContext>(
         await lookupMany(
           {
             table: rightPhysicalBinding?.entity ?? rightScan.table,
+            ...(rightScan.alias ? { alias: rightScan.alias } : {}),
             key: rightKey,
             keys: batch,
             select: mapLogicalColumnsToSource(rightScan.select, rightPhysicalBinding),
@@ -653,6 +695,10 @@ async function maybeExecuteLookupJoinResult<TContext>(
         rightPhysicalBinding,
         context.schema.tables[rightScan.table] ??
           (rightScan.entity ? createTableDefinitionFromEntity(rightScan.entity) : undefined),
+        {
+          enforceNotNull: !context.constraintValidation || context.constraintValidation.mode === "off",
+          enforceEnum: !context.constraintValidation || context.constraintValidation.mode === "off",
+        },
       ),
     );
     if (Result.isError(mappedRowsResult)) {
@@ -790,14 +836,37 @@ function applyWindowFunction(
         continue;
       }
 
-      const prev = idx > 0 ? entries[idx - 1] : undefined;
-      const isPeer = prev ? compareWindowEntries(prev.row, entry.row, fn.orderBy) === 0 : false;
-      if (!isPeer) {
-        denseRank += 1;
-        rank = idx + 1;
+      if (fn.fn === "rank" || fn.fn === "dense_rank") {
+        const prev = idx > 0 ? entries[idx - 1] : undefined;
+        const isPeer = prev ? compareWindowEntries(prev.row, entry.row, fn.orderBy) === 0 : false;
+        if (!isPeer) {
+          denseRank += 1;
+          rank = idx + 1;
+        }
+
+        row[fn.as] = fn.fn === "dense_rank" ? denseRank : rank;
+        continue;
       }
 
-      row[fn.as] = fn.fn === "dense_rank" ? denseRank : rank;
+      const aggregateFn = fn as Extract<typeof fn, { fn: "count" | "sum" | "avg" | "min" | "max" }>;
+      const frameEntries = aggregateFn.orderBy.length > 0 ? entries.slice(0, idx + 1) : entries;
+      const values = aggregateFn.column
+        ? frameEntries.map((current) => readRowValue(current.row, toColumnKey(aggregateFn.column!)) ?? null)
+        : frameEntries.map(() => 1);
+      const metricValues = aggregateFn.distinct
+        ? [...new Map(values.map((value) => [JSON.stringify(value), value])).values()]
+        : values;
+
+      const metricResult = evaluateAggregateMetricResult(
+        aggregateFn.fn,
+        metricValues,
+        frameEntries.length,
+        aggregateFn.column != null,
+      );
+      if (Result.isError(metricResult)) {
+        throw metricResult.error;
+      }
+      row[fn.as] = metricResult.value;
     }
   }
 
@@ -839,7 +908,7 @@ async function executeProjectResult<TContext>(
         continue;
       }
 
-      const exprResult = evaluateRelExprResult(mapping.expr, row);
+      const exprResult = evaluateRelExprResult(mapping.expr, row, context.subqueryResults);
       if (Result.isError(exprResult)) {
         return exprResult;
       }
@@ -1099,6 +1168,8 @@ function rewriteViewBindingExprForExecution(
       }
       return expr;
     }
+    case "subquery":
+      return expr;
   }
 }
 
@@ -1435,16 +1506,22 @@ function matchesClause(row: Record<string, unknown>, clause: ScanFilterClause): 
   }
 }
 
-function evaluateRelExprResult(expr: RelExpr, row: InternalRow): SqlqlResult<unknown> {
+function evaluateRelExprResult(
+  expr: RelExpr,
+  row: InternalRow,
+  subqueryResults: Map<string, unknown>,
+): SqlqlResult<unknown> {
   switch (expr.kind) {
     case "literal":
       return Result.ok(expr.value);
     case "column":
       return Result.ok(readRowValue(row, toColumnKey(expr.ref)) ?? null);
+    case "subquery":
+      return Result.ok(subqueryResults.get(expr.id) ?? null);
     case "function": {
       const args: unknown[] = [];
       for (const arg of expr.args) {
-        const argResult = evaluateRelExprResult(arg, row);
+        const argResult = evaluateRelExprResult(arg, row, subqueryResults);
         if (Result.isError(argResult)) {
           return argResult;
         }
@@ -1646,6 +1723,112 @@ function evaluateRelExprResult(expr: RelExpr, row: InternalRow): SqlqlResult<unk
             }),
           );
       }
+    }
+  }
+}
+
+async function prepareSubqueryResultsResult<TContext>(
+  node: RelNode,
+  context: RelExecutionContext<TContext>,
+): Promise<SqlqlResult<void>> {
+  const visited = new Set<string>();
+
+  const prepareExpr = async (expr: RelExpr): Promise<SqlqlResult<void>> => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return Result.ok(undefined);
+      case "function":
+        for (const arg of expr.args) {
+          const argResult = await prepareExpr(arg);
+          if (Result.isError(argResult)) {
+            return argResult;
+          }
+        }
+        return Result.ok(undefined);
+      case "subquery": {
+        if (visited.has(expr.id)) {
+          return Result.ok(undefined);
+        }
+        visited.add(expr.id);
+
+        const nestedResult = await prepareSubqueryResultsResult(expr.rel, context);
+        if (Result.isError(nestedResult)) {
+          return nestedResult;
+        }
+
+        const rowsResult = await executeRelNodeResult(expr.rel, context);
+        if (Result.isError(rowsResult)) {
+          return rowsResult;
+        }
+
+        const rows = rowsResult.value;
+        const value =
+          expr.mode === "exists"
+            ? rows.length > 0
+            : rows.length === 0
+              ? null
+              : rows[0]?.[expr.outputColumn ?? "" ] ?? null;
+        context.subqueryResults.set(expr.id, value);
+        return Result.ok(undefined);
+      }
+    }
+  };
+
+  switch (node.kind) {
+    case "scan":
+    case "sql":
+      return Result.ok(undefined);
+    case "filter": {
+      const inputResult = await prepareSubqueryResultsResult(node.input, context);
+      if (Result.isError(inputResult)) {
+        return inputResult;
+      }
+      return node.expr ? prepareExpr(node.expr) : Result.ok(undefined);
+    }
+    case "project": {
+      const inputResult = await prepareSubqueryResultsResult(node.input, context);
+      if (Result.isError(inputResult)) {
+        return inputResult;
+      }
+      for (const column of node.columns) {
+        if (!("expr" in column)) {
+          continue;
+        }
+        const exprResult = await prepareExpr(column.expr);
+        if (Result.isError(exprResult)) {
+          return exprResult;
+        }
+      }
+      return Result.ok(undefined);
+    }
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return prepareSubqueryResultsResult(node.input, context);
+    case "join": {
+      const leftResult = await prepareSubqueryResultsResult(node.left, context);
+      if (Result.isError(leftResult)) {
+        return leftResult;
+      }
+      return prepareSubqueryResultsResult(node.right, context);
+    }
+    case "set_op": {
+      const leftResult = await prepareSubqueryResultsResult(node.left, context);
+      if (Result.isError(leftResult)) {
+        return leftResult;
+      }
+      return prepareSubqueryResultsResult(node.right, context);
+    }
+    case "with": {
+      for (const cte of node.ctes) {
+        const cteResult = await prepareSubqueryResultsResult(cte.query, context);
+        if (Result.isError(cteResult)) {
+          return cteResult;
+        }
+      }
+      return prepareSubqueryResultsResult(node.body, context);
     }
   }
 }

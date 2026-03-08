@@ -15,13 +15,18 @@ export default defineConfig({
   },
   test: {
     include: [
-      "test/parser/**/*.test.ts",
-      "test/query/*runtime.test.ts",
-      "test/query/session.test.ts",
-      "test/providers/**/*.test.ts",
+      "src/**/__tests__/**/*.test.ts",
+      "packages/*/src/**/__tests__/**/*.test.ts",
+      "test/compliance/*.test.ts",
+      "test/query/*.test.ts",
+      "test/providers/*.test.ts",
       "examples/playground/test/**/*.test.ts",
     ],
-    exclude: [...configDefaults.exclude, ...SLOW_PLAYGROUND_TEST_FILES],
+    exclude: [
+      ...configDefaults.exclude,
+      ...SLOW_PLAYGROUND_TEST_FILES,
+      "test/compliance/standards-gaps.todo.test.ts",
+    ],
     coverage: {
       reporter: ["text", "html"],
     },

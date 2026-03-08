@@ -2015,6 +2015,10 @@ function buildSqlExpressionFromRelExpr<TContext>(
           );
       }
     }
+    case "subquery":
+      throw new UnsupportedSingleQueryPlanError(
+        "Subquery expressions are not supported in Drizzle single-query pushdown.",
+      );
   }
 }
 

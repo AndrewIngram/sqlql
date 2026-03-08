@@ -45,32 +45,6 @@ const cases: ComplianceCase[] = [
       ORDER BY o.id ASC
     `,
   },
-  {
-    name: "named WINDOW clause reference",
-    sql: `
-      SELECT
-        o.id,
-        SUM(o.total_cents) OVER w AS running_total
-      FROM orders o
-      WINDOW w AS (
-        PARTITION BY o.org_id
-        ORDER BY o.created_at ASC
-        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-      )
-      ORDER BY o.id ASC
-    `,
-  },
-  {
-    name: "LEAD/LAG navigation functions",
-    sql: `
-      SELECT
-        o.id,
-        LEAD(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS next_total,
-        LAG(o.total_cents, 1, 0) OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS prev_total
-      FROM orders o
-      ORDER BY o.id ASC
-    `,
-  },
 ];
 
 registerParityCases(

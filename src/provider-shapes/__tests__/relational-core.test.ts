@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { RelNode } from "../../src";
-import { isRelProjectColumnMapping } from "../../src";
+import type { RelNode } from "../..";
+import { isRelProjectColumnMapping } from "../..";
 import {
   buildSingleQueryPlan,
   canCompileBasicRel,
@@ -11,7 +11,7 @@ import {
   isSupportedRelationalPlan,
   resolveRelationalStrategy,
   type RelationalScanBindingBase,
-} from "../../src/provider-shapes/relational-core";
+} from "../relational-core";
 
 interface Binding extends RelationalScanBindingBase {
   table: string;

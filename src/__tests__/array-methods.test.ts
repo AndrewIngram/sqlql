@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { queryWithMethods } from "./support/methods-provider";
+import { queryWithMethods } from "../../test/support/methods-provider";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
   lookupArrayRows,
   scanArrayRows,
-} from "../src/array-methods";
+} from "../array-methods";
 
-import { defineTableMethods, type QueryRow } from "../src";
-import { buildEntitySchema } from "./support/schema-builder";
+import { defineTableMethods, type QueryRow } from "..";
+import { buildEntitySchema } from "../../test/support/schema-builder";
 
 describe("array methods", () => {
   const orders: QueryRow[] = [

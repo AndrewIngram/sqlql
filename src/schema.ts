@@ -906,6 +906,10 @@ export function normalizeProviderRowValue(
   value: unknown,
   binding: NormalizedColumnBinding | undefined,
   fallbackDefinition?: TableColumnDefinition,
+  options: {
+    enforceNotNull?: boolean;
+    enforceEnum?: boolean;
+  } = {},
 ): unknown {
   if (!binding) {
     return value;
@@ -913,9 +917,11 @@ export function normalizeProviderRowValue(
 
   const definition = resolveColumnDefinition(binding.definition ?? fallbackDefinition ?? "text");
   const coerced = binding.coerce ? coerceValue(value, binding.coerce) : value;
+  const enforceNotNull = options.enforceNotNull ?? true;
+  const enforceEnum = options.enforceEnum ?? true;
 
   if (coerced == null) {
-    if (definition.nullable === false) {
+    if (enforceNotNull && definition.nullable === false) {
       throw new Error(
         `Column ${describeNormalizedColumnBinding(binding)} is non-nullable but provider returned null.`,
       );
@@ -928,7 +934,7 @@ export function normalizeProviderRowValue(
       if (typeof coerced !== "string") {
         throw new Error(`Column ${describeNormalizedColumnBinding(binding)} must be a string.`);
       }
-      if (definition.enum && !definition.enum.includes(coerced)) {
+      if (enforceEnum && definition.enum && !definition.enum.includes(coerced)) {
         throw new Error(
           `Column ${describeNormalizedColumnBinding(binding)} must be one of ${definition.enum.join(", ")}.`,
         );
@@ -964,7 +970,7 @@ export function normalizeProviderRowValue(
           `Column ${describeNormalizedColumnBinding(binding)} must be a ${definition.type} string or Date.`,
         );
       }
-      return coerced;
+      return coerced instanceof Date ? coerced.toISOString() : coerced;
     case "json":
       return coerced;
   }
@@ -975,6 +981,10 @@ export function mapProviderRowsToLogical(
   selectedLogicalColumns: string[],
   binding: NormalizedPhysicalTableBinding | null,
   tableDefinition?: TableDefinition,
+  options: {
+    enforceNotNull?: boolean;
+    enforceEnum?: boolean;
+  } = {},
 ): QueryRow[] {
   if (!binding) {
     return rows;
@@ -992,6 +1002,7 @@ export function mapProviderRowsToLogical(
         row[source] ?? null,
         columnBinding,
         fallbackDefinition,
+        options,
       );
     }
     return out;
@@ -1220,6 +1231,8 @@ function inferRelExprDefinition(
       return inferLiteralDefinition(expr.value);
     case "column":
       return resolveRelRefOutputDefinition(inputDefinitions, expr.ref);
+    case "subquery":
+      return expr.mode === "exists" ? buildInferredColumnDefinition("boolean", false) : undefined;
     case "function": {
       const args = expr.args.map((arg) => inferRelExprDefinition(arg, inputDefinitions));
       switch (expr.name) {
@@ -1733,6 +1746,8 @@ function resolveColumnExpr(
       }
       return expr;
     }
+    case "subquery":
+      return expr;
   }
 }
 

@@ -307,6 +307,7 @@ export function normalizeDataEntityShape<
 
 export interface ProviderLookupManyRequest {
   table: string;
+  alias?: string;
   key: string;
   keys: unknown[];
   select: string[];
@@ -474,7 +475,12 @@ function collectCapabilityAtomsForRel(node: RelNode, atoms: Set<ProviderCapabili
       collectCapabilityAtomsForRel(node.input, atoms);
       return;
     case "window":
-      atoms.add("window.rank_basic");
+      if (node.functions.some((fn) => fn.fn === "dense_rank" || fn.fn === "rank" || fn.fn === "row_number")) {
+        atoms.add("window.rank_basic");
+      }
+      if (node.functions.some((fn) => fn.fn === "count" || fn.fn === "sum" || fn.fn === "avg" || fn.fn === "min" || fn.fn === "max")) {
+        atoms.add("window.aggregate_default_frame");
+      }
       collectCapabilityAtomsForRel(node.input, atoms);
       return;
     case "sort":
@@ -514,6 +520,12 @@ function collectCapabilityAtomsForExpr(expr: RelExpr, atoms: Set<ProviderCapabil
   switch (expr.kind) {
     case "literal":
     case "column":
+      return;
+    case "subquery":
+      atoms.add(
+        expr.mode === "exists" ? "subquery.exists_uncorrelated" : "subquery.scalar_uncorrelated",
+      );
+      collectCapabilityAtomsForRel(expr.rel, atoms);
       return;
     case "function":
       switch (expr.name) {

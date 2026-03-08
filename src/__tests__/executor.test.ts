@@ -10,9 +10,9 @@ import {
   type RelNode,
   type ScanFilterClause,
   type TableScanRequest,
-} from "../../src";
-import { finalizeProviders } from "../support/executable-schema";
-import { buildSchema, buildEntitySchema } from "../support/schema-builder";
+} from "sqlql";
+import { finalizeProviders } from "../../test/support/executable-schema";
+import { buildSchema, buildEntitySchema } from "../../test/support/schema-builder";
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = rows.filter((row) => applyFilters(row, request.where ?? []));

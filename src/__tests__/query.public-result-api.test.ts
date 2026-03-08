@@ -10,9 +10,9 @@ import {
   type ProviderFragment,
   type QueryRow,
   type SchemaDefinition,
-} from "../../src";
-import { createExecutableSchemaFromProviders } from "../support/executable-schema";
-import { buildEntitySchema, buildSchema } from "../support/schema-builder";
+} from "sqlql";
+import { createExecutableSchemaFromProviders } from "../../test/support/executable-schema";
+import { buildEntitySchema, buildSchema } from "../../test/support/schema-builder";
 
 function createRowsProvider(rows: QueryRow[] = [{ id: "u1" }]): Omit<ProviderAdapter, "name"> {
   return {
@@ -132,39 +132,55 @@ describe("public result APIs", () => {
     }
 
     expect(result.error).toMatchObject({
-      _tag: "SqlqlRuntimeError",
+      _tag: "SqlqlExecutionError",
       message: "warehouse exploded",
     });
   });
 
-  it("returns tagged provider-binding errors from queryResult", async () => {
-    const schema = buildEntitySchema({
-      users: {
+  it("returns tagged runtime errors when executable schema provider bindings are inconsistent", () => {
+    const adapter = {
+      name: "actual",
+      canExecute(fragment: ProviderFragment) {
+        return fragment.kind === "scan";
+      },
+      async compile(fragment: ProviderFragment) {
+        return Result.ok({
+          provider: "actual",
+          kind: fragment.kind,
+          payload: fragment,
+        });
+      },
+      async execute() {
+        return Result.ok([{ id: "u1" }]);
+      },
+    } satisfies ProviderAdapter;
+
+    const builder = createSchemaBuilder<Record<string, never>>();
+    builder.table(
+      "users",
+      createDataEntityHandle({
+        entity: "users",
         provider: "warehouse",
+        adapter,
+      }),
+      {
         columns: {
           id: "text",
         },
       },
-    });
+    );
 
-    const executableSchema = createExecutableSchemaFromProviders(schema, {
-      warehouse: createRowsProvider(),
-    });
-    executableSchema.schema.tables.users!.provider = "missing";
-
-    const result = await executableSchema.queryResult({
-      context: {},
-      sql: "SELECT id FROM users",
-    });
+    const result = createExecutableSchemaResult(builder);
 
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
-      throw new Error("Expected queryResult to fail.");
+      throw new Error("Expected createExecutableSchemaResult to fail.");
     }
 
     expect(result.error).toMatchObject({
-      _tag: "SqlqlProviderBindingError",
-      message: "Table users is bound to provider missing, but no such provider is registered.",
+      _tag: "SqlqlRuntimeError",
+      message:
+        "Table users is bound to provider warehouse, but the attached adapter is named actual.",
     });
   });
 

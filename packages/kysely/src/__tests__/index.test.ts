@@ -6,8 +6,8 @@ import {
   type QueryRow,
   type RelNode,
   type TableScanRequest,
-} from "../../src";
-import { createKyselyProvider, type KyselyDatabaseLike } from "../../packages/kysely/src";
+} from "sqlql";
+import { createKyselyProvider, type KyselyDatabaseLike } from "../index";
 
 interface KyselyCalls {
   from: string[];

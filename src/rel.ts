@@ -30,7 +30,15 @@ export interface RelFunctionExpr {
   args: RelExpr[];
 }
 
-export type RelExpr = RelLiteralExpr | RelColumnExpr | RelFunctionExpr;
+export interface RelSubqueryExpr {
+  kind: "subquery";
+  id: string;
+  mode: "scalar" | "exists";
+  rel: RelNode;
+  outputColumn?: string;
+}
+
+export type RelExpr = RelLiteralExpr | RelColumnExpr | RelFunctionExpr | RelSubqueryExpr;
 
 export interface RelProjectColumnMapping {
   kind?: "column";
@@ -98,7 +106,7 @@ export interface RelJoinNode extends RelNodeBase {
   rightKey: RelColumnRef;
 }
 
-export interface RelWindowFunction {
+export interface RelRankWindowFunction {
   fn: "dense_rank" | "rank" | "row_number";
   as: string;
   partitionBy: RelColumnRef[];
@@ -107,6 +115,20 @@ export interface RelWindowFunction {
     direction: "asc" | "desc";
   }>;
 }
+
+export interface RelAggregateWindowFunction {
+  fn: "count" | "sum" | "avg" | "min" | "max";
+  as: string;
+  partitionBy: RelColumnRef[];
+  column?: RelColumnRef;
+  distinct?: boolean;
+  orderBy: Array<{
+    source: RelColumnRef;
+    direction: "asc" | "desc";
+  }>;
+}
+
+export type RelWindowFunction = RelRankWindowFunction | RelAggregateWindowFunction;
 
 export interface RelWindowNode extends RelNodeBase {
   kind: "window";
@@ -198,14 +220,37 @@ export function createSqlRel(sql: string, tables: string[]): RelSqlNode {
 }
 
 export function countRelNodes(node: RelNode): number {
+  const countExpr = (expr: RelExpr): number => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return 0;
+      case "function":
+        return expr.args.reduce((sum, arg) => sum + countExpr(arg), 0);
+      case "subquery":
+        return countRelNodes(expr.rel);
+    }
+  };
+
   switch (node.kind) {
     case "scan":
     case "sql":
       return 1;
     case "filter":
+      return 1 + countRelNodes(node.input) + (node.expr ? countExpr(node.expr) : 0);
     case "project":
+      return (
+        1 +
+        countRelNodes(node.input) +
+        node.columns.reduce(
+          (sum, column) => sum + ("expr" in column ? countExpr(column.expr) : 0),
+          0,
+        )
+      );
     case "aggregate":
+      return 1 + countRelNodes(node.input);
     case "window":
+      return 1 + countRelNodes(node.input);
     case "sort":
     case "limit_offset":
       return 1 + countRelNodes(node.input);
@@ -224,6 +269,22 @@ export function countRelNodes(node: RelNode): number {
 export function collectRelTables(node: RelNode): string[] {
   const out = new Set<string>();
 
+  const visitExpr = (expr: RelExpr): void => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return;
+      case "function":
+        for (const arg of expr.args) {
+          visitExpr(arg);
+        }
+        return;
+      case "subquery":
+        visit(expr.rel);
+        return;
+    }
+  };
+
   const visit = (current: RelNode): void => {
     switch (current.kind) {
       case "scan":
@@ -235,7 +296,19 @@ export function collectRelTables(node: RelNode): string[] {
         }
         return;
       case "filter":
+        if (current.expr) {
+          visitExpr(current.expr);
+        }
+        visit(current.input);
+        return;
       case "project":
+        for (const column of current.columns) {
+          if ("expr" in column) {
+            visitExpr(column.expr);
+          }
+        }
+        visit(current.input);
+        return;
       case "aggregate":
       case "window":
       case "sort":

@@ -49,6 +49,28 @@ const gapCases: StandardsGapCase[] = [
     `,
   },
   {
+    name: "named WINDOW clause reference",
+    sql: `
+      SELECT
+        SUM(total_cents) OVER w AS running_total
+      FROM orders
+      WINDOW w AS (
+        PARTITION BY org_id
+        ORDER BY created_at
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      )
+    `,
+  },
+  {
+    name: "navigation window functions LEAD/LAG",
+    sql: `
+      SELECT
+        LEAD(total_cents) OVER (PARTITION BY org_id ORDER BY created_at) AS next_total,
+        LAG(total_cents, 1, 0) OVER (PARTITION BY org_id ORDER BY created_at) AS prev_total
+      FROM orders
+    `,
+  },
+  {
     name: "navigation window function FIRST_VALUE",
     sql: `
       SELECT

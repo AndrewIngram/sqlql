@@ -77,9 +77,9 @@ export function matchesLookupClause(row: QueryRow, clause: ScanFilterClause): bo
 
   switch (clause.op) {
     case "eq":
-      return value === clause.value;
+      return value != null && clause.value != null && value === clause.value;
     case "neq":
-      return value !== clause.value;
+      return value != null && clause.value != null && value !== clause.value;
     case "gt":
       return typeof value === "number" && value > Number(clause.value);
     case "gte":
@@ -89,9 +89,9 @@ export function matchesLookupClause(row: QueryRow, clause: ScanFilterClause): bo
     case "lte":
       return typeof value === "number" && value <= Number(clause.value);
     case "in":
-      return clause.values.includes(value);
+      return value != null && clause.values.filter((entry) => entry != null).includes(value);
     case "not_in":
-      return !clause.values.includes(value);
+      return value != null && !clause.values.filter((entry) => entry != null).includes(value);
     case "like":
       return (
         typeof value === "string" &&

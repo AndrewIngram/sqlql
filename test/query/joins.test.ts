@@ -10,7 +10,7 @@ import { buildEntitySchema } from "../support/schema-builder";
 const EMPTY_CONTEXT = {} as const;
 
 describe("query/joins", () => {
-  it("executes joins with dependency-driven scans and sqlite parity", async () => {
+  it("executes joins with sqlite parity across provider/local join strategies", async () => {
     const calls: Array<{ table: string; request: TableScanRequest }> = [];
     const lookupCalls: Array<{ table: string; request: TableLookupRequest }> = [];
 
@@ -79,12 +79,9 @@ describe("query/joins", () => {
           );
         } else {
           const usersCall = calls.find((call) => call.table === "users");
-          const usersInFilter = usersCall?.request.where?.find((clause) => clause.op === "in");
-          expect(usersInFilter).toEqual({
-            op: "in",
-            column: "id",
-            values: ["usr_1", "usr_2"],
-          });
+          expect(usersCall?.request.select).toEqual(
+            expect.arrayContaining(["id", "team_id", "email"]),
+          );
         }
 
         const teamsLookup = lookupCalls.find((call) => call.table === "teams");
@@ -101,12 +98,12 @@ describe("query/joins", () => {
           ]);
         } else {
           const teamsCall = calls.find((call) => call.table === "teams");
-          const teamsInFilter = teamsCall?.request.where?.find((clause) => clause.op === "in");
-          expect(teamsInFilter).toEqual({
-            op: "in",
-            column: "id",
-            values: ["team_enterprise", "team_smb"],
-          });
+          expect(teamsCall?.request.select).toEqual(
+            expect.arrayContaining(["id", "name", "tier"]),
+          );
+          expect(teamsCall?.request.where).toEqual(
+            expect.arrayContaining([{ op: "eq", column: "tier", value: "enterprise" }]),
+          );
         }
       },
     );

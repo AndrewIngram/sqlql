@@ -21,6 +21,7 @@ import {
   type RelNode,
   type RelProjectNode,
   type RelScanNode,
+  type RelWindowFunction,
   validateRelAgainstSchema,
 } from "./rel";
 import {
@@ -37,6 +38,7 @@ import {
   getNormalizedColumnSourceMap,
   getNormalizedTableBinding,
   isNormalizedSourceColumnBinding,
+  resolveColumnDefinition,
   resolveNormalizedColumnSource,
   type ColumnDefinition,
   type NormalizedColumnBinding,
@@ -126,6 +128,163 @@ interface ParsedWhereFilters {
   residualExpr?: RelExpr;
 }
 
+function validateEnumLiteralFilters(
+  filters: LiteralFilter[],
+  bindings: Binding[],
+  schema: SchemaDefinition,
+): void {
+  const tableByAlias = new Map(bindings.map((binding) => [binding.alias, binding.table]));
+
+  for (const filter of filters) {
+    const tableName = tableByAlias.get(filter.alias);
+    if (!tableName) {
+      continue;
+    }
+    const definition = schema.tables[tableName]?.columns[filter.clause.column];
+    if (!definition || typeof definition === "string") {
+      continue;
+    }
+    const resolved = resolveColumnDefinition(definition);
+    if (!resolved.enum) {
+      continue;
+    }
+
+    if (filter.clause.op === "eq") {
+      if (typeof filter.clause.value === "string" && !resolved.enum.includes(filter.clause.value)) {
+        throw new Error(`Invalid enum value for ${tableName}.${filter.clause.column}`);
+      }
+      continue;
+    }
+
+    if (filter.clause.op === "in") {
+      for (const value of filter.clause.values) {
+        if (value == null) {
+          continue;
+        }
+        if (typeof value !== "string" || !resolved.enum.includes(value)) {
+          throw new Error(`Invalid enum value for ${tableName}.${filter.clause.column}`);
+        }
+      }
+    }
+  }
+}
+
+function combineAndExprs(exprs: RelExpr[]): RelExpr | undefined {
+  return exprs.reduce<RelExpr | undefined>(
+    (acc, current) =>
+      acc
+        ? {
+            kind: "function",
+            name: "and",
+            args: [acc, current],
+          }
+        : current,
+    undefined,
+  );
+}
+
+function toRelLiteralValue(value: unknown): string | number | boolean | null {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  throw new Error(`Unsupported literal filter value: ${String(value)}`);
+}
+
+function toParsedOrderSource(
+  ref: RelColumnRef | null | undefined,
+  fallbackColumn: string,
+): ParsedOrderTerm["source"] {
+  if (!ref) {
+    return {
+      column: fallbackColumn,
+    };
+  }
+  return ref.alias
+    ? {
+        alias: ref.alias,
+        column: ref.column,
+      }
+    : {
+        column: ref.column,
+      };
+}
+
+function literalFilterToRelExpr(filter: LiteralFilter): RelExpr {
+  const source: RelExpr = {
+    kind: "column",
+    ref: {
+      alias: filter.alias,
+      column: filter.clause.column,
+    },
+  };
+
+  switch (filter.clause.op) {
+    case "eq":
+    case "neq":
+    case "gt":
+    case "gte":
+    case "lt":
+    case "lte":
+    case "like":
+    case "not_like":
+    case "is_distinct_from":
+    case "is_not_distinct_from":
+      return {
+        kind: "function",
+        name: filter.clause.op,
+        args: [source, { kind: "literal", value: toRelLiteralValue(filter.clause.value) }],
+      };
+    case "in":
+    case "not_in":
+      return {
+        kind: "function",
+        name: filter.clause.op,
+        args: [
+          source,
+          ...filter.clause.values.map((value) => ({
+            kind: "literal" as const,
+            value: toRelLiteralValue(value),
+          })),
+        ],
+      };
+    case "is_null":
+    case "is_not_null":
+      return {
+        kind: "function",
+        name: filter.clause.op,
+        args: [source],
+      };
+  }
+}
+
+function getPushableWhereAliases(rootAlias: string, joins: ParsedJoin[]): Set<string> {
+  const pushable = new Set<string>([rootAlias]);
+
+  for (const join of joins) {
+    switch (join.joinType) {
+      case "inner":
+        pushable.add(join.alias);
+        break;
+      case "left":
+        break;
+      case "right":
+        pushable.clear();
+        pushable.add(join.alias);
+        break;
+      case "full":
+        pushable.clear();
+        break;
+    }
+  }
+
+  return pushable;
+}
+
 let physicalStepIdCounter = 0;
 let relIdCounter = 0;
 
@@ -184,6 +343,8 @@ function lowerSqlAstToRel(
   sql: string,
   schema: SchemaDefinition,
 ): RelLoweringResult {
+  assertNoUnsupportedQueryShapes(ast);
+
   const structured = tryLowerStructuredSelect(ast, schema, new Set<string>());
   if (structured) {
     validateRelAgainstSchema(structured, schema);
@@ -200,6 +361,226 @@ function lowerSqlAstToRel(
     rel,
     tables,
   };
+}
+
+function assertNoUnsupportedQueryShapes(ast: SelectAst): void {
+  const reason = findUnsupportedQueryShape(ast, new Set<string>());
+  if (reason) {
+    throw new Error(reason);
+  }
+}
+
+function findUnsupportedQueryShape(ast: SelectAst, cteNames: Set<string>): string | null {
+  const windowReason = findUnsupportedWindowShape(ast);
+  if (windowReason) {
+    return windowReason;
+  }
+
+  const withClauses = Array.isArray(ast.with) ? ast.with : [];
+  if (withClauses.some((clause) => clause.recursive)) {
+    return "Recursive CTEs are not yet supported.";
+  }
+
+  const scopedCteNames = new Set(cteNames);
+  for (const clause of withClauses) {
+    const rawName = clause.name;
+    const cteName =
+      typeof rawName === "string"
+        ? rawName
+        : rawName && typeof rawName === "object" && typeof rawName.value === "string"
+          ? rawName.value
+          : null;
+    if (cteName) {
+      scopedCteNames.add(cteName);
+    }
+  }
+
+  for (const clause of withClauses) {
+    const nested = clause.stmt?.ast;
+    if (nested) {
+      const reason = findUnsupportedQueryShape(nested, scopedCteNames);
+      if (reason) {
+        return reason;
+      }
+    }
+  }
+
+  const from = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
+  if (from.some((entry) => !!entry.stmt)) {
+    return "Unsupported FROM clause entry.";
+  }
+
+  const outerAliases = new Set<string>(
+    from.flatMap((entry) => {
+      const alias = typeof entry.as === "string" && entry.as ? entry.as : entry.table;
+      return typeof alias === "string" ? [alias] : [];
+    }),
+  );
+
+  const expressionFields = [
+    ast.columns,
+    ast.where,
+    ast.groupby,
+    ast.having,
+    ast.orderby,
+    ast.limit,
+    ast.window,
+  ];
+  for (const field of expressionFields) {
+    const reason = findUnsupportedSubqueryShape(field, outerAliases, scopedCteNames);
+    if (reason) {
+      return reason;
+    }
+  }
+
+  if (ast._next) {
+    return findUnsupportedQueryShape(ast._next, scopedCteNames);
+  }
+
+  return null;
+}
+
+function findUnsupportedWindowShape(ast: SelectAst): string | null {
+  const hasWindow = hasWindowExpression(ast.columns);
+  if (hasWindow && (ast.groupby || ast.having)) {
+    return "Window functions cannot be mixed with GROUP BY/HAVING.";
+  }
+
+  if (ast.window && ast.window.length > 0) {
+    return "Named WINDOW clauses are not yet supported.";
+  }
+
+  return findUnsupportedWindowShapeInValue(ast.columns);
+}
+
+function findUnsupportedWindowShapeInValue(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const reason = findUnsupportedWindowShapeInValue(item);
+      if (reason) {
+        return reason;
+      }
+    }
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const exprType = record.type;
+  if (exprType === "function" || exprType === "aggr_func") {
+    const overReason = validateSupportedWindowOver(record);
+    if (overReason) {
+      return overReason;
+    }
+  }
+
+  for (const nested of Object.values(record)) {
+    const reason = findUnsupportedWindowShapeInValue(nested);
+    if (reason) {
+      return reason;
+    }
+  }
+
+  return null;
+}
+
+function validateSupportedWindowOver(expr: Record<string, unknown>): string | null {
+  if (!expr.over || typeof expr.over !== "object") {
+    return null;
+  }
+
+  const rawName =
+    expr.type === "aggr_func"
+      ? (typeof expr.name === "string" ? expr.name : null)
+      : (expr.name as { name?: Array<{ value?: unknown }> } | undefined)?.name?.[0]?.value;
+  if (typeof rawName !== "string") {
+    return "Unsupported window function.";
+  }
+
+  const normalized = rawName.toLowerCase();
+  if (
+    normalized !== "row_number" &&
+    normalized !== "rank" &&
+    normalized !== "dense_rank" &&
+    normalized !== "count" &&
+    normalized !== "sum" &&
+    normalized !== "avg" &&
+    normalized !== "min" &&
+    normalized !== "max"
+  ) {
+    return `Unsupported window function: ${rawName.toUpperCase()}`;
+  }
+
+  const rawSpec = (expr.over as { as_window_specification?: unknown }).as_window_specification;
+  if (typeof rawSpec === "string") {
+    return "Named WINDOW clauses are not yet supported.";
+  }
+  if (!rawSpec || typeof rawSpec !== "object") {
+    return null;
+  }
+
+  const spec = (rawSpec as { window_specification?: unknown }).window_specification;
+  if (!spec || typeof spec !== "object") {
+    return null;
+  }
+
+  if ((spec as WindowSpecificationAst).window_frame_clause) {
+    return "Explicit window frame clauses are not yet supported.";
+  }
+
+  return null;
+}
+
+function hasWindowExpression(rawColumns: unknown): boolean {
+  if (rawColumns === "*") {
+    return false;
+  }
+
+  const columns = Array.isArray(rawColumns) ? (rawColumns as SelectColumnAst[]) : [];
+  return columns.some((entry) => {
+    const expr = entry.expr as { over?: unknown };
+    return !!expr.over;
+  });
+}
+
+function findUnsupportedSubqueryShape(
+  value: unknown,
+  outerAliases: Set<string>,
+  cteNames: Set<string>,
+): string | null {
+  const subquery = parseSubqueryAst(value);
+  if (subquery) {
+    if (isCorrelatedSubquery(subquery, outerAliases)) {
+      return "Correlated subqueries are not yet supported.";
+    }
+    return findUnsupportedQueryShape(subquery, cteNames);
+  }
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const reason = findUnsupportedSubqueryShape(item, outerAliases, cteNames);
+      if (reason) {
+        return reason;
+      }
+    }
+    return null;
+  }
+
+  for (const nested of Object.values(value)) {
+    const reason = findUnsupportedSubqueryShape(nested, outerAliases, cteNames);
+    if (reason) {
+      return reason;
+    }
+  }
+
+  return null;
 }
 
 export function expandRelViews<TContext>(
@@ -906,6 +1287,8 @@ function rewriteViewBindingExprForPlanner(
         ref: resolveMappedColumnRef(expr.ref, aliases),
       };
     }
+    case "subquery":
+      return expr;
   }
 }
 
@@ -1013,6 +1396,8 @@ function mapRelExprRefs(expr: RelExpr, aliases: Map<string, ViewAliasColumnMap>)
         name: expr.name,
         args: expr.args.map((arg) => mapRelExprRefs(arg, aliases)),
       };
+    case "subquery":
+      return expr;
   }
 }
 
@@ -1031,6 +1416,8 @@ function mapRelExprRefsForAliasSource(expr: RelExpr, aliasToSource: AliasToSourc
         name: expr.name,
         args: expr.args.map((arg) => mapRelExprRefsForAliasSource(arg, aliasToSource)),
       };
+    case "subquery":
+      return expr;
   }
 }
 
@@ -1052,6 +1439,8 @@ function qualifyExprColumns(expr: RelExpr, alias: string): RelExpr {
         name: expr.name,
         args: expr.args.map((arg) => qualifyExprColumns(arg, alias)),
       };
+    case "subquery":
+      return expr;
   }
 }
 
@@ -1069,6 +1458,8 @@ function collectExprColumns(expr: RelExpr): Set<string> {
         for (const arg of current.args) {
           visit(arg);
         }
+        return;
+      case "subquery":
         return;
     }
   };
@@ -1091,6 +1482,8 @@ function collectRelExprRefs(expr: RelExpr): RelColumnRef[] {
         for (const arg of current.args) {
           visit(arg);
         }
+        return;
+      case "subquery":
         return;
     }
   };
@@ -1332,10 +1725,98 @@ function buildProviderFragmentForNode(
     };
   }
 
+  if (node.kind === "aggregate") {
+    const aggregateFragment = buildAggregateProviderFragment(node, schema, provider);
+    if (aggregateFragment) {
+      return aggregateFragment;
+    }
+  }
+
   return {
     kind: "rel",
     provider,
     rel: normalizeRelForProvider(node, schema),
+  };
+}
+
+function buildAggregateProviderFragment(
+  node: Extract<RelNode, { kind: "aggregate" }>,
+  schema: SchemaDefinition,
+  provider: string,
+): ProviderFragment | null {
+  const extracted = extractAggregateProviderInput(node.input);
+  if (!extracted) {
+    return null;
+  }
+
+  const mergedScan: RelScanNode = {
+    ...extracted.scan,
+    ...(extracted.where.length > 0
+      ? {
+          where: [...(extracted.scan.where ?? []), ...extracted.where],
+        }
+      : {}),
+  };
+  const normalizedScan = normalizeScanForProvider(mergedScan, schema);
+  const aliasToSource = collectAliasToSourceMappings(mergedScan, schema);
+
+  return {
+    kind: "aggregate",
+    provider,
+    table: normalizedScan.table,
+    request: {
+      table: normalizedScan.table,
+      ...(normalizedScan.alias ? { alias: normalizedScan.alias } : {}),
+      ...(normalizedScan.where?.length ? { where: normalizedScan.where } : {}),
+      ...(node.groupBy.length
+        ? {
+            groupBy: node.groupBy.map((column) => mapColumnRefForAlias(column, aliasToSource).column),
+          }
+        : {}),
+      metrics: node.metrics.map((metric) => ({
+        fn: metric.fn,
+        as: metric.as,
+        ...(metric.distinct ? { distinct: true } : {}),
+        ...(metric.column
+          ? {
+              column: mapColumnRefForAlias(metric.column, aliasToSource).column,
+            }
+          : {}),
+      })),
+    },
+  };
+}
+
+function extractAggregateProviderInput(
+  node: RelNode,
+): {
+  scan: RelScanNode;
+  where: ScanFilterClause[];
+} | null {
+  const where: ScanFilterClause[] = [];
+  let current = node;
+
+  while (current.kind === "filter") {
+    if (current.expr) {
+      return null;
+    }
+    if (current.where) {
+      where.push(...current.where);
+    }
+    current = current.input;
+  }
+
+  if (current.kind !== "scan") {
+    return null;
+  }
+
+  if (current.orderBy?.length || current.limit != null || current.offset != null) {
+    return null;
+  }
+
+  return {
+    scan: current,
+    where,
   };
 }
 
@@ -2094,7 +2575,7 @@ function tryLowerSimpleSelect(
     return null;
   }
 
-  if (ast.with || ast.set_op || ast._next || ast.having) {
+  if (ast.with || ast.set_op || ast._next) {
     return null;
   }
 
@@ -2136,10 +2617,11 @@ function tryLowerSimpleSelect(
     return null;
   }
 
-  const whereFilters = parseWhereFilters(ast.where, bindings, aliasToBinding);
+  const whereFilters = parseWhereFilters(ast.where, bindings, aliasToBinding, schema, cteNames);
   if (!whereFilters) {
     return null;
   }
+  validateEnumLiteralFilters(whereFilters.literals, bindings, schema);
 
   const groupBy = parseGroupBy(ast.groupby, bindings, aliasToBinding);
   if (groupBy == null) {
@@ -2151,12 +2633,14 @@ function tryLowerSimpleSelect(
 
   const projections = aggregateMode
     ? null
-    : parseProjection(
-        ast.columns,
-        bindings,
-        aliasToBinding,
-        parseNamedWindowSpecifications(ast.window),
-      );
+      : parseProjection(
+          ast.columns,
+          bindings,
+          aliasToBinding,
+          parseNamedWindowSpecifications(ast.window),
+          schema,
+          cteNames,
+        );
   if (!aggregateMode && projections == null) {
     return null;
   }
@@ -2201,16 +2685,83 @@ function tryLowerSimpleSelect(
     return null;
   }
 
-  const outputAliases = new Set<string>(
-    aggregateMode
-      ? safeAggregateProjections.map((projection) => projection.output)
-      : safeProjections.map((projection) => projection.output),
+  const aggregateMetrics = safeAggregateProjections
+    .filter(
+      (
+        projection,
+      ): projection is ParsedAggregateProjection & {
+        metric: NonNullable<ParsedAggregateProjection["metric"]>;
+      } => projection.kind === "metric" && !!projection.metric,
+    )
+    .map((projection) => projection.metric);
+
+  const aggregateMetricAliases = new Map<string, string>(
+    aggregateMetrics.map((metric) => [getAggregateMetricSignature(metric), metric.as]),
   );
+  const hiddenHavingMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"] = [];
+  const havingExpr =
+    aggregateMode && ast.having
+      ? lowerHavingExpr(ast.having, bindings, aliasToBinding, aggregateMetricAliases, hiddenHavingMetrics)
+      : null;
+  if (ast.having && (!aggregateMode || !havingExpr)) {
+    return null;
+  }
+  const allAggregateMetrics = [...aggregateMetrics, ...hiddenHavingMetrics];
+
+  const outputAliases = new Map<string, RelColumnRef | null>();
+  if (aggregateMode) {
+    for (const projection of safeAggregateProjections) {
+      outputAliases.set(
+        projection.output,
+        projection.kind === "group" && projection.source
+          ? {
+              column: projection.source.column,
+            }
+          : {
+              column: projection.metric!.as,
+            },
+      );
+    }
+  } else {
+    for (const projection of safeProjections) {
+      switch (projection.kind) {
+        case "column":
+          outputAliases.set(projection.output, {
+            alias: projection.source.alias,
+            column: projection.source.column,
+          });
+          break;
+        case "expr":
+          outputAliases.set(projection.output, null);
+          break;
+        case "window":
+          outputAliases.set(projection.output, {
+            column: projection.function.as,
+          });
+          break;
+      }
+    }
+  }
 
   const orderBy = parseOrderBy(ast.orderby, bindings, aliasToBinding, outputAliases);
   if (orderBy == null) {
     return null;
   }
+
+  const rootBinding = bindings[0];
+  if (!rootBinding) {
+    return null;
+  }
+  const pushableWhereAliases = getPushableWhereAliases(rootBinding.alias, joins);
+  const pushableLiteralFilters = whereFilters.literals.filter((filter) =>
+    pushableWhereAliases.has(filter.alias),
+  );
+  const residualExpr = combineAndExprs([
+    ...whereFilters.literals
+      .filter((filter) => !pushableWhereAliases.has(filter.alias))
+      .map(literalFilterToRelExpr),
+    ...(whereFilters.residualExpr ? [whereFilters.residualExpr] : []),
+  ]);
 
   const { limit, offset } = parseLimitAndOffset(ast.limit);
 
@@ -2224,13 +2775,15 @@ function tryLowerSimpleSelect(
       if (projection.kind === "group" && projection.source) {
         columnsByAlias.get(projection.source.alias)?.add(projection.source.column);
       }
+    }
 
-      if (projection.kind === "metric" && projection.metric?.column) {
-        const metricSource = projection.metric.column;
-        const alias = metricSource.alias ?? metricSource.table;
-        if (alias) {
-          columnsByAlias.get(alias)?.add(metricSource.column);
-        }
+    for (const metric of allAggregateMetrics) {
+      if (!metric.column) {
+        continue;
+      }
+      const alias = metric.column.alias ?? metric.column.table;
+      if (alias) {
+        columnsByAlias.get(alias)?.add(metric.column.column);
       }
     }
 
@@ -2258,6 +2811,9 @@ function tryLowerSimpleSelect(
           columnsByAlias.get(partition.alias)?.add(partition.column);
         }
       }
+      if ("column" in projection.function && projection.function.column?.alias) {
+        columnsByAlias.get(projection.function.column.alias)?.add(projection.function.column.column);
+      }
       for (const orderTerm of projection.function.orderBy) {
         if (orderTerm.source.alias) {
           columnsByAlias.get(orderTerm.source.alias)?.add(orderTerm.source.column);
@@ -2271,14 +2827,14 @@ function tryLowerSimpleSelect(
     columnsByAlias.get(join.rightAlias)?.add(join.rightColumn);
   }
 
-  for (const filter of whereFilters.literals) {
+  for (const filter of pushableLiteralFilters) {
     columnsByAlias.get(filter.alias)?.add(filter.clause.column);
   }
   for (const filter of whereFilters.inSubqueries) {
     columnsByAlias.get(filter.alias)?.add(filter.column);
   }
-  if (whereFilters.residualExpr) {
-    for (const ref of collectRelExprRefs(whereFilters.residualExpr)) {
+  if (residualExpr) {
+    for (const ref of collectRelExprRefs(residualExpr)) {
       if (ref.alias) {
         columnsByAlias.get(ref.alias)?.add(ref.column);
       }
@@ -2307,7 +2863,7 @@ function tryLowerSimpleSelect(
   }
 
   const filtersByAlias = new Map<string, ScanFilterClause[]>();
-  for (const filter of whereFilters.literals) {
+  for (const filter of pushableLiteralFilters) {
     const current = filtersByAlias.get(filter.alias) ?? [];
     current.push(filter.clause);
     filtersByAlias.set(filter.alias, current);
@@ -2332,7 +2888,7 @@ function tryLowerSimpleSelect(
     });
   }
 
-  const root = bindings[0];
+  const root = rootBinding;
   if (!root) {
     return null;
   }
@@ -2410,13 +2966,13 @@ function tryLowerSimpleSelect(
     };
   }
 
-  if (whereFilters.residualExpr) {
+  if (residualExpr) {
     current = {
       id: nextRelId("filter"),
       kind: "filter",
       convention: "local",
       input: current,
-      expr: whereFilters.residualExpr,
+      expr: residualExpr,
       output: current.output,
     };
   }
@@ -2428,31 +2984,26 @@ function tryLowerSimpleSelect(
       convention: "local",
       input: current,
       groupBy: effectiveGroupBy,
-      metrics: safeAggregateProjections
-        .filter(
-          (
-            projection,
-          ): projection is ParsedAggregateProjection & {
-            metric: NonNullable<ParsedAggregateProjection["metric"]>;
-          } => projection.kind === "metric" && !!projection.metric,
-        )
-        .map((projection) => projection.metric),
+      metrics: allAggregateMetrics,
       output: [
         ...effectiveGroupBy.map((ref) => ({
           name: ref.column,
         })),
-        ...safeAggregateProjections
-          .filter(
-            (
-              projection,
-            ): projection is ParsedAggregateProjection & {
-              metric: NonNullable<ParsedAggregateProjection["metric"]>;
-            } => projection.kind === "metric" && !!projection.metric,
-          )
-          .map((projection) => ({
-            name: projection.metric.as,
-          })),
+        ...allAggregateMetrics.map((metric) => ({
+          name: metric.as,
+        })),
       ],
+    };
+  }
+
+  if (havingExpr) {
+    current = {
+      id: nextRelId("filter"),
+      kind: "filter",
+      convention: "local",
+      input: current,
+      expr: havingExpr,
+      output: current.output,
     };
   }
 
@@ -2643,6 +3194,8 @@ function parseProjection(
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
   windowDefinitions: Map<string, WindowSpecificationAst>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): SelectProjection[] | null {
   if (rawColumns === "*") {
     return null;
@@ -2680,7 +3233,13 @@ function parseProjection(
       continue;
     }
 
-    const expr = lowerSqlAstToRelExpr(entry.expr, bindings, aliasToBinding);
+    const expr = lowerSqlAstToRelExpr(
+      entry.expr,
+      bindings,
+      aliasToBinding,
+      schema,
+      cteNames,
+    );
     if (!expr) {
       return null;
     }
@@ -2720,13 +3279,6 @@ function parseWindowProjection(
   if (!name) {
     return null;
   }
-  if (name !== "dense_rank" && name !== "rank" && name !== "row_number") {
-    return null;
-  }
-
-  if (!supportsRankWindowArgs(expr.args)) {
-    return null;
-  }
 
   const partitionBy: RelColumnRef[] = [];
   for (const term of over.partitionby ?? []) {
@@ -2757,6 +3309,32 @@ function parseWindowProjection(
 
   const output = typeof entry.as === "string" && entry.as.length > 0 ? entry.as : name;
 
+  if (name === "dense_rank" || name === "rank" || name === "row_number") {
+    if (!supportsRankWindowArgs(expr.args)) {
+      return null;
+    }
+
+    return {
+      kind: "window",
+      output,
+      function: {
+        fn: name,
+        as: output,
+        partitionBy,
+        orderBy,
+      },
+    };
+  }
+
+  if (expr.type !== "aggr_func") {
+    return null;
+  }
+
+  const metric = parseAggregateMetric(expr, output, bindings, aliasToBinding);
+  if (!metric) {
+    return null;
+  }
+
   return {
     kind: "window",
     output,
@@ -2764,6 +3342,8 @@ function parseWindowProjection(
       fn: name,
       as: output,
       partitionBy,
+      ...(metric.column ? { column: metric.column } : {}),
+      ...(metric.distinct ? { distinct: true } : {}),
       orderBy,
     },
   };
@@ -2773,6 +3353,8 @@ function lowerSqlAstToRelExpr(
   raw: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): RelExpr | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -2790,6 +3372,10 @@ function lowerSqlAstToRelExpr(
     args?: { value?: unknown };
     ast?: unknown;
   };
+
+  if ("ast" in expr) {
+    return lowerScalarSubqueryExpr(raw, bindings, schema, cteNames);
+  }
 
   switch (expr.type) {
     case "string":
@@ -2814,13 +3400,10 @@ function lowerSqlAstToRelExpr(
       };
     }
     case "binary_expr":
-      return lowerBinaryExprToRelExpr(expr, bindings, aliasToBinding);
+      return lowerBinaryExprToRelExpr(expr, bindings, aliasToBinding, schema, cteNames);
     case "function":
-      return lowerFunctionExprToRelExpr(expr, bindings, aliasToBinding);
+      return lowerFunctionExprToRelExpr(expr, bindings, aliasToBinding, schema, cteNames);
     default:
-      if ("ast" in expr) {
-        return null;
-      }
       return null;
   }
 }
@@ -2833,6 +3416,8 @@ function lowerBinaryExprToRelExpr(
   },
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): RelExpr | null {
   const operator = typeof expr.operator === "string" ? expr.operator.toUpperCase() : null;
   if (!operator) {
@@ -2844,9 +3429,21 @@ function lowerBinaryExprToRelExpr(
     if (range?.type !== "expr_list" || !Array.isArray(range.value) || range.value.length !== 2) {
       return null;
     }
-    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
-    const low = lowerSqlAstToRelExpr(range.value[0], bindings, aliasToBinding);
-    const high = lowerSqlAstToRelExpr(range.value[1], bindings, aliasToBinding);
+    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding, schema, cteNames);
+    const low = lowerSqlAstToRelExpr(
+      range.value[0],
+      bindings,
+      aliasToBinding,
+      schema,
+      cteNames,
+    );
+    const high = lowerSqlAstToRelExpr(
+      range.value[1],
+      bindings,
+      aliasToBinding,
+      schema,
+      cteNames,
+    );
     if (!left || !low || !high) {
       return null;
     }
@@ -2858,8 +3455,14 @@ function lowerBinaryExprToRelExpr(
   }
 
   if (operator === "IN" || operator === "NOT IN") {
-    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
-    const values = parseExprListToRelExprArgs(expr.right, bindings, aliasToBinding);
+    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding, schema, cteNames);
+    const values = parseExprListToRelExprArgs(
+      expr.right,
+      bindings,
+      aliasToBinding,
+      schema,
+      cteNames,
+    );
     if (!left || !values) {
       return null;
     }
@@ -2871,7 +3474,7 @@ function lowerBinaryExprToRelExpr(
   }
 
   if (operator === "IS" || operator === "IS NOT") {
-    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
+    const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding, schema, cteNames);
     const rightLiteral = parseLiteral(expr.right);
     if (!left || rightLiteral !== null) {
       return null;
@@ -2883,8 +3486,8 @@ function lowerBinaryExprToRelExpr(
     };
   }
 
-  const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding);
-  const right = lowerSqlAstToRelExpr(expr.right, bindings, aliasToBinding);
+  const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding, schema, cteNames);
+  const right = lowerSqlAstToRelExpr(expr.right, bindings, aliasToBinding, schema, cteNames);
   if (!left || !right) {
     return null;
   }
@@ -2909,6 +3512,8 @@ function lowerFunctionExprToRelExpr(
   },
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): RelExpr | null {
   if (expr.over) {
     return null;
@@ -2921,7 +3526,21 @@ function lowerFunctionExprToRelExpr(
   }
 
   const normalized = rawName.toLowerCase();
-  const args = parseFunctionArgsToRelExpr(expr.args?.value, bindings, aliasToBinding);
+  if (normalized === "exists") {
+    const values = Array.isArray(expr.args?.value) ? expr.args?.value : [expr.args?.value];
+    if (values.length !== 1) {
+      return null;
+    }
+    return lowerExistsSubqueryExpr(values[0], bindings, schema, cteNames);
+  }
+
+  const args = parseFunctionArgsToRelExpr(
+    expr.args?.value,
+    bindings,
+    aliasToBinding,
+    schema,
+    cteNames,
+  );
   if (!args) {
     return null;
   }
@@ -2964,6 +3583,8 @@ function parseFunctionArgsToRelExpr(
   raw: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): RelExpr[] | null {
   if (raw == null) {
     return [];
@@ -2971,7 +3592,7 @@ function parseFunctionArgsToRelExpr(
   const values = Array.isArray(raw) ? raw : [raw];
   const args: RelExpr[] = [];
   for (const value of values) {
-    const arg = lowerSqlAstToRelExpr(value, bindings, aliasToBinding);
+    const arg = lowerSqlAstToRelExpr(value, bindings, aliasToBinding, schema, cteNames);
     if (!arg) {
       return null;
     }
@@ -2984,12 +3605,78 @@ function parseExprListToRelExprArgs(
   raw: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): RelExpr[] | null {
   const expr = raw as { type?: unknown; value?: unknown };
   if (expr?.type !== "expr_list" || !Array.isArray(expr.value)) {
     return null;
   }
-  return parseFunctionArgsToRelExpr(expr.value, bindings, aliasToBinding);
+  return parseFunctionArgsToRelExpr(expr.value, bindings, aliasToBinding, schema, cteNames);
+}
+
+function lowerExistsSubqueryExpr(
+  raw: unknown,
+  bindings: Binding[],
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
+): RelExpr | null {
+  const subquery = parseSubqueryAst(raw);
+  if (!subquery) {
+    return null;
+  }
+
+  const outerAliases = new Set(bindings.map((binding) => binding.alias));
+  if (isCorrelatedSubquery(subquery, outerAliases)) {
+    return null;
+  }
+
+  const rel = tryLowerStructuredSelect(subquery, schema, cteNames);
+  if (!rel) {
+    return null;
+  }
+
+  return {
+    kind: "subquery",
+    id: nextRelId("subquery_expr"),
+    mode: "exists",
+    rel,
+  };
+}
+
+function lowerScalarSubqueryExpr(
+  raw: unknown,
+  bindings: Binding[],
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
+): RelExpr | null {
+  const subquery = parseSubqueryAst(raw);
+  if (!subquery) {
+    return null;
+  }
+
+  const outerAliases = new Set(bindings.map((binding) => binding.alias));
+  if (isCorrelatedSubquery(subquery, outerAliases)) {
+    return null;
+  }
+
+  const rel = tryLowerStructuredSelect(subquery, schema, cteNames);
+  if (!rel || rel.output.length !== 1) {
+    return null;
+  }
+
+  const outputColumn = rel.output[0]?.name;
+  if (!outputColumn) {
+    return null;
+  }
+
+  return {
+    kind: "subquery",
+    id: nextRelId("subquery_expr"),
+    mode: "scalar",
+    rel,
+    outputColumn,
+  };
 }
 
 function mapBinaryOperatorToRelFunction(operator: string): string | null {
@@ -3039,9 +3726,16 @@ function mapBinaryOperatorToRelFunction(operator: string): string | null {
 function readWindowFunctionName(expr: {
   type?: unknown;
   name?: unknown;
-}): "dense_rank" | "rank" | "row_number" | null {
+}): RelWindowFunction["fn"] | null {
   if (expr.type === "aggr_func" && typeof expr.name === "string") {
-    return expr.name.toLowerCase() as "dense_rank" | "rank" | "row_number";
+    const lowered = expr.name.toLowerCase();
+    return lowered === "count" ||
+      lowered === "sum" ||
+      lowered === "avg" ||
+      lowered === "min" ||
+      lowered === "max"
+      ? lowered
+      : null;
   }
   if (expr.type !== "function") {
     return null;
@@ -3052,7 +3746,10 @@ function readWindowFunctionName(expr: {
   if (typeof head !== "string") {
     return null;
   }
-  return head.toLowerCase() as "dense_rank" | "rank" | "row_number";
+  const lowered = head.toLowerCase();
+  return lowered === "dense_rank" || lowered === "rank" || lowered === "row_number"
+    ? lowered
+    : null;
 }
 
 function supportsRankWindowArgs(args: unknown): boolean {
@@ -3125,7 +3822,10 @@ function hasAggregateProjection(rawColumns: unknown): boolean {
   }
 
   const columns = Array.isArray(rawColumns) ? (rawColumns as SelectColumnAst[]) : [];
-  return columns.some((entry) => (entry.expr as { type?: unknown })?.type === "aggr_func");
+  return columns.some((entry) => {
+    const expr = entry.expr as { type?: unknown; over?: unknown };
+    return expr.type === "aggr_func" && !expr.over;
+  });
 }
 
 function parseGroupBy(
@@ -3297,6 +3997,290 @@ function deriveDefaultAggregateOutputName(raw: unknown): string {
   return `${fn}_value`;
 }
 
+function getAggregateMetricSignature(
+  metric: Extract<RelNode, { kind: "aggregate" }>["metrics"][number],
+): string {
+  const ref = metric.column;
+  return `${metric.fn}|${metric.distinct ? "distinct" : "all"}|${ref?.alias ?? ref?.table ?? ""}.${ref?.column ?? "*"}`;
+}
+
+function lowerHavingExpr(
+  raw: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  aggregateMetricAliases: Map<string, string>,
+  hiddenMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"],
+): RelExpr | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const expr = raw as {
+    type?: unknown;
+    value?: unknown;
+    table?: unknown;
+    column?: unknown;
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+    name?: unknown;
+    args?: { value?: unknown; expr?: unknown; distinct?: unknown };
+    ast?: unknown;
+  };
+
+  switch (expr.type) {
+    case "string":
+      return { kind: "literal", value: String(expr.value ?? "") };
+    case "number":
+      return typeof expr.value === "number" ? { kind: "literal", value: expr.value } : null;
+    case "bool":
+      return typeof expr.value === "boolean" ? { kind: "literal", value: expr.value } : null;
+    case "null":
+      return { kind: "literal", value: null };
+    case "column_ref": {
+      const resolved = resolveColumnRef(expr, bindings, aliasToBinding);
+      if (!resolved) {
+        return null;
+      }
+      return {
+        kind: "column",
+        ref: {
+          column: resolved.column,
+        },
+      };
+    }
+    case "aggr_func": {
+      const metric = parseAggregateMetric(
+        expr,
+        deriveDefaultAggregateOutputName(expr),
+        bindings,
+        aliasToBinding,
+      );
+      if (!metric) {
+        return null;
+      }
+      const signature = getAggregateMetricSignature(metric);
+      let alias = aggregateMetricAliases.get(signature);
+      if (!alias) {
+        alias = `__having_metric_${aggregateMetricAliases.size + 1}`;
+        aggregateMetricAliases.set(signature, alias);
+        hiddenMetrics.push({
+          ...metric,
+          as: alias,
+        });
+      }
+      return {
+        kind: "column",
+        ref: {
+          column: alias,
+        },
+      };
+    }
+    case "binary_expr":
+      return lowerHavingBinaryExpr(expr, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    case "function":
+      return lowerHavingFunctionExpr(expr, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    default:
+      if ("ast" in expr) {
+        return null;
+      }
+      return null;
+  }
+}
+
+function lowerHavingBinaryExpr(
+  expr: {
+    operator?: unknown;
+    left?: unknown;
+    right?: unknown;
+  },
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  aggregateMetricAliases: Map<string, string>,
+  hiddenMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"],
+): RelExpr | null {
+  const operator = typeof expr.operator === "string" ? expr.operator.toUpperCase() : null;
+  if (!operator) {
+    return null;
+  }
+
+  if (operator === "BETWEEN") {
+    const range = expr.right as { type?: unknown; value?: unknown } | undefined;
+    if (range?.type !== "expr_list" || !Array.isArray(range.value) || range.value.length !== 2) {
+      return null;
+    }
+    const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const low = lowerHavingExpr(range.value[0], bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const high = lowerHavingExpr(range.value[1], bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    if (!left || !low || !high) {
+      return null;
+    }
+    return {
+      kind: "function",
+      name: "between",
+      args: [left, low, high],
+    };
+  }
+
+  if (operator === "IN" || operator === "NOT IN") {
+    const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const values = parseHavingExprListToRelExprArgs(
+      expr.right,
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
+    if (!left || !values) {
+      return null;
+    }
+    return {
+      kind: "function",
+      name: operator === "NOT IN" ? "not_in" : "in",
+      args: [left, ...values],
+    };
+  }
+
+  if (operator === "IS" || operator === "IS NOT") {
+    const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const rightLiteral = parseLiteral(expr.right);
+    if (!left || rightLiteral !== null) {
+      return null;
+    }
+    return {
+      kind: "function",
+      name: operator === "IS NOT" ? "is_not_null" : "is_null",
+      args: [left],
+    };
+  }
+
+  const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+  const right = lowerHavingExpr(expr.right, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+  if (!left || !right) {
+    return null;
+  }
+
+  const mapped = mapBinaryOperatorToRelFunction(operator);
+  if (!mapped) {
+    return null;
+  }
+
+  return {
+    kind: "function",
+    name: mapped,
+    args: [left, right],
+  };
+}
+
+function lowerHavingFunctionExpr(
+  expr: {
+    name?: unknown;
+    args?: { value?: unknown };
+    over?: unknown;
+  },
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  aggregateMetricAliases: Map<string, string>,
+  hiddenMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"],
+): RelExpr | null {
+  if (expr.over) {
+    return null;
+  }
+
+  const rawName = (expr.name as { name?: Array<{ value?: unknown }> } | undefined)?.name?.[0]
+    ?.value;
+  if (typeof rawName !== "string") {
+    return null;
+  }
+
+  const normalized = rawName.toLowerCase();
+  const args = parseHavingFunctionArgsToRelExpr(
+    expr.args?.value,
+    bindings,
+    aliasToBinding,
+    aggregateMetricAliases,
+    hiddenMetrics,
+  );
+  if (!args) {
+    return null;
+  }
+
+  if (normalized === "not") {
+    return args.length === 1
+      ? {
+          kind: "function",
+          name: "not",
+          args,
+        }
+      : null;
+  }
+
+  if (
+    normalized !== "lower" &&
+    normalized !== "upper" &&
+    normalized !== "trim" &&
+    normalized !== "length" &&
+    normalized !== "substr" &&
+    normalized !== "substring" &&
+    normalized !== "coalesce" &&
+    normalized !== "nullif" &&
+    normalized !== "abs" &&
+    normalized !== "round" &&
+    normalized !== "cast" &&
+    normalized !== "case"
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "function",
+    name: normalized === "substring" ? "substr" : normalized,
+    args,
+  };
+}
+
+function parseHavingFunctionArgsToRelExpr(
+  raw: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  aggregateMetricAliases: Map<string, string>,
+  hiddenMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"],
+): RelExpr[] | null {
+  if (raw == null) {
+    return [];
+  }
+  const values = Array.isArray(raw) ? raw : [raw];
+  const args: RelExpr[] = [];
+  for (const value of values) {
+    const arg = lowerHavingExpr(value, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    if (!arg) {
+      return null;
+    }
+    args.push(arg);
+  }
+  return args;
+}
+
+function parseHavingExprListToRelExprArgs(
+  raw: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  aggregateMetricAliases: Map<string, string>,
+  hiddenMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"],
+): RelExpr[] | null {
+  const expr = raw as { type?: unknown; value?: unknown };
+  if (expr?.type !== "expr_list" || !Array.isArray(expr.value)) {
+    return null;
+  }
+  return parseHavingFunctionArgsToRelExpr(
+    expr.value,
+    bindings,
+    aliasToBinding,
+    aggregateMetricAliases,
+    hiddenMetrics,
+  );
+}
+
 function validateAggregateProjectionGroupBy(
   projections: ParsedAggregateProjection[],
   groupBy: RelColumnRef[],
@@ -3321,7 +4305,7 @@ function parseOrderBy(
   rawOrderBy: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
-  outputAliases: Set<string> = new Set<string>(),
+  outputAliases: Map<string, RelColumnRef | null> = new Map<string, RelColumnRef | null>(),
 ): ParsedOrderTerm[] | null {
   const orderBy = Array.isArray(rawOrderBy) ? (rawOrderBy as OrderByTermAst[]) : [];
   const out: ParsedOrderTerm[] = [];
@@ -3330,9 +4314,7 @@ function parseOrderBy(
     const rawRef = toRawColumnRef(term.expr);
     if (rawRef && !rawRef.table && outputAliases.has(rawRef.column)) {
       out.push({
-        source: {
-          column: rawRef.column,
-        },
+        source: toParsedOrderSource(outputAliases.get(rawRef.column), rawRef.column),
         direction: term.type === "DESC" ? "desc" : "asc",
       });
       continue;
@@ -3345,9 +4327,7 @@ function parseOrderBy(
       }
 
       out.push({
-        source: {
-          column: rawRef.column,
-        },
+        source: toParsedOrderSource(outputAliases.get(rawRef.column), rawRef.column),
         direction: term.type === "DESC" ? "desc" : "asc",
       });
       continue;
@@ -3373,6 +4353,8 @@ function parseWhereFilters(
   where: unknown,
   bindings: Binding[],
   aliasToBinding: Map<string, Binding>,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
 ): ParsedWhereFilters | null {
   if (!where) {
     return {
@@ -3383,7 +4365,13 @@ function parseWhereFilters(
 
   const parts = flattenConjunctiveWhere(where);
   if (parts == null) {
-    const residualExpr = lowerSqlAstToRelExpr(where, bindings, aliasToBinding);
+    const residualExpr = lowerSqlAstToRelExpr(
+      where,
+      bindings,
+      aliasToBinding,
+      schema,
+      cteNames,
+    );
     if (!residualExpr) {
       return null;
     }
@@ -3400,7 +4388,13 @@ function parseWhereFilters(
   for (const part of parts) {
     const parsed = parseLiteralFilter(part, bindings, aliasToBinding);
     if (!parsed) {
-      const residual = lowerSqlAstToRelExpr(part, bindings, aliasToBinding);
+      const residual = lowerSqlAstToRelExpr(
+        part,
+        bindings,
+        aliasToBinding,
+        schema,
+        cteNames,
+      );
       if (!residual) {
         return null;
       }
