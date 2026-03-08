@@ -45,6 +45,20 @@ import {
   type ScanOrderBy,
   type SqlScalarType,
   type TableScanRequest,
+  UnsupportedRelationalPlanError,
+  canCompileBasicRel,
+  canCompileSetOpRel,
+  canCompileWithRel,
+  extractRelPipeline,
+  hasSqlNode,
+  resolveRelationalStrategy,
+  unwrapSetOpRel,
+  unwrapWithBodyRel,
+  type RelationalJoinPlan,
+  type RelationalJoinStep,
+  type RelationalScanBindingBase,
+  type RelationalSemiJoinStep,
+  type RelationalSingleQueryPlan,
 } from "sqlql";
 
 export type DrizzleColumnMap<TColumn extends string = string> = Record<TColumn, AnyColumn>;
@@ -854,23 +868,25 @@ function resolveDrizzleRelCompileStrategy(
   node: RelNode,
   tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
 ): DrizzleRelCompileStrategy | null {
-  if (canCompileBasicRel(node, tableConfigs)) {
-    try {
-      buildSingleQueryPlan(node, tableConfigs);
-      return "basic";
-    } catch (error) {
-      if (!(error instanceof UnsupportedSingleQueryPlanError)) {
-        throw error;
-      }
-    }
-  }
-  if (canCompileSetOpRel(node, tableConfigs)) {
-    return "set_op";
-  }
-  if (canCompileWithRel(node, tableConfigs)) {
-    return "with";
-  }
-  return null;
+  return resolveRelationalStrategy(node, {
+    basicStrategy: "basic",
+    setOpStrategy: "set_op",
+    withStrategy: "with",
+    canCompileBasic: (current) =>
+      canCompileBasicRel(current, (table) => !!tableConfigs[table]),
+    validateBasic: (current) => {
+      buildSingleQueryPlan(current, tableConfigs);
+    },
+    canCompileSetOp: (current) =>
+      canCompileSetOpRel(
+        current,
+        (branch) =>
+          canCompileBasicRel(branch, (table) => !!tableConfigs[table]) ? "basic" : null,
+        requireColumnProjectMapping,
+      ),
+    canCompileWith: (current) =>
+      canCompileWithRel(current, (branch) => resolveDrizzleRelCompileStrategy(branch, tableConfigs)),
+  });
 }
 
 function isStrategyAvailableOnDrizzleDb(
@@ -887,160 +903,11 @@ function isStrategyAvailableOnDrizzleDb(
   return typeof candidate.$with === "function" && typeof candidate.with === "function";
 }
 
-function canCompileBasicRel(
-  node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
-): boolean {
-  switch (node.kind) {
-    case "scan":
-      return !!tableConfigs[node.table];
-    case "filter":
-      return !node.expr && canCompileBasicRel(node.input, tableConfigs);
-    case "project":
-    case "aggregate":
-    case "sort":
-    case "limit_offset":
-      return canCompileBasicRel(node.input, tableConfigs);
-    case "join":
-      return (
-        canCompileBasicRel(node.left, tableConfigs) && canCompileBasicRel(node.right, tableConfigs)
-      );
-    case "window":
-      return false;
-    case "set_op":
-    case "with":
-    case "sql":
-      return false;
-  }
-}
-
-function canCompileSetOpRel(
-  node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
-): boolean {
-  const wrapper = unwrapSetOpRel(node);
-  if (!wrapper) {
-    return false;
-  }
-  if (!canCompileBasicRel(wrapper.setOp.left, tableConfigs)) {
-    return false;
-  }
-  if (!canCompileBasicRel(wrapper.setOp.right, tableConfigs)) {
-    return false;
-  }
-
-  const topProject = wrapper.project;
-  if (topProject) {
-    for (const rawColumn of topProject.columns) {
-      const column = requireColumnProjectMapping(rawColumn);
-      if (column.source.alias || column.source.table) {
-        return false;
-      }
-      if (column.source.column !== column.output) {
-        return false;
-      }
-    }
-  }
-
-  for (const term of wrapper.sort?.orderBy ?? []) {
-    if (term.source.alias || term.source.table) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function canCompileWithRel(
-  node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
-): boolean {
-  if (node.kind !== "with") {
-    return false;
-  }
-
-  if (node.ctes.length === 0) {
-    return false;
-  }
-
-  for (const cte of node.ctes) {
-    const strategy = resolveDrizzleRelCompileStrategy(cte.query, tableConfigs);
-    if (!strategy) {
-      return false;
-    }
-  }
-
-  const body = unwrapWithBodyRel(node.body);
-  if (!body) {
-    return false;
-  }
-  if (!body.cteScan.table || !node.ctes.some((cte) => cte.name === body.cteScan.table)) {
-    return false;
-  }
-  for (const fn of body.window?.functions ?? []) {
-    if (fn.fn !== "dense_rank" && fn.fn !== "rank" && fn.fn !== "row_number") {
-      return false;
-    }
-  }
-  return true;
-}
-
-function hasSqlNode(node: RelNode): boolean {
-  switch (node.kind) {
-    case "sql":
-      return true;
-    case "scan":
-      return false;
-    case "filter":
-    case "project":
-    case "aggregate":
-    case "window":
-    case "sort":
-    case "limit_offset":
-      return hasSqlNode(node.input);
-    case "join":
-    case "set_op":
-      return hasSqlNode(node.left) || hasSqlNode(node.right);
-    case "with":
-      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
-  }
-}
-
 type InternalRow = Record<string, unknown>;
 
-class UnsupportedSingleQueryPlanError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UnsupportedSingleQueryPlanError";
-  }
-}
+class UnsupportedSingleQueryPlanError extends UnsupportedRelationalPlanError {}
 
-interface RelPipeline {
-  base: RelNode;
-  project?: Extract<RelNode, { kind: "project" }>;
-  aggregate?: Extract<RelNode, { kind: "aggregate" }>;
-  sort?: Extract<RelNode, { kind: "sort" }>;
-  limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
-  filters: Extract<RelNode, { kind: "filter" }>[];
-}
-
-interface SetOpWrapper {
-  setOp: Extract<RelNode, { kind: "set_op" }>;
-  project?: Extract<RelNode, { kind: "project" }>;
-  sort?: Extract<RelNode, { kind: "sort" }>;
-  limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
-}
-
-interface WithBodyWrapper {
-  cteScan: Extract<RelNode, { kind: "scan" }>;
-  project?: Extract<RelNode, { kind: "project" }>;
-  sort?: Extract<RelNode, { kind: "sort" }>;
-  limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
-  window?: Extract<RelNode, { kind: "window" }>;
-  filters: Extract<RelNode, { kind: "filter" }>[];
-}
-
-interface ScanBinding<TContext> {
+interface ScanBinding<TContext> extends RelationalScanBindingBase {
   alias: string;
   scan: Extract<RelNode, { kind: "scan" }>;
   tableName: string;
@@ -1051,37 +918,16 @@ interface ScanBinding<TContext> {
   tableConfig: DrizzleProviderTableConfig<TContext>;
 }
 
-interface RegularJoinStep<TContext> {
-  joinType: Exclude<Extract<RelNode, { kind: "join" }>["joinType"], "semi">;
-  right: ScanBinding<TContext>;
-  leftKey: { alias: string; column: string };
-  rightKey: { alias: string; column: string };
-}
-
-interface SemiJoinStep {
-  joinType: "semi";
-  right: RelNode;
-  leftKey: { alias: string; column: string };
-  rightKey: { alias?: string; column: string };
-}
-
-type JoinStep<TContext> = RegularJoinStep<TContext> | SemiJoinStep;
-
-interface JoinPlan<TContext> {
-  root: ScanBinding<TContext>;
-  joins: JoinStep<TContext>[];
-  aliases: Map<string, ScanBinding<TContext>>;
-}
+type SemiJoinStep = RelationalSemiJoinStep;
+type JoinStep<TContext> = RelationalJoinStep<ScanBinding<TContext>>;
+type JoinPlan<TContext> = RelationalJoinPlan<ScanBinding<TContext>>;
 
 interface QualifiedJoinColumnRef {
   alias: string;
   column: string;
 }
 
-interface SingleQueryPlan<TContext> {
-  joinPlan: JoinPlan<TContext>;
-  pipeline: RelPipeline;
-}
+type SingleQueryPlan<TContext> = RelationalSingleQueryPlan<ScanBinding<TContext>>;
 
 async function executeDrizzleRelSingleQuery<TContext>(
   rel: RelNode,
@@ -1773,169 +1619,6 @@ function buildSingleQueryPlan<TContext>(
     joinPlan,
     pipeline,
   };
-}
-
-function extractRelPipeline(node: RelNode): RelPipeline {
-  let current = node;
-  const filters: Extract<RelNode, { kind: "filter" }>[] = [];
-  let project: Extract<RelNode, { kind: "project" }> | undefined;
-  let aggregate: Extract<RelNode, { kind: "aggregate" }> | undefined;
-  let sort: Extract<RelNode, { kind: "sort" }> | undefined;
-  let limitOffset: Extract<RelNode, { kind: "limit_offset" }> | undefined;
-
-  while (true) {
-    switch (current.kind) {
-      case "filter":
-        filters.push(current);
-        current = current.input;
-        continue;
-      case "project":
-        if (project) {
-          throw new UnsupportedSingleQueryPlanError("Multiple project nodes are not supported.");
-        }
-        project = current;
-        current = current.input;
-        continue;
-      case "aggregate":
-        if (aggregate) {
-          throw new UnsupportedSingleQueryPlanError("Multiple aggregate nodes are not supported.");
-        }
-        aggregate = current;
-        current = current.input;
-        continue;
-      case "sort":
-        if (sort) {
-          throw new UnsupportedSingleQueryPlanError("Multiple sort nodes are not supported.");
-        }
-        sort = current;
-        current = current.input;
-        continue;
-      case "limit_offset":
-        if (limitOffset) {
-          throw new UnsupportedSingleQueryPlanError(
-            "Multiple limit/offset nodes are not supported.",
-          );
-        }
-        limitOffset = current;
-        current = current.input;
-        continue;
-      case "scan":
-      case "join":
-        return {
-          base: current,
-          ...(project ? { project } : {}),
-          ...(aggregate ? { aggregate } : {}),
-          ...(sort ? { sort } : {}),
-          ...(limitOffset ? { limitOffset } : {}),
-          filters,
-        };
-      case "set_op":
-      case "with":
-      case "sql":
-        throw new UnsupportedSingleQueryPlanError(
-          `Rel node "${current.kind}" is not supported in single-query pushdown.`,
-        );
-    }
-  }
-}
-
-function unwrapSetOpRel(node: RelNode): SetOpWrapper | null {
-  let current = node;
-  let project: Extract<RelNode, { kind: "project" }> | undefined;
-  let sort: Extract<RelNode, { kind: "sort" }> | undefined;
-  let limitOffset: Extract<RelNode, { kind: "limit_offset" }> | undefined;
-
-  while (true) {
-    switch (current.kind) {
-      case "project":
-        if (project) {
-          return null;
-        }
-        project = current;
-        current = current.input;
-        continue;
-      case "sort":
-        if (sort) {
-          return null;
-        }
-        sort = current;
-        current = current.input;
-        continue;
-      case "limit_offset":
-        if (limitOffset) {
-          return null;
-        }
-        limitOffset = current;
-        current = current.input;
-        continue;
-      case "set_op":
-        return {
-          setOp: current,
-          ...(project ? { project } : {}),
-          ...(sort ? { sort } : {}),
-          ...(limitOffset ? { limitOffset } : {}),
-        };
-      default:
-        return null;
-    }
-  }
-}
-
-function unwrapWithBodyRel(node: RelNode): WithBodyWrapper | null {
-  let current = node;
-  const filters: Extract<RelNode, { kind: "filter" }>[] = [];
-  let project: Extract<RelNode, { kind: "project" }> | undefined;
-  let sort: Extract<RelNode, { kind: "sort" }> | undefined;
-  let limitOffset: Extract<RelNode, { kind: "limit_offset" }> | undefined;
-  let window: Extract<RelNode, { kind: "window" }> | undefined;
-
-  while (true) {
-    switch (current.kind) {
-      case "filter":
-        filters.push(current);
-        current = current.input;
-        continue;
-      case "project":
-        if (project) {
-          return null;
-        }
-        project = current;
-        current = current.input;
-        continue;
-      case "sort":
-        if (sort) {
-          return null;
-        }
-        sort = current;
-        current = current.input;
-        continue;
-      case "limit_offset":
-        if (limitOffset) {
-          return null;
-        }
-        limitOffset = current;
-        current = current.input;
-        continue;
-      case "window":
-        if (window) {
-          return null;
-        }
-        window = current;
-        current = current.input;
-        continue;
-      case "scan":
-        return {
-          cteScan: current,
-          ...(project ? { project } : {}),
-          ...(sort ? { sort } : {}),
-          ...(limitOffset ? { limitOffset } : {}),
-          ...(window ? { window } : {}),
-          filters,
-        };
-      default:
-        return null;
-    }
-  }
 }
 
 function buildJoinPlan<TContext>(

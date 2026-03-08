@@ -1,9 +1,7 @@
 import { Result } from "better-result";
 import {
   bindAdapterEntities,
-  collectCapabilityAtomsForFragment,
   createDataEntityHandle,
-  inferRouteFamilyForFragment,
   normalizeDataEntityShape,
   type DataEntityHandle,
   type DataEntityShape,
@@ -13,12 +11,12 @@ import {
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
-  type ProviderFragment,
-  type ProviderLookupManyRequest,
-  type ProviderOperationResult,
   type ProviderRuntimeBinding,
   type QueryRow,
-  type ScanFilterClause,
+  buildLookupOnlyUnsupportedReport,
+  filterLookupRows,
+  projectLookupRow,
+  validateLookupRequest,
 } from "sqlql";
 
 export interface RedisPipelineResult {
@@ -144,79 +142,6 @@ async function resolveRedis<TContext>(
   return await Promise.resolve(resolveRedisMaybeSync(binding, context));
 }
 
-function matchesClause(row: QueryRow, clause: ScanFilterClause): boolean {
-  const value = row[clause.column];
-
-  switch (clause.op) {
-    case "eq":
-      return value === clause.value;
-    case "neq":
-      return value !== clause.value;
-    case "gt":
-      return typeof value === "number" && value > Number(clause.value);
-    case "gte":
-      return typeof value === "number" && value >= Number(clause.value);
-    case "lt":
-      return typeof value === "number" && value < Number(clause.value);
-    case "lte":
-      return typeof value === "number" && value <= Number(clause.value);
-    case "in":
-      return clause.values.includes(value);
-    case "not_in":
-      return !clause.values.includes(value);
-    case "like":
-      return (
-        typeof value === "string" &&
-        typeof clause.value === "string" &&
-        matchesLike(value, clause.value)
-      );
-    case "not_like":
-      return (
-        typeof value === "string" &&
-        typeof clause.value === "string" &&
-        !matchesLike(value, clause.value)
-      );
-    case "is_distinct_from":
-      return value !== clause.value;
-    case "is_not_distinct_from":
-      return value === clause.value;
-    case "is_null":
-      return value == null;
-    case "is_not_null":
-      return value != null;
-  }
-}
-
-function matchesLike(value: string, pattern: string): boolean {
-  const escaped = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/%/g, ".*")
-    .replace(/_/g, ".");
-  return new RegExp(`^${escaped}$`, "su").test(value);
-}
-
-function projectRow(row: QueryRow, select: string[]): QueryRow {
-  const out: QueryRow = {};
-  for (const column of select) {
-    out[column] = row[column] ?? null;
-  }
-  return out;
-}
-
-function buildUnsupportedReport(
-  fragment: ProviderFragment,
-  reason: string,
-): ProviderCapabilityReport {
-  const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
-  return {
-    supported: false,
-    reason,
-    routeFamily: inferRouteFamilyForFragment(fragment),
-    requiredAtoms,
-    missingAtoms: requiredAtoms.filter((atom) => !LOOKUP_ATOMS.includes(atom)),
-  };
-}
-
 function getEntityConfigOrThrow<TContext>(
   entitiesByName: Map<string, IoredisEntityConfig<TContext, string>>,
   entity: string,
@@ -226,30 +151,6 @@ function getEntityConfigOrThrow<TContext>(
     throw new Error(`Unknown Redis entity ${entity}.`);
   }
   return mapping;
-}
-
-function validateLookupRequest<TContext>(
-  request: ProviderLookupManyRequest,
-  entity: IoredisEntityConfig<TContext, string>,
-): ProviderOperationResult<void> {
-  if (request.key !== entity.lookupKey) {
-    return Result.err(
-      new Error(
-        `Unsupported Redis lookup key column for ${request.table}: ${request.key}. Expected ${entity.lookupKey}.`,
-      ),
-    );
-  }
-
-  const allowedColumns = new Set(entity.columns);
-  for (const column of request.select) {
-    if (!allowedColumns.has(column)) {
-      return Result.err(
-        new Error(`Unsupported Redis lookup select column for ${request.table}: ${column}`),
-      );
-    }
-  }
-
-  return Result.ok(undefined);
 }
 
 function inferEntityHandle<
@@ -324,17 +225,17 @@ export function createIoredisProvider<
     canExecute(fragment): boolean | ProviderCapabilityReport {
       switch (fragment.kind) {
         case "scan":
-          return buildUnsupportedReport(
+          return buildLookupOnlyUnsupportedReport(
             fragment,
             "Ioredis provider is lookup-only in v1 and does not support scan pushdown.",
           );
         case "aggregate":
-          return buildUnsupportedReport(
+          return buildLookupOnlyUnsupportedReport(
             fragment,
             "Ioredis provider is lookup-only in v1 and does not support aggregate pushdown.",
           );
         case "rel":
-          return buildUnsupportedReport(
+          return buildLookupOnlyUnsupportedReport(
             fragment,
             "Ioredis provider is lookup-only in v1 and does not support relational pushdown.",
           );
@@ -400,10 +301,7 @@ export function createIoredisProvider<
         rows.push(decoded as QueryRow);
       }
 
-      const filtered = (request.where ?? []).reduce(
-        (current, clause) => current.filter((row) => matchesClause(row, clause)),
-        rows,
-      );
+      const filtered = filterLookupRows(rows, request.where);
 
       options.recordOperation?.({
         kind: "redis_lookup",
@@ -419,7 +317,7 @@ export function createIoredisProvider<
         },
       });
 
-      return Result.ok(filtered.map((row) => projectRow(row, request.select)));
+      return Result.ok(filtered.map((row) => projectLookupRow(row, request.select)));
     },
   } satisfies ProviderAdapter<TContext> & {
     entities: {

@@ -5,6 +5,12 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "node", "react", "react-dom"],
     "paths": {
+      "sqlql": ["../../src/index.ts"],
+      "@sqlql/drizzle": ["../../packages/drizzle/src/index.ts"],
+      "@sqlql/ioredis": ["../../packages/ioredis/src/index.ts"],
+      "@sqlql/objection": ["../../packages/objection/src/index.ts"],
+      "@sqlql/kysely": ["../../packages/kysely/src/index.ts"],
+      "@sqlql/example-shared": ["../_shared/src/index.ts"],
       "@/*": ["./src/*"]
     }
   },

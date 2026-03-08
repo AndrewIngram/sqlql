@@ -33,3 +33,6 @@ export * from "./rel";
 export * from "./physical";
 export * from "./planning";
 export * from "./executor";
+export * from "./provider-shapes/lookup-core";
+export * from "./provider-shapes/relational-core";
+export * from "./provider-shapes/scan-core";
