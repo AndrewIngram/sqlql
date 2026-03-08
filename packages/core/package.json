@@ -1,6 +1,6 @@
 {
   "name": "@tupl/core",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Core runtime and schema APIs for tupl",
   "license": "MIT",
   "type": "module",

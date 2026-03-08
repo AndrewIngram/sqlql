@@ -1,6 +1,6 @@
 {
   "name": "@tupl/provider-objection",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Objection/Knex provider adapter for tupl",
   "license": "MIT",
   "type": "module",

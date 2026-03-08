@@ -1,6 +1,6 @@
 {
   "name": "@tupl/provider-kysely",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Kysely provider adapter for tupl",
   "license": "MIT",
   "type": "module",
