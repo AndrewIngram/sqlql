@@ -1,9 +1,6 @@
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
-import {
-  createDataEntityHandle,
-  createSchemaBuilder,
-  type SchemaDefinition,
-} from "../../../src/index";
+import { createDataEntityHandle } from "@tupl/core";
+import { createSchemaBuilder, type SchemaDefinition } from "@tupl/schema";
 
 export const orgsTable = pgTable("orgs", {
   id: text("id").primaryKey().notNull(),

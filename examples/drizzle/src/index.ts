@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createDrizzleProvider } from "@tupl/provider-drizzle";
 import { createSeededSqliteDatabase, type DemoContext } from "@tupl/example-shared";
-import { createSchemaBuilder, createExecutableSchema } from "tupl";
+import { createExecutableSchema, createSchemaBuilder } from "@tupl/schema";
 
 const vendorsRawTable = sqliteTable("vendors_raw", {
   id: text("id").primaryKey().notNull(),

@@ -2,8 +2,8 @@ import {
   defaultSqlAstParser,
   lowerSqlToRel,
   type RelNode,
-  type SchemaDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
+import type { SchemaDefinition } from "@tupl/schema";
 
 import type {
   CatalogQueryEntry,

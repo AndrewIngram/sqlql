@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import Editor from "@monaco-editor/react";
-import type { QueryRow } from "../../../src/index";
+import type { QueryRow } from "@tupl/schema";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { serializeJson } from "@/examples";

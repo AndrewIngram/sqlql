@@ -1,4 +1,4 @@
-import type { TableDefinition } from "../../../src/index";
+import type { TableDefinition } from "@tupl/schema";
 
 export const REDIS_PROVIDER_NAME = "redisProvider";
 export const REDIS_INPUT_TABLE_NAME = "redis_product_view_counts";

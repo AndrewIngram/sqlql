@@ -1,7 +1,8 @@
 {
-  "name": "tupl",
-  "version": "0.7.0",
-  "description": "Type-safe SQL facade runtime with schema and provider-based query execution",
+  "name": "@tupl/workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace scripts for tupl",
   "homepage": "https://github.com/AndrewIngram/tupl#readme",
   "bugs": {
     "url": "https://github.com/AndrewIngram/tupl/issues"
@@ -11,28 +12,10 @@
     "type": "git",
     "url": "git+https://github.com/AndrewIngram/tupl.git"
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "sideEffects": false,
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
-    }
-  },
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
-    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle",
-    "build:public": "pnpm --filter @tupl/core build && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection build && pnpm build",
-    "clean": "rm -rf dist examples/basic/dist",
+    "build": "pnpm --filter @tupl/core build && pnpm --filter @tupl/schema build && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection build",
+    "build:public": "pnpm run build",
+    "clean": "rm -rf packages/core/dist packages/schema/dist packages/provider-*/dist examples/basic/dist",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:fast": "vitest run --config vitest.fast.config.ts",
@@ -44,21 +27,17 @@
     "fmt:check": "oxfmt --check",
     "example:build": "pnpm --dir examples/basic build",
     "example:start": "pnpm --dir examples/basic start",
-    "example:drizzle:build": "pnpm --filter @tupl/core build && pnpm build && pnpm --filter @tupl/provider-drizzle build && pnpm --dir examples/_shared build && pnpm --dir examples/drizzle build",
+    "example:drizzle:build": "pnpm run build && pnpm --dir examples/_shared build && pnpm --dir examples/drizzle build",
     "example:drizzle:start": "pnpm --dir examples/drizzle start",
-    "example:kysely:build": "pnpm --filter @tupl/core build && pnpm build && pnpm --filter @tupl/provider-kysely build && pnpm --dir examples/_shared build && pnpm --dir examples/kysely build",
+    "example:kysely:build": "pnpm run build && pnpm --dir examples/_shared build && pnpm --dir examples/kysely build",
     "example:kysely:start": "pnpm --dir examples/kysely start",
-    "example:objection:build": "pnpm --filter @tupl/core build && pnpm build && pnpm --filter @tupl/provider-objection build && pnpm --dir examples/_shared build && pnpm --dir examples/objection build",
+    "example:objection:build": "pnpm run build && pnpm --dir examples/_shared build && pnpm --dir examples/objection build",
     "example:objection:start": "pnpm --dir examples/objection start",
     "example:playground:build": "pnpm --dir examples/playground build",
     "example:playground:start": "pnpm --dir examples/playground start",
     "example:playground:dev": "pnpm --dir examples/playground dev",
-    "publish:public": "pnpm --filter @tupl/core publish --access public && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection publish --access public && pnpm publish --access public",
-    "publish:public:dry-run": "pnpm --filter @tupl/core publish --access public --dry-run && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection publish --access public --dry-run && pnpm publish --access public --dry-run",
-    "prepublishOnly": "pnpm --filter @tupl/core build && pnpm run build"
-  },
-  "dependencies": {
-    "@tupl/core": "workspace:*"
+    "publish:public": "pnpm --filter @tupl/core publish --access public && pnpm --filter @tupl/schema publish --access public && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection publish --access public",
+    "publish:public:dry-run": "pnpm --filter @tupl/core publish --access public --dry-run && pnpm --filter @tupl/schema publish --access public --dry-run && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection publish --access public --dry-run"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

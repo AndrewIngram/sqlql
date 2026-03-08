@@ -9,12 +9,11 @@ import {
   type ProviderAdapter,
   type ProviderFragment,
   type QueryExecutionPlan,
-  type QueryRow,
   type QuerySession,
   type QueryStepEvent,
   type RelNode,
-  type SchemaDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
+import type { QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { createVirtualModuleRuntime } from "./playground-module-runtime";
 import {
@@ -109,8 +108,8 @@ interface ProviderModuleExports<TContext> {
 }
 
 interface TuplRuntimeModule {
-  lowerSqlToRel: typeof import("../../../src/index").lowerSqlToRel;
-  planPhysicalQuery: typeof import("../../../src/index").planPhysicalQuery;
+  lowerSqlToRel: typeof import("@tupl/core").lowerSqlToRel;
+  planPhysicalQuery: typeof import("@tupl/core").planPhysicalQuery;
 }
 
 interface PlaygroundRuntimeModule {
@@ -270,7 +269,7 @@ function createProviderRuntime<TContext>(
   const dbProviderModule = runtime.executeModule(PLAYGROUND_DB_PROVIDER_FILE_PATH);
   const redisProviderModule = runtime.executeModule(PLAYGROUND_REDIS_PROVIDER_FILE_PATH);
   const tuplModule = runtime.executeModule(
-    `${workspace.rootPath}/node_modules/tupl/index.ts`,
+    `${workspace.rootPath}/node_modules/@tupl/core/index.ts`,
   ) as unknown as TuplRuntimeModule;
   const playgroundRuntimeModule = externalModules["@playground/runtime"] as
     | PlaygroundRuntimeModule

@@ -12,7 +12,7 @@ import {
   type NodeProps,
   type NodeTypes,
 } from "@xyflow/react";
-import type { SchemaDefinition } from "../../../src/index";
+import type { SchemaDefinition } from "@tupl/schema";
 
 import { cn } from "@/lib/utils";
 import {

@@ -1,8 +1,8 @@
 {
-  "name": "@tupl/provider-kysely",
+  "name": "@tupl/schema",
   "version": "0.7.0",
-  "description": "Kysely provider adapter for tupl",
-  "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/provider-kysely#readme",
+  "description": "Schema builder APIs for tupl",
+  "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/schema#readme",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -16,23 +16,20 @@
       "require": "./dist/index.cjs"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AndrewIngram/tupl.git",
-    "directory": "packages/provider-kysely"
+    "directory": "packages/schema"
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --unbundle --tsconfig tsconfig.build.json",
+    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --tsconfig tsconfig.build.json",
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@tupl/core": "workspace:*"
-  },
-  "peerDependencies": {
-    "kysely": ">=0.26"
-  },
-  "devDependencies": {
-    "kysely": "^0.28.11"
   }
 }

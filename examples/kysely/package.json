@@ -12,9 +12,9 @@
   },
   "dependencies": {
     "@tupl/example-shared": "workspace:*",
+    "@tupl/schema": "workspace:*",
     "@tupl/provider-kysely": "workspace:*",
     "better-sqlite3": "^12.6.2",
-    "kysely": "^0.28.8",
-    "tupl": "workspace:*"
+    "kysely": "^0.28.8"
   }
 }

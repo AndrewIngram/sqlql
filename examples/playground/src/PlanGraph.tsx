@@ -16,7 +16,7 @@ import type {
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
   QueryStepState,
-} from "../../../src/index";
+} from "@tupl/core";
 
 import { cn } from "@/lib/utils";
 import {

@@ -73,13 +73,13 @@ function mapVirtualFiles(
   return out;
 }
 
-const TUPL_SOURCE_IMPORTS = import.meta.glob("../../../src/**/*.ts", {
+const CORE_SOURCE_IMPORTS = import.meta.glob("../../../packages/core/src/**/*.ts", {
   eager: true,
   import: "default",
   query: "?raw",
 }) as Record<string, string>;
 
-const CORE_SOURCE_IMPORTS = import.meta.glob("../../../packages/core/src/**/*.ts", {
+const SCHEMA_SOURCE_IMPORTS = import.meta.glob("../../../packages/schema/src/**/*.ts", {
   eager: true,
   import: "default",
   query: "?raw",
@@ -125,16 +125,16 @@ const BETTER_RESULT_DECLARATION_IMPORTS = {
   }),
 } as Record<string, string>;
 
-const TUPL_SOURCE_FILES = mapVirtualFiles(
-  TUPL_SOURCE_IMPORTS,
-  "/src/",
-  `${NODE_MODULES_ROOT_PATH}/tupl`,
-);
-
 const CORE_SOURCE_FILES = mapVirtualFiles(
   CORE_SOURCE_IMPORTS,
   "/packages/core/src/",
   `${NODE_MODULES_ROOT_PATH}/@tupl/core`,
+);
+
+const SCHEMA_SOURCE_FILES = mapVirtualFiles(
+  SCHEMA_SOURCE_IMPORTS,
+  "/packages/schema/src/",
+  `${NODE_MODULES_ROOT_PATH}/@tupl/schema`,
 );
 
 const DRIZZLE_SOURCE_FILES = mapVirtualFiles(
@@ -198,8 +198,8 @@ const PGLITE_ROOT_DECLARATION_FILES: Record<string, string> = {
 };
 
 const STATIC_SOURCE_FILES = {
-  ...TUPL_SOURCE_FILES,
   ...CORE_SOURCE_FILES,
+  ...SCHEMA_SOURCE_FILES,
   ...DRIZZLE_SOURCE_FILES,
   ...IOREDIS_SOURCE_FILES,
   ...HOST_PACKAGE_SOURCE_FILES,

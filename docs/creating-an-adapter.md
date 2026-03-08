@@ -19,9 +19,8 @@ import type {
   ProviderCapabilityReport,
   ProviderCompiledPlan,
   ProviderFragment,
-  QueryRow,
-  TableScanRequest,
-} from "tupl";
+} from "@tupl/core";
+import type { QueryRow, TableScanRequest } from "@tupl/schema";
 
 type DbContext = {
   tenantId: string;
@@ -186,9 +185,8 @@ Example:
 ```ts
 import {
   createDataEntityHandle,
-  createExecutableSchema,
-  createSchemaBuilder,
-} from "tupl";
+} from "@tupl/core";
+import { createExecutableSchema, createSchemaBuilder } from "@tupl/schema";
 
 const ordersEntity = createDataEntityHandle<"id" | "total_cents" | "created_at">({
   entity: "orders",
