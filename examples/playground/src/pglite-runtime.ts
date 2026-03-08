@@ -1,10 +1,11 @@
 import { drizzle } from "drizzle-orm/pglite";
+import type { RedisLike, RedisPipelineLike } from "@sqlql/ioredis";
 import type { QueryRow } from "../../../src/index";
-
+import { REDIS_INPUT_TABLE_NAME, type RedisInputRow } from "./redis-provider";
 import type {
   DownstreamRows,
-  ExecutedKvLookupProviderOperation,
   ExecutedProviderOperation,
+  ExecutedRedisLookupProviderOperation,
   ExecutedSqlProviderOperation,
 } from "./types";
 import {
@@ -22,8 +23,72 @@ interface PlaygroundPgliteRuntime {
   db: ReturnType<typeof drizzle>;
 }
 
-let runtimePromise: Promise<PlaygroundPgliteRuntime> | null = null;
+interface PlaygroundRedisRuntime {
+  redis: PlaygroundRedisClient;
+}
+
+interface PlaygroundRedisClient extends RedisLike {
+  flushall(): Promise<unknown>;
+  hset(key: string, ...args: string[]): Promise<unknown>;
+}
+
+class InMemoryRedisPipeline implements RedisPipelineLike {
+  private readonly keys: string[] = [];
+
+  constructor(private readonly hashes: Map<string, Map<string, string>>) {}
+
+  hgetall(key: string): InMemoryRedisPipeline {
+    this.keys.push(key);
+    return this;
+  }
+
+  async exec(): Promise<Array<[Error | null, Record<string, string>] | null>> {
+    return this.keys.map((key) => {
+      const hash = this.hashes.get(key);
+      return [null, hash ? Object.fromEntries(hash.entries()) : {}];
+    });
+  }
+}
+
+class InMemoryRedisClient implements PlaygroundRedisClient {
+  private readonly hashes = new Map<string, Map<string, string>>();
+
+  pipeline(): InMemoryRedisPipeline {
+    return new InMemoryRedisPipeline(this.hashes);
+  }
+
+  async flushall(): Promise<unknown> {
+    this.hashes.clear();
+    return "OK";
+  }
+
+  async hset(key: string, ...args: string[]): Promise<unknown> {
+    if (args.length % 2 !== 0) {
+      throw new Error("hset expects field/value pairs.");
+    }
+
+    const hash = this.hashes.get(key) ?? new Map<string, string>();
+    let created = 0;
+    for (let index = 0; index < args.length; index += 2) {
+      const field = args[index];
+      const value = args[index + 1];
+      if (typeof field !== "string" || typeof value !== "string") {
+        throw new Error("hset expects string field/value pairs.");
+      }
+      if (!hash.has(field)) {
+        created += 1;
+      }
+      hash.set(field, value);
+    }
+    this.hashes.set(key, hash);
+    return created;
+  }
+}
+
+let pgliteRuntimePromise: Promise<PlaygroundPgliteRuntime> | null = null;
+let redisRuntimePromise: Promise<PlaygroundRedisRuntime> | null = null;
 let pgliteCtorPromise: Promise<PGliteConstructor> | null = null;
+let redisCtorPromise: Promise<RedisConstructor> | null = null;
 const executedProviderOperations: ExecutedProviderOperation[] = [];
 let nextOperationId = 1;
 
@@ -34,10 +99,11 @@ interface PGliteClient {
 }
 
 type PGliteConstructor = new () => PGliteClient;
+type RedisConstructor = new () => PlaygroundRedisClient;
 
 type NewExecutedProviderOperation =
   | Omit<ExecutedSqlProviderOperation, "id" | "timestamp">
-  | Omit<ExecutedKvLookupProviderOperation, "id" | "timestamp">;
+  | Omit<ExecutedRedisLookupProviderOperation, "id" | "timestamp">;
 
 function makeOperationId(): string {
   const id = `op_${nextOperationId}`;
@@ -61,7 +127,7 @@ export function recordExecutedProviderOperation(
           ...operation,
           id,
           timestamp,
-        } satisfies ExecutedKvLookupProviderOperation);
+        } satisfies ExecutedRedisLookupProviderOperation);
   executedProviderOperations.push(entry);
   return entry;
 }
@@ -166,7 +232,47 @@ async function insertRowsSerial(
   }
 }
 
-async function createRuntime(): Promise<PlaygroundPgliteRuntime> {
+async function seedRedisHashes(redis: PlaygroundRedisClient, rows: RedisInputRow[]): Promise<void> {
+  await redis.flushall();
+
+  for (const row of rows) {
+    await redis.hset(
+      `product_view_counts:${row.user_id}:${row.product_id}`,
+      "product_id",
+      row.product_id,
+      "view_count",
+      String(row.view_count),
+    );
+  }
+}
+
+function readRedisInputRows(rows: DownstreamRows): RedisInputRow[] {
+  return ((rows[REDIS_INPUT_TABLE_NAME] ?? []) as Array<Record<string, unknown>>).flatMap((row) => {
+    const userId = row.user_id;
+    const productId = row.product_id;
+    const viewCount = row.view_count;
+    if (
+      typeof userId !== "string" ||
+      userId.trim().length === 0 ||
+      typeof productId !== "string" ||
+      productId.trim().length === 0 ||
+      typeof viewCount !== "number" ||
+      !Number.isFinite(viewCount)
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        user_id: userId,
+        product_id: productId,
+        view_count: Math.trunc(viewCount),
+      },
+    ];
+  });
+}
+
+async function createPgliteRuntime(): Promise<PlaygroundPgliteRuntime> {
   const PGlite = await loadPGliteConstructor();
   const client = new PGlite();
 
@@ -185,6 +291,41 @@ async function createRuntime(): Promise<PlaygroundPgliteRuntime> {
     client,
     db: drizzle(client as never, { logger } as never),
   };
+}
+
+async function createRedisRuntime(): Promise<PlaygroundRedisRuntime> {
+  const Redis = await loadRedisConstructor();
+  return {
+    redis: new Redis() as unknown as PlaygroundRedisClient,
+  };
+}
+
+async function loadRedisConstructor(): Promise<RedisConstructor> {
+  redisCtorPromise ??= (async () => {
+    const globalObject = globalThis as typeof globalThis & {
+      process?: { versions?: { node?: unknown } };
+      document?: unknown;
+      window?: unknown;
+    };
+    const isNodeRuntime =
+      typeof globalThis === "object" &&
+      typeof globalObject.process === "object" &&
+      typeof globalObject.process?.versions === "object" &&
+      globalObject.process?.versions?.node != null;
+
+    if (!isNodeRuntime) {
+      return InMemoryRedisClient;
+    }
+
+    const nodeModule = await import("ioredis-mock");
+    const nodeConstructor = (nodeModule as { default?: unknown }).default;
+    if (typeof nodeConstructor === "function") {
+      return nodeConstructor as RedisConstructor;
+    }
+
+    throw new Error("Failed to load the Node Redis mock constructor.");
+  })();
+  return redisCtorPromise;
 }
 
 async function loadPGliteConstructor(): Promise<PGliteConstructor> {
@@ -217,14 +358,22 @@ async function loadPGliteConstructor(): Promise<PGliteConstructor> {
 }
 
 export async function getPlaygroundPgliteRuntime(): Promise<PlaygroundPgliteRuntime> {
-  runtimePromise ??= createRuntime();
-  return runtimePromise;
+  pgliteRuntimePromise ??= createPgliteRuntime();
+  return pgliteRuntimePromise;
+}
+
+export async function getPlaygroundRedisRuntime(): Promise<PlaygroundRedisRuntime> {
+  redisRuntimePromise ??= createRedisRuntime();
+  return redisRuntimePromise;
 }
 
 export async function reseedDownstreamDatabase(rows: DownstreamRows): Promise<void> {
-  const runtime = await getPlaygroundPgliteRuntime();
-  await execStatements(runtime.client, DROP_SCHEMA_STATEMENTS);
-  await execStatements(runtime.client, CREATE_SCHEMA_STATEMENTS);
+  const [dbRuntime, redisRuntime] = await Promise.all([
+    getPlaygroundPgliteRuntime(),
+    getPlaygroundRedisRuntime(),
+  ]);
+  await execStatements(dbRuntime.client, DROP_SCHEMA_STATEMENTS);
+  await execStatements(dbRuntime.client, CREATE_SCHEMA_STATEMENTS);
 
   const orgRows = (rows.orgs ?? []) as QueryRow[];
   const userRows = (rows.users ?? []) as QueryRow[];
@@ -235,26 +384,28 @@ export async function reseedDownstreamDatabase(rows: DownstreamRows): Promise<vo
   const accessRows = (rows.user_product_access ?? []) as QueryRow[];
 
   if (orgRows.length > 0) {
-    await insertRowsSerial(runtime.db, orgsTable, orgRows);
+    await insertRowsSerial(dbRuntime.db, orgsTable, orgRows);
   }
   if (userRows.length > 0) {
-    await insertRowsSerial(runtime.db, usersTable, userRows);
+    await insertRowsSerial(dbRuntime.db, usersTable, userRows);
   }
   if (vendorRows.length > 0) {
-    await insertRowsSerial(runtime.db, vendorsTable, vendorRows);
+    await insertRowsSerial(dbRuntime.db, vendorsTable, vendorRows);
   }
   if (productRows.length > 0) {
-    await insertRowsSerial(runtime.db, productsTable, productRows);
+    await insertRowsSerial(dbRuntime.db, productsTable, productRows);
   }
   if (orderRows.length > 0) {
-    await insertRowsSerial(runtime.db, ordersTable, orderRows);
+    await insertRowsSerial(dbRuntime.db, ordersTable, orderRows);
   }
   if (itemRows.length > 0) {
-    await insertRowsSerial(runtime.db, orderItemsTable, itemRows);
+    await insertRowsSerial(dbRuntime.db, orderItemsTable, itemRows);
   }
   if (accessRows.length > 0) {
-    await insertRowsSerial(runtime.db, userProductAccessTable, accessRows);
+    await insertRowsSerial(dbRuntime.db, userProductAccessTable, accessRows);
   }
+
+  await seedRedisHashes(redisRuntime.redis, readRedisInputRows(rows));
 }
 
 export function clearExecutedProviderOperations(): void {

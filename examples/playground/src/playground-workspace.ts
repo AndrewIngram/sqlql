@@ -1,7 +1,5 @@
 /// <reference types="vite/client" />
 
-import kvProviderCoreSourceText from "./kv-provider.ts?raw";
-
 const WORKSPACE_ROOT_PATH = "/playground/workspace";
 const NODE_MODULES_ROOT_PATH = `${WORKSPACE_ROOT_PATH}/node_modules`;
 
@@ -9,20 +7,20 @@ export const PLAYGROUND_WORKSPACE_ROOT_URI = `file://${WORKSPACE_ROOT_PATH}`;
 export const PLAYGROUND_SCHEMA_FILE_PATH = `${WORKSPACE_ROOT_PATH}/schema.ts`;
 export const PLAYGROUND_CONTEXT_FILE_PATH = `${WORKSPACE_ROOT_PATH}/context.ts`;
 export const PLAYGROUND_DB_PROVIDER_FILE_PATH = `${WORKSPACE_ROOT_PATH}/db-provider.ts`;
-export const PLAYGROUND_KV_PROVIDER_FILE_PATH = `${WORKSPACE_ROOT_PATH}/kv-provider.ts`;
+export const PLAYGROUND_REDIS_PROVIDER_FILE_PATH = `${WORKSPACE_ROOT_PATH}/redis-provider.ts`;
 export const PLAYGROUND_GENERATED_DB_FILE_PATH = `${WORKSPACE_ROOT_PATH}/generated-db.ts`;
 
 export const PLAYGROUND_SCHEMA_FILE_URI = `file://${PLAYGROUND_SCHEMA_FILE_PATH}`;
 export const PLAYGROUND_CONTEXT_FILE_URI = `file://${PLAYGROUND_CONTEXT_FILE_PATH}`;
 export const PLAYGROUND_DB_PROVIDER_FILE_URI = `file://${PLAYGROUND_DB_PROVIDER_FILE_PATH}`;
-export const PLAYGROUND_KV_PROVIDER_FILE_URI = `file://${PLAYGROUND_KV_PROVIDER_FILE_PATH}`;
+export const PLAYGROUND_REDIS_PROVIDER_FILE_URI = `file://${PLAYGROUND_REDIS_PROVIDER_FILE_PATH}`;
 export const PLAYGROUND_GENERATED_DB_FILE_URI = `file://${PLAYGROUND_GENERATED_DB_FILE_PATH}`;
 
 export interface PlaygroundWorkspaceUserFiles {
   schemaCode: string;
   contextCode: string;
   dbProviderCode: string;
-  kvProviderCode: string;
+  redisProviderCode: string;
   generatedDbCode: string;
 }
 
@@ -87,6 +85,12 @@ const DRIZZLE_SOURCE_IMPORTS = import.meta.glob("../../../packages/drizzle/src/*
   query: "?raw",
 }) as Record<string, string>;
 
+const IOREDIS_SOURCE_IMPORTS = import.meta.glob("../../../packages/ioredis/src/**/*.ts", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+}) as Record<string, string>;
+
 const DRIZZLE_DECLARATION_IMPORTS = import.meta.glob("../node_modules/drizzle-orm/**/*.d.ts", {
   eager: true,
   import: "default",
@@ -115,11 +119,6 @@ const BETTER_RESULT_DECLARATION_IMPORTS = {
   }),
 } as Record<string, string>;
 
-const MIRRORED_KV_PROVIDER_CORE_SOURCE = kvProviderCoreSourceText.replace(
-  /from "\.\.\/\.\.\/\.\.\/src\/index"/gu,
-  'from "sqlql"',
-);
-
 const SQLQL_SOURCE_FILES = mapVirtualFiles(
   SQLQL_SOURCE_IMPORTS,
   "/src/",
@@ -130,6 +129,12 @@ const DRIZZLE_SOURCE_FILES = mapVirtualFiles(
   DRIZZLE_SOURCE_IMPORTS,
   "/packages/drizzle/src/",
   `${NODE_MODULES_ROOT_PATH}/@sqlql/drizzle`,
+);
+
+const IOREDIS_SOURCE_FILES = mapVirtualFiles(
+  IOREDIS_SOURCE_IMPORTS,
+  "/packages/ioredis/src/",
+  `${NODE_MODULES_ROOT_PATH}/@sqlql/ioredis`,
 );
 
 const DRIZZLE_DECLARATION_FILES = mapVirtualFiles(
@@ -155,42 +160,24 @@ const BETTER_RESULT_DECLARATION_FILES: Record<string, string> = {
 
 const HOST_PACKAGE_DECLARATION_FILES: Record<string, string> = {
   [`${NODE_MODULES_ROOT_PATH}/@playground/runtime/index.d.ts`]: `
-export interface PlaygroundKvInputRow {
-  key: string;
-  value: unknown;
+import type { IoredisProviderOperation, RedisLike } from "@sqlql/ioredis";
+
+export interface PlaygroundIoredisRuntime {
+  redis: RedisLike;
+  recordOperation?: (operation: IoredisProviderOperation) => void;
 }
 
-export interface PlaygroundKvProviderOperation {
-  kind: "kv_lookup";
-  provider: string;
-  lookup: {
-    entity: string;
-    op: "scan" | "lookupMany";
-    key?: string;
-    keys?: unknown[];
-  };
-  variables: unknown;
-}
-
-export interface PlaygroundKvRuntime {
-  rows: PlaygroundKvInputRow[];
-  recordOperation?: (operation: PlaygroundKvProviderOperation) => void;
-}
-
-export declare function getPlaygroundKvRuntime(): PlaygroundKvRuntime;
+export declare function getPlaygroundIoredisRuntime(): PlaygroundIoredisRuntime;
 `.trim(),
 };
 
 const HOST_PACKAGE_SOURCE_FILES: Record<string, string> = {
-  [`${NODE_MODULES_ROOT_PATH}/@playground/kv-provider-core/core.ts`]:
-    MIRRORED_KV_PROVIDER_CORE_SOURCE,
-  [`${NODE_MODULES_ROOT_PATH}/@playground/kv-provider-core/index.ts`]: `
-export * from "./core";
+  [`${NODE_MODULES_ROOT_PATH}/@playground/ioredis-provider-core/index.ts`]: `
+export * from "@sqlql/ioredis";
 
-import { getPlaygroundKvRuntime } from "@playground/runtime";
-import type { KvProviderFactoryRuntime } from "./core";
+import { getPlaygroundIoredisRuntime } from "@playground/runtime";
 
-export const playgroundKvRuntime: KvProviderFactoryRuntime = getPlaygroundKvRuntime();
+export const playgroundIoredisRuntime = getPlaygroundIoredisRuntime();
 `.trim(),
 };
 
@@ -201,6 +188,7 @@ const PGLITE_ROOT_DECLARATION_FILES: Record<string, string> = {
 const STATIC_SOURCE_FILES = {
   ...SQLQL_SOURCE_FILES,
   ...DRIZZLE_SOURCE_FILES,
+  ...IOREDIS_SOURCE_FILES,
   ...HOST_PACKAGE_SOURCE_FILES,
 };
 
@@ -224,7 +212,7 @@ export function buildPlaygroundWorkspaceSnapshot(
     [PLAYGROUND_SCHEMA_FILE_PATH]: input.schemaCode,
     [PLAYGROUND_CONTEXT_FILE_PATH]: input.contextCode,
     [PLAYGROUND_DB_PROVIDER_FILE_PATH]: input.dbProviderCode,
-    [PLAYGROUND_KV_PROVIDER_FILE_PATH]: input.kvProviderCode,
+    [PLAYGROUND_REDIS_PROVIDER_FILE_PATH]: input.redisProviderCode,
     [PLAYGROUND_GENERATED_DB_FILE_PATH]: input.generatedDbCode,
   };
 

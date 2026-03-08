@@ -9,7 +9,7 @@ import {
 } from "../../../src/index";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
-import { KV_INPUT_TABLE_DEFINITION, KV_INPUT_TABLE_NAME } from "./kv-provider";
+import { REDIS_INPUT_TABLE_DEFINITION, REDIS_INPUT_TABLE_NAME } from "./redis-provider";
 import { requestSandboxWorker } from "./playground-sandbox-client";
 import { validateSchemaInSandbox } from "./playground-sandbox";
 import type { PlaygroundSchemaProgramOptions } from "./playground-program-files";
@@ -53,12 +53,12 @@ for (const [tableName, tableDefinition] of Object.entries(DOWNSTREAM_ROWS_SCHEMA
 }
 
 downstreamInputRowsBuilder.table(
-  KV_INPUT_TABLE_NAME,
-  inputRowsEntity(KV_INPUT_TABLE_NAME, KV_INPUT_TABLE_DEFINITION.provider),
+  REDIS_INPUT_TABLE_NAME,
+  inputRowsEntity(REDIS_INPUT_TABLE_NAME, REDIS_INPUT_TABLE_DEFINITION.provider),
   {
-    columns: KV_INPUT_TABLE_DEFINITION.columns,
-    ...(KV_INPUT_TABLE_DEFINITION.constraints
-      ? { constraints: KV_INPUT_TABLE_DEFINITION.constraints }
+    columns: REDIS_INPUT_TABLE_DEFINITION.columns,
+    ...(REDIS_INPUT_TABLE_DEFINITION.constraints
+      ? { constraints: REDIS_INPUT_TABLE_DEFINITION.constraints }
       : {}),
   },
 );

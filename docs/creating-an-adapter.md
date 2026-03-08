@@ -173,6 +173,56 @@ async function runQuery(sql: string, params: unknown[], _context: DbContext): Pr
 
 That adapter is already usable because unsupported joins, aggregates, and computed expressions can fall back to local logical execution.
 
+## Wiring the Adapter Into a Facade Schema
+
+Once an adapter exposes typed `entities`, the current schema API is:
+
+1. `createSchemaBuilder<TContext>()`
+2. `builder.table(...)` and `builder.view(...)`
+3. `createExecutableSchema(builder)`
+
+Example:
+
+```ts
+import {
+  createDataEntityHandle,
+  createExecutableSchema,
+  createSchemaBuilder,
+} from "sqlql";
+
+const ordersEntity = createDataEntityHandle<"id" | "total_cents" | "created_at">({
+  entity: "orders",
+  provider: "example-sql",
+});
+
+const builder = createSchemaBuilder<DbContext>();
+
+const myOrders = builder.table("myOrders", ordersEntity, {
+  columns: ({ col }) => ({
+    id: col.id("id"),
+    totalCents: col.integer("total_cents"),
+    createdAt: col.timestamp("created_at"),
+  }),
+});
+
+builder.view(
+  "recentOrders",
+  ({ scan }) => scan(myOrders),
+  {
+    columns: ({ col }) => ({
+      id: col.id(myOrders, "id"),
+      totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+      createdAt: col.timestamp(myOrders, "createdAt", { nullable: false }),
+    }),
+  },
+);
+
+const executableSchema = createExecutableSchema(builder);
+```
+
+If your adapter returns typed `entities` the way the first-party adapters do, use those handles here instead of calling `createDataEntityHandle(...)` directly.
+If you are documenting or testing an adapter, prefer this builder flow over the older callback-style examples.
+
 ## Route Families
 
 Route families are intentionally coarse:

@@ -1,4 +1,5 @@
 import type { PgliteDatabase } from "drizzle-orm/pglite";
+import type { RedisLike } from "@sqlql/ioredis";
 
 import type { SchemaDefinition, SqlScalarType, TableColumnDefinition } from "../../../src/index";
 
@@ -9,6 +10,7 @@ export interface PlaygroundContext {
 
 export interface PlaygroundRuntimeContext extends PlaygroundContext {
   db: PgliteDatabase<Record<string, never>>;
+  redis: RedisLike;
 }
 
 export interface ExecutedSqlProviderOperation {
@@ -20,24 +22,23 @@ export interface ExecutedSqlProviderOperation {
   variables: unknown[];
 }
 
-export interface ExecutedKvLookupProviderOperation {
+export interface ExecutedRedisLookupProviderOperation {
   id: string;
   timestamp: number;
   provider: string;
-  kind: "kv_lookup";
+  kind: "redis_lookup";
   lookup: {
     entity: string;
-    key?: unknown;
-    keys?: unknown[];
-    table?: string;
-    op?: string;
+    key: string;
+    keys: unknown[];
+    redisKeys: string[];
   };
   variables: unknown;
 }
 
 export type ExecutedProviderOperation =
   | ExecutedSqlProviderOperation
-  | ExecutedKvLookupProviderOperation;
+  | ExecutedRedisLookupProviderOperation;
 
 export type DownstreamRows = Record<string, Array<Record<string, unknown>>>;
 

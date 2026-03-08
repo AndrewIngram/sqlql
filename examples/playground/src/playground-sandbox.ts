@@ -27,15 +27,15 @@ import {
   PLAYGROUND_CONTEXT_FILE_PATH,
   PLAYGROUND_DB_PROVIDER_FILE_PATH,
   PLAYGROUND_GENERATED_DB_FILE_PATH,
-  PLAYGROUND_KV_PROVIDER_FILE_PATH,
+  PLAYGROUND_REDIS_PROVIDER_FILE_PATH,
   PLAYGROUND_SCHEMA_FILE_PATH,
   type PlaygroundWorkspaceSnapshot,
 } from "./playground-workspace";
-import { KV_INPUT_TABLE_NAME, type KvInputRow } from "./kv-provider";
 import {
   clearExecutedProviderOperations,
   getExecutedProviderOperations,
   getPlaygroundPgliteRuntime,
+  getPlaygroundRedisRuntime,
   recordExecutedProviderOperation,
   reseedDownstreamDatabase,
 } from "./pglite-runtime";
@@ -94,7 +94,7 @@ interface ExecutableSchemaModuleExports<TContext> {
 
 interface ProviderModuleExports<TContext> {
   dbProvider?: ProviderAdapter<TContext>;
-  kvProvider?: ProviderAdapter<TContext>;
+  redisProvider?: ProviderAdapter<TContext>;
 }
 
 interface SqlqlRuntimeModule {
@@ -103,8 +103,8 @@ interface SqlqlRuntimeModule {
 }
 
 interface PlaygroundRuntimeModule {
-  getPlaygroundKvRuntime: () => {
-    rows: KvInputRow[];
+  getPlaygroundIoredisRuntime: () => {
+    redis: Awaited<ReturnType<typeof getPlaygroundRedisRuntime>>["redis"];
     recordOperation: typeof recordExecutedProviderOperation;
   };
   getPlaygroundDb: () => PlaygroundRuntimeContext["db"];
@@ -114,8 +114,9 @@ interface SandboxProviderRuntime<TContext> {
   sqlqlModule: SqlqlRuntimeModule;
   executableSchema: ExecutableSchema<TContext, SchemaDefinition>;
   dbProvider: ProviderAdapter<TContext>;
-  kvProvider: ProviderAdapter<TContext>;
+  redisProvider: ProviderAdapter<TContext>;
   db: PlaygroundRuntimeContext["db"];
+  redis: PlaygroundRuntimeContext["redis"];
 }
 
 const sessionStore = new Map<string, SessionRecord>();
@@ -170,7 +171,7 @@ function extractSchemaExport(
 function readProviderExportOrThrow<TContext>(
   moduleId: string,
   exportsRecord: Record<string, unknown>,
-  exportName: "dbProvider" | "kvProvider",
+  exportName: "dbProvider" | "redisProvider",
 ): ProviderAdapter<TContext> {
   const provider = (exportsRecord as ProviderModuleExports<TContext>)[exportName];
   if (
@@ -189,21 +190,11 @@ function readProviderExportOrThrow<TContext>(
   return provider;
 }
 
-function readKvInputRows(rows: DownstreamRows): KvInputRow[] {
-  return ((rows[KV_INPUT_TABLE_NAME] ?? []) as Array<Record<string, unknown>>).flatMap((row) => {
-    const key = row.key;
-    if (typeof key !== "string" || key.trim().length === 0) {
-      return [];
-    }
-
-    return [{ key, value: row.value }];
-  });
-}
-
-async function buildExternalRuntimeModules(
-  downstreamRows: DownstreamRows,
-): Promise<Record<string, unknown>> {
-  const runtime = await getPlaygroundPgliteRuntime();
+async function buildExternalRuntimeModules(): Promise<Record<string, unknown>> {
+  const [dbRuntime, redisRuntime] = await Promise.all([
+    getPlaygroundPgliteRuntime(),
+    getPlaygroundRedisRuntime(),
+  ]);
   return {
     "better-result": betterResultModule,
     "drizzle-orm": drizzleOrmModule,
@@ -211,11 +202,11 @@ async function buildExternalRuntimeModules(
     "drizzle-orm/pglite": drizzlePgliteModule,
     "@electric-sql/pglite": pgliteModule,
     "@playground/runtime": {
-      getPlaygroundKvRuntime: () => ({
-        rows: readKvInputRows(downstreamRows),
+      getPlaygroundIoredisRuntime: () => ({
+        redis: redisRuntime.redis,
         recordOperation: recordExecutedProviderOperation,
       }),
-      getPlaygroundDb: () => runtime.db,
+      getPlaygroundDb: () => dbRuntime.db,
     },
   };
 }
@@ -266,7 +257,7 @@ function createProviderRuntime<TContext>(
   runtime.executeModule(PLAYGROUND_CONTEXT_FILE_PATH);
   runtime.executeModule(PLAYGROUND_GENERATED_DB_FILE_PATH);
   const dbProviderModule = runtime.executeModule(PLAYGROUND_DB_PROVIDER_FILE_PATH);
-  const kvProviderModule = runtime.executeModule(PLAYGROUND_KV_PROVIDER_FILE_PATH);
+  const redisProviderModule = runtime.executeModule(PLAYGROUND_REDIS_PROVIDER_FILE_PATH);
   const sqlqlModule = runtime.executeModule(
     `${workspace.rootPath}/node_modules/sqlql/index.ts`,
   ) as unknown as SqlqlRuntimeModule;
@@ -274,10 +265,15 @@ function createProviderRuntime<TContext>(
     | PlaygroundRuntimeModule
     | undefined;
   const db = playgroundRuntimeModule?.getPlaygroundDb();
+  const ioredisRuntime = playgroundRuntimeModule?.getPlaygroundIoredisRuntime();
+  const redis = ioredisRuntime?.redis;
   if (!db || typeof db !== "object" || typeof db.select !== "function") {
     throw new Error(
       "[SCHEMA_EXEC_ERROR] Playground runtime must provide a Drizzle database instance.",
     );
+  }
+  if (!redis || typeof redis !== "object" || typeof redis.pipeline !== "function") {
+    throw new Error("[SCHEMA_EXEC_ERROR] Playground runtime must provide a Redis client instance.");
   }
 
   return {
@@ -291,12 +287,13 @@ function createProviderRuntime<TContext>(
       dbProviderModule,
       "dbProvider",
     ),
-    kvProvider: readProviderExportOrThrow<TContext>(
-      PLAYGROUND_KV_PROVIDER_FILE_PATH,
-      kvProviderModule,
-      "kvProvider",
+    redisProvider: readProviderExportOrThrow<TContext>(
+      PLAYGROUND_REDIS_PROVIDER_FILE_PATH,
+      redisProviderModule,
+      "redisProvider",
     ),
     db,
+    redis,
   };
 }
 
@@ -314,7 +311,7 @@ async function getOrCreateProviderRuntime(
   if (!cached) {
     cached = (async () => {
       const workspace = buildWorkspace(compiled.schemaCode, options);
-      const externalModules = await buildExternalRuntimeModules(compiled.downstreamRows);
+      const externalModules = await buildExternalRuntimeModules();
       return createProviderRuntime<PlaygroundRuntimeContext>(workspace, externalModules);
     })();
     setBoundedProviderRuntimeCacheEntry(cacheKey, cached);
@@ -330,6 +327,7 @@ function toRuntimeContext(
   return {
     ...context,
     db: runtime.db,
+    redis: runtime.redis,
   };
 }
 
@@ -392,7 +390,7 @@ export async function validateSchemaInSandbox(
 
   try {
     const workspace = buildWorkspace(schemaCode, options);
-    const externalModules = await buildExternalRuntimeModules({});
+    const externalModules = await buildExternalRuntimeModules();
     const { executableSchema } = createProviderRuntime<PlaygroundRuntimeContext>(
       workspace,
       externalModules,
@@ -435,11 +433,11 @@ export async function createSandboxSession(
 
   const runtime = await getOrCreateProviderRuntime(compiled);
   const runtimeContext = toRuntimeContext(context, runtime);
-  const { sqlqlModule, executableSchema, dbProvider, kvProvider } = runtime;
+  const { sqlqlModule, executableSchema, dbProvider, redisProvider } = runtime;
 
   const providers = {
     [dbProvider.name]: dbProvider,
-    [kvProvider.name]: kvProvider,
+    [redisProvider.name]: redisProvider,
   };
   const lowered = sqlqlModule.lowerSqlToRel(compiled.sql, executableSchema.schema);
   const physicalPlan = await sqlqlModule.planPhysicalQuery(

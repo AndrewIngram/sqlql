@@ -71,84 +71,80 @@ const dbProvider = createDrizzleProvider<QueryContext>({
 
 `dbProvider.entities.orders` and `dbProvider.entities.vendors` are now typed, provider-owned entities that the schema can bind to directly.
 
-### 3) Build facade schema with `createExecutableSchema(...)`
+### 3) Build facade schema with `createSchemaBuilder(...)`
 
 ```ts
-import { createExecutableSchema } from "sqlql";
+import { createExecutableSchema, createSchemaBuilder } from "sqlql";
 
-const executableSchema = createExecutableSchema<QueryContext>(({ table, view }) => {
-  const myOrders = table("myOrders", dbProvider.entities.orders, {
-    columns: ({ col, expr }) => ({
-      id: col.id("id"),
-      vendorId: col.string("vendor_id"),
-      status: col.string("status", {
-        enum: ["pending", "paid", "shipped"] as const,
-      }),
-      totalCents: col.integer("total_cents"),
-      createdAt: col.timestamp("created_at"),
-      totalDollars: col.real(expr.divide(col("totalCents"), expr.literal(100)), {
-        nullable: false,
-      }),
-      isLargeOrder: col.boolean(expr.gte(col("totalCents"), expr.literal(3000)), {
-        nullable: false,
-      }),
+const builder = createSchemaBuilder<QueryContext>();
+
+const myOrders = builder.table("myOrders", dbProvider.entities.orders, {
+  columns: ({ col, expr }) => ({
+    id: col.id("id"),
+    vendorId: col.string("vendor_id"),
+    status: col.string("status", {
+      enum: ["pending", "paid", "shipped"] as const,
     }),
-  });
-
-  const myOrderFacts = view(
-    "myOrderFacts",
-    ({ scan, join, col, expr }) =>
-      join({
-        left: scan(myOrders),
-        right: scan(dbProvider.entities.vendors),
-        on: expr.eq(col(myOrders, "vendorId"), col(dbProvider.entities.vendors, "id")),
-        type: "inner",
-      }),
-    {
-      columns: ({ col }) => ({
-        orderId: col.id(myOrders, "id"),
-        vendorId: col.string(myOrders, "vendorId", { nullable: false }),
-        vendorName: col.string(dbProvider.entities.vendors, "name", { nullable: false }),
-        totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
-        totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
-        isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
-      }),
-    },
-  );
-
-  const myVendorSpend = view(
-    "myVendorSpend",
-    ({ scan, aggregate, col, agg }) =>
-      aggregate({
-        from: scan(myOrderFacts),
-        groupBy: {
-          vendorId: col(myOrderFacts, "vendorId"),
-          vendorName: col(myOrderFacts, "vendorName"),
-        },
-        measures: {
-          spendCents: agg.sum(col(myOrderFacts, "totalCents")),
-          orderCount: agg.count(),
-        },
-      }),
-    {
-      columns: ({ col }) => ({
-        vendorId: col.id("vendorId"),
-        vendorName: col.string("vendorName"),
-        spendCents: col.integer("spendCents"),
-        orderCount: col.integer("orderCount"),
-      }),
-    },
-  );
-
-  return {
-    tables: {
-      myOrders,
-      myOrderFacts,
-      myVendorSpend,
-    },
-  };
+    totalCents: col.integer("total_cents"),
+    createdAt: col.timestamp("created_at"),
+    totalDollars: col.real(expr.divide(col("totalCents"), expr.literal(100)), {
+      nullable: false,
+    }),
+    isLargeOrder: col.boolean(expr.gte(col("totalCents"), expr.literal(3000)), {
+      nullable: false,
+    }),
+  }),
 });
+
+const myOrderFacts = builder.view(
+  "myOrderFacts",
+  ({ scan, join, col, expr }) =>
+    join({
+      left: scan(myOrders),
+      right: scan(dbProvider.entities.vendors),
+      on: expr.eq(col(myOrders, "vendorId"), col(dbProvider.entities.vendors, "id")),
+      type: "inner",
+    }),
+  {
+    columns: ({ col }) => ({
+      orderId: col.id(myOrders, "id"),
+      vendorId: col.string(myOrders, "vendorId", { nullable: false }),
+      vendorName: col.string(dbProvider.entities.vendors, "name", { nullable: false }),
+      totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
+      totalDollars: col.real(myOrders, "totalDollars", { nullable: false }),
+      isLargeOrder: col.boolean(myOrders, "isLargeOrder", { nullable: false }),
+    }),
+  },
+);
+
+builder.view(
+  "myVendorSpend",
+  ({ scan, aggregate, col, agg }) =>
+    aggregate({
+      from: scan(myOrderFacts),
+      groupBy: {
+        vendorId: col(myOrderFacts, "vendorId"),
+        vendorName: col(myOrderFacts, "vendorName"),
+      },
+      measures: {
+        spendCents: agg.sum(col(myOrderFacts, "totalCents")),
+        orderCount: agg.count(),
+      },
+    }),
+  {
+    columns: ({ col }) => ({
+      vendorId: col.id("vendorId"),
+      vendorName: col.string("vendorName"),
+      spendCents: col.integer("spendCents"),
+      orderCount: col.integer("orderCount"),
+    }),
+  },
+);
+
+const executableSchema = createExecutableSchema(builder);
 ```
+
+`createExecutableSchema(...)` now accepts either a built schema object or a `SchemaBuilder`. For the DSL flow, `createSchemaBuilder(...)` plus `createExecutableSchema(builder)` is the intended pattern.
 
 When a view only needs a provider entity as a private source, `scan(...)` can read the `DataEntityHandle` directly. You only need `table(...)` when you want that source to be part of the public facade.
 
