@@ -3,7 +3,7 @@ import {
   createDataEntityHandle,
   createSchemaBuilder,
   type SchemaDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
 
 export const orgsTable = pgTable("orgs", {
   id: text("id").primaryKey().notNull(),

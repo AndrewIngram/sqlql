@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/pglite";
 import type { RedisLike, RedisPipelineLike } from "@tupl/provider-ioredis";
-import type { QueryRow } from "../../../src/index";
+import type { QueryRow } from "@tupl/core";
 import { REDIS_INPUT_TABLE_NAME, type RedisInputRow } from "./redis-provider";
 import type {
   DownstreamRows,

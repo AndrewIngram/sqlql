@@ -1,4 +1,4 @@
-import { type SchemaDefinition } from "../../../src/index";
+import { type SchemaDefinition } from "@tupl/core";
 import type * as Monaco from "monaco-editor";
 
 const SQL_KEYWORDS = [

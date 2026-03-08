@@ -10,7 +10,7 @@ import {
   type SchemaDefinition,
   type ScanFilterClause,
   type TableScanRequest,
-} from "tupl";
+} from "@tupl/core";
 
 function createMemoryProvider<TContext>(
   schema: SchemaDefinition,

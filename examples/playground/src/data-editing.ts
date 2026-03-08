@@ -1,4 +1,4 @@
-import type { QueryRow, TableColumnDefinition, TableDefinition } from "../../../src/index";
+import type { QueryRow, TableColumnDefinition, TableDefinition } from "@tupl/core";
 
 import { isColumnNullable, readColumnEnumValues, readColumnType } from "./types";
 

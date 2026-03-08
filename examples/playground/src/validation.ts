@@ -6,7 +6,7 @@ import {
   type SchemaDefinition,
   type TableColumnDefinition,
   type TableDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { REDIS_INPUT_TABLE_DEFINITION, REDIS_INPUT_TABLE_NAME } from "./redis-provider";

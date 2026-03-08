@@ -21,7 +21,7 @@ import type {
   ProviderFragment,
   QueryRow,
   TableScanRequest,
-} from "tupl";
+} from "@tupl/core";
 
 type DbContext = {
   tenantId: string;
@@ -188,7 +188,7 @@ import {
   createDataEntityHandle,
   createExecutableSchema,
   createSchemaBuilder,
-} from "tupl";
+} from "@tupl/core";
 
 const ordersEntity = createDataEntityHandle<"id" | "total_cents" | "created_at">({
   entity: "orders",

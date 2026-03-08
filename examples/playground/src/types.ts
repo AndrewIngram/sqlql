@@ -1,7 +1,7 @@
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 import type { RedisLike } from "@tupl/provider-ioredis";
 
-import type { SchemaDefinition, SqlScalarType, TableColumnDefinition } from "../../../src/index";
+import type { SchemaDefinition, SqlScalarType, TableColumnDefinition } from "@tupl/core";
 
 export interface PlaygroundContext {
   orgId: string;

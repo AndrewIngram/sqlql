@@ -1,6 +1,6 @@
 import { createObjectionProvider, type ObjectionProviderShape } from "@tupl/provider-objection";
 import { SQLITE_DDL, SQLITE_SEED, type DemoContext } from "@tupl/example-shared";
-import { createSchemaBuilder, createExecutableSchema } from "tupl";
+import { createSchemaBuilder, createExecutableSchema } from "@tupl/core";
 import knexModule from "knex";
 
 const { knex: createKnex } = knexModule;

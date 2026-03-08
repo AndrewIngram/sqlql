@@ -21,7 +21,7 @@ import type {
   ProviderCapabilityAtom,
   QueryRow,
   TableScanRequest,
-} from "tupl";
+} from "@tupl/core";
 
 type KvContext = {
   namespace: string;

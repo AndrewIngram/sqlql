@@ -2,7 +2,7 @@ import {
   createSchemaBuilder,
   createDataEntityHandle,
   type SchemaDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
 
 import type {
   CatalogQueryEntry,
@@ -462,7 +462,7 @@ export const DEFAULT_REDIS_PROVIDER_CODE = dedent(`
 `);
 
 export const DEFAULT_FACADE_SCHEMA_CODE = dedent(`
-  import { createExecutableSchema, createSchemaBuilder } from "tupl";
+  import { createExecutableSchema, createSchemaBuilder } from "@tupl/core";
   import type { QueryContext } from "${CONTEXT_MODULE_ID}";
   import { dbProvider } from "${DB_PROVIDER_MODULE_ID}";
   import { redisProvider } from "${REDIS_PROVIDER_MODULE_ID}";

@@ -13,8 +13,8 @@ import type {
   QueryStepState,
   SchemaDefinition,
   SqlScalarType,
-} from "../../../src/index";
-import { toSqlDDL } from "../../../src/index";
+} from "@tupl/core";
+import { toSqlDDL } from "@tupl/core";
 
 import { DataGrid } from "@/data-grid";
 import {

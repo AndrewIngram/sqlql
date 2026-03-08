@@ -5,8 +5,8 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "node", "react", "react-dom"],
     "paths": {
-      "tupl": ["../../src/index.ts"],
       "@tupl/core": ["../../packages/core/src/index.ts"],
+      "@tupl/schema": ["../../packages/schema/src/index.ts"],
       "@tupl/provider-drizzle": ["../../packages/provider-drizzle/src/index.ts"],
       "@tupl/provider-ioredis": ["../../packages/provider-ioredis/src/index.ts"],
       "@tupl/provider-objection": ["../../packages/provider-objection/src/index.ts"],

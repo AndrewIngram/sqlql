@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      '@tupl/core':
-        specifier: workspace:*
-        version: link:packages/core
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13
@@ -48,12 +44,15 @@ importers:
 
   examples/basic:
     dependencies:
-      tupl:
+      '@tupl/core':
         specifier: workspace:*
-        version: link:../..
+        version: link:../../packages/core
 
   examples/drizzle:
     dependencies:
+      '@tupl/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@tupl/example-shared':
         specifier: workspace:*
         version: link:../_shared
@@ -66,12 +65,12 @@ importers:
       drizzle-orm:
         specifier: latest
         version: 0.45.1(@electric-sql/pglite@0.2.17)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.6.2)(knex@3.1.0(better-sqlite3@12.6.2))(kysely@0.28.11)
-      tupl:
-        specifier: workspace:*
-        version: link:../..
 
   examples/kysely:
     dependencies:
+      '@tupl/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@tupl/example-shared':
         specifier: workspace:*
         version: link:../_shared
@@ -84,12 +83,12 @@ importers:
       kysely:
         specifier: ^0.28.8
         version: 0.28.11
-      tupl:
-        specifier: workspace:*
-        version: link:../..
 
   examples/objection:
     dependencies:
+      '@tupl/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@tupl/example-shared':
         specifier: workspace:*
         version: link:../_shared
@@ -105,9 +104,6 @@ importers:
       objection:
         specifier: ^3.1.5
         version: 3.1.5(knex@3.1.0(better-sqlite3@12.6.2))
-      tupl:
-        specifier: workspace:*
-        version: link:../..
 
   examples/playground:
     dependencies:
@@ -135,6 +131,9 @@ importers:
       '@radix-ui/react-tabs':
         specifier: ^1.1.13
         version: 1.1.13(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@tupl/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@tupl/provider-drizzle':
         specifier: workspace:*
         version: link:../../packages/provider-drizzle
@@ -183,9 +182,6 @@ importers:
       tailwindcss-animate:
         specifier: ^1.0.7
         version: 1.0.7(tailwindcss@3.4.19)
-      tupl:
-        specifier: workspace:*
-        version: link:../..
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -274,6 +270,12 @@ importers:
       objection:
         specifier: ^3.1.5
         version: 3.1.5(knex@3.1.0(better-sqlite3@12.6.2))
+
+  packages/schema:
+    dependencies:
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
 
 packages:
 

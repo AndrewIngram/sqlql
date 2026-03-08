@@ -12,7 +12,7 @@ import {
   type QueryStepEvent,
   type RelNode,
   type SchemaDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { requestSandboxWorker } from "./playground-sandbox-client";

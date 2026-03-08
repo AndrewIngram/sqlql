@@ -3,7 +3,7 @@ import {
   lowerSqlToRel,
   type RelNode,
   type SchemaDefinition,
-} from "../../../src/index";
+} from "@tupl/core";
 
 import type {
   CatalogQueryEntry,
