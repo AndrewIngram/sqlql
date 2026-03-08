@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { RelNode } from "../..";
-import { isRelProjectColumnMapping } from "../..";
+import type { RelNode } from "../../../model/rel";
+import { isRelProjectColumnMapping } from "../../../model/rel";
 import {
   buildSingleQueryPlan,
   canCompileBasicRel,
