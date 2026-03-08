@@ -1239,10 +1239,7 @@ async function tryPlanRemoteFragmentResult<TContext>(
     );
   }
 
-  const fragmentResult = Result.try({
-    try: () => buildProviderFragmentForNode(node, schema, provider),
-    catch: (error) => toSqlqlPlanningError(error, "build provider fragment"),
-  });
+  const fragmentResult = buildProviderFragmentForNodeResult(node, schema, provider);
   if (Result.isError(fragmentResult)) {
     return fragmentResult;
   }
@@ -1297,10 +1294,18 @@ export function buildProviderFragmentForRelResult<TContext = unknown>(
       return Result.ok(null);
     }
 
-    return Result.try({
-      try: () => buildProviderFragmentForNode(expanded, schema, provider),
-      catch: (error) => toSqlqlPlanningError(error, "build provider fragment"),
-    });
+    return buildProviderFragmentForNodeResult(expanded, schema, provider);
+  });
+}
+
+function buildProviderFragmentForNodeResult(
+  node: RelNode,
+  schema: SchemaDefinition,
+  provider: string,
+): SqlqlResult<ProviderFragment> {
+  return Result.try({
+    try: () => buildProviderFragmentForNode(node, schema, provider),
+    catch: (error) => toSqlqlPlanningError(error, "build provider fragment"),
   });
 }
 

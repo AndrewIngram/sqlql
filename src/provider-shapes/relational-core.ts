@@ -109,20 +109,13 @@ export function resolveRelationalStrategy<TStrategy extends string>(
     setOpStrategy: TStrategy;
     withStrategy: TStrategy;
     canCompileBasic: (node: RelNode) => boolean;
-    validateBasic: (node: RelNode) => void;
+    validateBasic: (node: RelNode) => boolean;
     canCompileSetOp: (node: RelNode) => boolean;
     canCompileWith: (node: RelNode) => boolean;
   },
 ): TStrategy | null {
-  if (input.canCompileBasic(node)) {
-    try {
-      input.validateBasic(node);
-      return input.basicStrategy;
-    } catch (error) {
-      if (!(error instanceof UnsupportedRelationalPlanError)) {
-        throw error;
-      }
-    }
+  if (input.canCompileBasic(node) && input.validateBasic(node)) {
+    return input.basicStrategy;
   }
 
   if (input.canCompileSetOp(node)) {
@@ -134,6 +127,19 @@ export function resolveRelationalStrategy<TStrategy extends string>(
   }
 
   return null;
+}
+
+export function isSupportedRelationalPlan(validate: () => void): boolean {
+  try {
+    validate();
+    return true;
+  } catch (error) {
+    if (error instanceof UnsupportedRelationalPlanError) {
+      return false;
+    }
+
+    throw error;
+  }
 }
 
 export function canCompileSetOpRel<TStrategy extends string>(

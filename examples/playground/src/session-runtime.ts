@@ -742,6 +742,9 @@ export async function createSession(
     context,
     options,
   });
+  if (!bundle.ok) {
+    throw new Error(bundle.error.message);
+  }
   const session = createSandboxQuerySession(bundle.sessionId, bundle.plan);
 
   return {

@@ -224,7 +224,9 @@ export interface QuerySession {
 export interface ExecutableSchema<TContext, TSchema extends SchemaDefinition = SchemaDefinition> {
   schema: TSchema;
   query(input: ExecutableSchemaQueryInput<TContext>): Promise<QueryRow[]>;
+  queryResult(input: ExecutableSchemaQueryInput<TContext>): Promise<SqlqlResult<QueryRow[]>>;
   createSession(input: ExecutableSchemaSessionInput<TContext>): QuerySession;
+  createSessionResult(input: ExecutableSchemaSessionInput<TContext>): SqlqlResult<QuerySession>;
   explain(input: ExecutableSchemaQueryInput<TContext>): ExplainResult;
 }
 
@@ -539,45 +541,6 @@ function resolveSyncProviderCapabilityForRel<TContext>(
   });
 }
 
-function maybeRejectFallback<TContext>(
-  input: QueryInput<TContext>,
-  resolution: QueryCapabilityResolution<TContext>,
-): void {
-  if (!resolution.provider || !resolution.report || resolution.report.supported) {
-    return;
-  }
-
-  const policy = resolveFallbackPolicy(input.fallbackPolicy, resolution.provider.fallbackPolicy);
-  const exceedsEstimatedCost =
-    policy.rejectOnEstimatedCost &&
-    resolution.report.estimatedCost != null &&
-    Number.isFinite(policy.maxJoinExpansionRisk) &&
-    resolution.report.estimatedCost > policy.maxJoinExpansionRisk;
-
-  if (!policy.allowFallback || policy.rejectOnMissingAtom || exceedsEstimatedCost) {
-    const diagnostics =
-      resolution.diagnostics.length > 0
-        ? resolution.diagnostics
-        : [
-            makeDiagnostic(
-              "SQLQL_ERR_FALLBACK",
-              "error",
-              summarizeCapabilityReason(resolution.report),
-              {
-                provider: resolution.provider.name,
-                fragment: resolution.fragment?.kind,
-                missingAtoms: resolution.report.missingAtoms,
-              },
-              "42000",
-            ),
-          ];
-    throw new SqlqlDiagnosticError({
-      message: summarizeCapabilityReason(resolution.report),
-      diagnostics,
-    });
-  }
-}
-
 function maybeRejectFallbackResult<TContext>(
   input: QueryInput<TContext>,
   resolution: QueryCapabilityResolution<TContext>,
@@ -643,18 +606,27 @@ function hasSqlNode(node: RelNode): boolean {
   }
 }
 
-async function maybeExecuteWholeQueryFragment<TContext>(
+async function maybeExecuteWholeQueryFragmentResult<TContext>(
   input: QueryInput<TContext>,
   rel: RelNode,
-): Promise<QueryRow[] | null> {
-  const resolution = unwrapQueryResult(await resolveProviderCapabilityForRel(input, rel));
+): Promise<QueryResult<QueryRow[] | null>> {
+  const resolutionResult = await resolveProviderCapabilityForRel(input, rel);
+  if (Result.isError(resolutionResult)) {
+    return resolutionResult;
+  }
+
+  const resolution = resolutionResult.value;
   if (!resolution.fragment || !resolution.provider || !resolution.report) {
-    return null;
+    return Result.ok(null);
   }
 
   if (!resolution.report.supported) {
-    maybeRejectFallback(input, resolution);
-    return null;
+    const fallbackResult = maybeRejectFallbackResult(input, resolution);
+    if (Result.isError(fallbackResult)) {
+      return fallbackResult;
+    }
+
+    return Result.ok(null);
   }
 
   const compiled = unwrapProviderOperationResult(
@@ -664,20 +636,22 @@ async function maybeExecuteWholeQueryFragment<TContext>(
   const rows = unwrapProviderOperationResult(executed);
 
   if (resolution.fragment.kind === "rel") {
-    return mapProviderRowsToRelOutput(rows, rel, input.schema);
+    return Result.ok(mapProviderRowsToRelOutput(rows, rel, input.schema));
   }
 
   if (resolution.fragment.kind === "scan" && rel.kind === "scan") {
     const binding = getNormalizedTableBinding(input.schema, rel.table);
-    return mapProviderRowsToLogical(
-      rows,
-      rel.select,
-      binding?.kind === "physical" ? binding : null,
-      input.schema.tables[rel.table],
+    return Result.ok(
+      mapProviderRowsToLogical(
+        rows,
+        rel.select,
+        binding?.kind === "physical" ? binding : null,
+        input.schema.tables[rel.table],
+      ),
     );
   }
 
-  return rows;
+  return Result.ok(rows);
 }
 
 function enforcePlannerNodeLimitResult(
@@ -1728,42 +1702,67 @@ function resolveSyncProviderCapabilityForRelResult<TContext>(
 function createQuerySessionResult<TContext>(
   input: QuerySessionInput<TContext>,
 ): QueryResult<QuerySession> {
-  return Result.gen(function* () {
-    const resolvedInput = yield* normalizeRuntimeSchemaResult(input);
-    const guardrails = resolveGuardrails(input.queryGuardrails);
-    const lowered = yield* lowerSqlToRelResult(resolvedInput.sql, resolvedInput.schema);
-    const plannerNodeCount = countRelNodes(lowered.rel);
+  const resolvedInputResult = normalizeRuntimeSchemaResult(input);
+  if (Result.isError(resolvedInputResult)) {
+    return resolvedInputResult;
+  }
 
-    yield* enforcePlannerNodeLimitResult(plannerNodeCount, guardrails);
-    const expandedRel = yield* expandRelViewsResult(
-      lowered.rel,
-      resolvedInput.schema,
-      resolvedInput.context,
-    );
-    const providerSession = yield* tryCreateSyncProviderFragmentSession(
+  const resolvedInput = resolvedInputResult.value;
+  const guardrails = resolveGuardrails(input.queryGuardrails);
+  const loweredResult = lowerSqlToRelResult(resolvedInput.sql, resolvedInput.schema);
+  if (Result.isError(loweredResult)) {
+    return loweredResult;
+  }
+
+  const plannerNodeCount = countRelNodes(loweredResult.value.rel);
+  const plannerNodeCountResult = enforcePlannerNodeLimitResult(plannerNodeCount, guardrails);
+  if (Result.isError(plannerNodeCountResult)) {
+    return plannerNodeCountResult;
+  }
+
+  const expandedRelResult = expandRelViewsResult(
+    loweredResult.value.rel,
+    resolvedInput.schema,
+    resolvedInput.context,
+  );
+  if (Result.isError(expandedRelResult)) {
+    return expandedRelResult;
+  }
+
+  const expandedRel = expandedRelResult.value;
+  const providerSessionResult = tryCreateSyncProviderFragmentSession(
+    resolvedInput,
+    guardrails,
+    expandedRel,
+  );
+  if (Result.isError(providerSessionResult)) {
+    return providerSessionResult;
+  }
+  if (providerSessionResult.value) {
+    return Result.ok(providerSessionResult.value);
+  }
+
+  const capabilityResolutionResult = resolveSyncProviderCapabilityForRelResult(
+    resolvedInput,
+    expandedRel,
+  );
+  if (Result.isError(capabilityResolutionResult)) {
+    return capabilityResolutionResult;
+  }
+
+  const executableRelResult = assertNoSqlNodesWithoutProviderFragmentResult(expandedRel);
+  if (Result.isError(executableRelResult)) {
+    return executableRelResult;
+  }
+
+  return tryQueryStep("create relational execution session", () =>
+    createRelExecutionSession(
       resolvedInput,
       guardrails,
-      expandedRel,
-    );
-    if (providerSession) {
-      return Result.ok(providerSession);
-    }
-
-    const capabilityResolution = yield* resolveSyncProviderCapabilityForRelResult(
-      resolvedInput,
-      expandedRel,
-    );
-    const executableRel = yield* assertNoSqlNodesWithoutProviderFragmentResult(expandedRel);
-
-    return Result.ok(
-      createRelExecutionSession(
-        resolvedInput,
-        guardrails,
-        executableRel,
-        capabilityResolution?.diagnostics ?? [],
-      ),
-    );
-  });
+      executableRelResult.value,
+      capabilityResolutionResult.value?.diagnostics ?? [],
+    ),
+  );
 }
 
 function createQuerySessionInternal<TContext>(input: QuerySessionInput<TContext>): QuerySession {
@@ -1788,7 +1787,7 @@ async function queryInternalResult<TContext>(
     const remoteRows = yield* Result.await(
       withTimeoutResult(
         "execute whole provider fragment",
-        () => maybeExecuteWholeQueryFragment(resolvedInput, expandedRel),
+        () => maybeExecuteWholeQueryFragmentResult(resolvedInput, expandedRel).then(unwrapQueryResult),
         guardrails.timeoutMs,
       ),
     );
@@ -1857,7 +1856,9 @@ function explainInternalResult<TContext>(input: QueryInput<TContext>): QueryResu
   });
 }
 
-function collectExecutableProviders<TContext>(schema: SchemaDefinition): ProvidersMap<TContext> {
+function collectExecutableProvidersResult<TContext>(
+  schema: SchemaDefinition,
+): QueryResult<ProvidersMap<TContext>> {
   const providers: ProvidersMap<TContext> = {};
 
   for (const [tableName] of Object.entries(schema.tables)) {
@@ -1868,49 +1869,71 @@ function collectExecutableProviders<TContext>(schema: SchemaDefinition): Provide
 
     const provider = binding.adapter as ProviderAdapter<TContext> | undefined;
     if (!provider) {
-      throw new Error(
-        `Table ${tableName} must be declared from a provider-owned entity via table(name, provider.entities.someTable, config).`,
+      return Result.err(
+        new SqlqlRuntimeError({
+          operation: "collect executable providers",
+          message: `Table ${tableName} must be declared from a provider-owned entity via table(name, provider.entities.someTable, config).`,
+        }),
       );
     }
 
     const existing = providers[provider.name];
     if (existing && existing !== provider) {
-      throw new Error(`Duplicate provider name detected in executable schema: ${provider.name}.`);
+      return Result.err(
+        new SqlqlRuntimeError({
+          operation: "collect executable providers",
+          message: `Duplicate provider name detected in executable schema: ${provider.name}.`,
+        }),
+      );
     }
     providers[provider.name] = provider;
 
     if (!binding.provider || binding.provider !== provider.name) {
-      throw new Error(
-        `Table ${tableName} is bound to provider ${binding.provider ?? "<missing>"}, but the attached adapter is named ${provider.name}.`,
+      return Result.err(
+        new SqlqlRuntimeError({
+          operation: "collect executable providers",
+          message: `Table ${tableName} is bound to provider ${binding.provider ?? "<missing>"}, but the attached adapter is named ${provider.name}.`,
+        }),
       );
     }
   }
 
-  return providers;
+  return Result.ok(providers);
 }
 
-export function createExecutableSchema<TContext>(
-  builder: SchemaBuilder<TContext>,
-): ExecutableSchema<TContext, SchemaDefinition>;
-export function createExecutableSchema<TContext, TSchema extends SchemaDefinition>(
-  schema: TSchema,
-): ExecutableSchema<TContext, TSchema>;
-export function createExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+function createExecutableSchemaResultInternal<TContext, TSchema extends SchemaDefinition>(
   input: TSchema | SchemaBuilder<TContext>,
-): ExecutableSchema<TContext, TSchema | SchemaDefinition> {
-  const schema = isSchemaBuilder<TContext>(input)
-    ? input.build()
-    : finalizeSchemaDefinition(input as TSchema);
-  const providers = collectExecutableProviders<TContext>(schema);
+): SqlqlResult<ExecutableSchema<TContext, TSchema | SchemaDefinition>> {
+  const schemaResult = tryQueryStep("create executable schema", () =>
+    isSchemaBuilder<TContext>(input) ? input.build() : finalizeSchemaDefinition(input as TSchema),
+  );
+  if (Result.isError(schemaResult)) {
+    return schemaResult as SqlqlResult<ExecutableSchema<TContext, TSchema | SchemaDefinition>>;
+  }
+
+  const schema = schemaResult.value;
+  const providersResult = collectExecutableProvidersResult<TContext>(schema);
+  if (Result.isError(providersResult)) {
+    return providersResult as SqlqlResult<ExecutableSchema<TContext, TSchema | SchemaDefinition>>;
+  }
+
+  const providers = providersResult.value;
   const runtime: ExecutableSchemaRuntime<TContext> = {
     schema,
     providers,
   };
 
-  return {
+  return Result.ok({
     schema,
     query(input) {
       return queryInternal({
+        schema: runtime.schema,
+        providers: runtime.providers,
+        ...input,
+      });
+    },
+    queryResult(input) {
+      return queryInternalResult({
         schema: runtime.schema,
         providers: runtime.providers,
         ...input,
@@ -1923,6 +1946,13 @@ export function createExecutableSchema<TContext, TSchema extends SchemaDefinitio
         ...input,
       });
     },
+    createSessionResult(input) {
+      return createQuerySessionResult({
+        schema: runtime.schema,
+        providers: runtime.providers,
+        ...input,
+      });
+    },
     explain(input) {
       return explainInternal({
         schema: runtime.schema,
@@ -1930,5 +1960,29 @@ export function createExecutableSchema<TContext, TSchema extends SchemaDefinitio
         ...input,
       });
     },
-  };
+  });
+}
+
+export function createExecutableSchemaResult<TContext>(
+  builder: SchemaBuilder<TContext>,
+): SqlqlResult<ExecutableSchema<TContext, SchemaDefinition>>;
+export function createExecutableSchemaResult<TContext, TSchema extends SchemaDefinition>(
+  schema: TSchema,
+): SqlqlResult<ExecutableSchema<TContext, TSchema>>;
+export function createExecutableSchemaResult<TContext, TSchema extends SchemaDefinition>(
+  input: TSchema | SchemaBuilder<TContext>,
+): SqlqlResult<ExecutableSchema<TContext, TSchema | SchemaDefinition>> {
+  return createExecutableSchemaResultInternal(input);
+}
+
+export function createExecutableSchema<TContext>(
+  builder: SchemaBuilder<TContext>,
+): ExecutableSchema<TContext, SchemaDefinition>;
+export function createExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+  schema: TSchema,
+): ExecutableSchema<TContext, TSchema>;
+export function createExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+  input: TSchema | SchemaBuilder<TContext>,
+): ExecutableSchema<TContext, TSchema | SchemaDefinition> {
+  return unwrapQueryResult(createExecutableSchemaResultInternal(input));
 }

@@ -25,6 +25,7 @@ import {
   canCompileSetOpRel,
   canCompileWithRel,
   hasSqlNode,
+  isSupportedRelationalPlan,
   resolveColumnFromFilterColumn as resolveRelationalColumnFromFilterColumn,
   resolveColumnRef as resolveRelationalColumnRef,
   resolveRelationalStrategy,
@@ -487,9 +488,10 @@ function resolveObjectionRelCompileStrategy<TContext>(
       canCompileBasicRel(current, (table) => !!entityConfigs[table], {
         requireColumnProjectMappings: true,
       }),
-    validateBasic: (current) => {
-      buildSingleQueryPlan(current, entityConfigs);
-    },
+    validateBasic: (current) =>
+      isSupportedRelationalPlan(() => {
+        buildSingleQueryPlan(current, entityConfigs);
+      }),
     canCompileSetOp: (current) =>
       canCompileSetOpRel(
         current,

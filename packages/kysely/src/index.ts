@@ -27,6 +27,7 @@ import {
   canCompileSetOpRel,
   canCompileWithRel,
   hasSqlNode,
+  isSupportedRelationalPlan,
   resolveColumnFromFilterColumn as resolveRelationalColumnFromFilterColumn,
   resolveColumnRef as resolveRelationalColumnRef,
   resolveRelationalStrategy,
@@ -460,9 +461,10 @@ function resolveKyselyRelCompileStrategy<TContext>(
       canCompileBasicRel(current, (table) => !!entityConfigs[table], {
         requireColumnProjectMappings: true,
       }),
-    validateBasic: (current) => {
-      buildSingleQueryPlan(current, entityConfigs);
-    },
+    validateBasic: (current) =>
+      isSupportedRelationalPlan(() => {
+        buildRelationalSingleQueryPlan(current, (scan) => createScanBinding(scan, entityConfigs));
+      }),
     canCompileSetOp: (current) =>
       canCompileSetOpRel(
         current,

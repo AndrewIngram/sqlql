@@ -8,6 +8,7 @@ import {
   canCompileSetOpRel,
   canCompileWithRel,
   hasSqlNode,
+  isSupportedRelationalPlan,
   resolveRelationalStrategy,
   type RelationalScanBindingBase,
 } from "../../src/provider-shapes/relational-core";
@@ -175,9 +176,10 @@ describe("relational provider core", () => {
           canCompileBasicRel(current, (table) => table === "orders" || table === "users", {
             requireColumnProjectMappings: true,
           }),
-        validateBasic: (current) => {
-          buildSingleQueryPlan(current, createBinding);
-        },
+        validateBasic: (current) =>
+          isSupportedRelationalPlan(() => {
+            buildSingleQueryPlan(current, createBinding);
+          }),
         canCompileSetOp: (current) =>
           canCompileSetOpRel(current, resolveBranchStrategy, requireColumnProjectMapping),
         canCompileWith: (current) => canCompileWithRel(current, resolveBranchStrategy),

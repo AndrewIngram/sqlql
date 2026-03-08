@@ -630,25 +630,52 @@ function hasAdvancedRelFeatures(node: RelNode): boolean {
 }
 
 export function resolveTableProvider(schema: SchemaDefinition, table: string): string {
+  const result = resolveTableProviderResult(schema, table);
+  if (Result.isError(result)) {
+    throw result.error;
+  }
+
+  return result.value;
+}
+
+export function resolveTableProviderResult(
+  schema: SchemaDefinition,
+  table: string,
+): SqlqlResult<string> {
   const normalized = getNormalizedTableBinding(schema, table);
   if (normalized?.kind === "physical" && normalized.provider) {
-    return normalized.provider;
+    return Result.ok(normalized.provider);
   }
 
   if (normalized?.kind === "view") {
-    throw new Error(`View table ${table} does not have a direct provider binding.`);
+    return Result.err(
+      new SqlqlProviderBindingError({
+        table,
+        message: `View table ${table} does not have a direct provider binding.`,
+      }),
+    );
   }
 
   const tableDefinition = schema.tables[table];
   if (!tableDefinition) {
-    throw new Error(`Unknown table: ${table}`);
+    return Result.err(
+      new SqlqlProviderBindingError({
+        table,
+        message: `Unknown table: ${table}`,
+      }),
+    );
   }
 
   if (!tableDefinition.provider || tableDefinition.provider.length === 0) {
-    throw new Error(`Table ${table} is missing required provider mapping.`);
+    return Result.err(
+      new SqlqlProviderBindingError({
+        table,
+        message: `Table ${table} is missing required provider mapping.`,
+      }),
+    );
   }
 
-  return tableDefinition.provider;
+  return Result.ok(tableDefinition.provider);
 }
 
 export function validateProviderBindings<TContext>(
@@ -671,18 +698,10 @@ export function validateProviderBindingsResult<TContext>(
       continue;
     }
 
-    const providerNameResult = Result.try({
-      try: () =>
-        normalized?.kind === "physical"
-          ? (normalized.provider ?? resolveTableProvider(schema, tableName))
-          : resolveTableProvider(schema, tableName),
-      catch: (error) =>
-        new SqlqlProviderBindingError({
-          table: tableName,
-          message: error instanceof Error ? error.message : String(error),
-          cause: error,
-        }),
-    });
+    const providerNameResult =
+      normalized?.kind === "physical" && normalized.provider
+        ? Result.ok(normalized.provider)
+        : resolveTableProviderResult(schema, tableName);
     if (Result.isError(providerNameResult)) {
       return providerNameResult;
     }

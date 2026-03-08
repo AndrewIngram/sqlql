@@ -4,6 +4,7 @@ export {
   DEFAULT_QUERY_GUARDRAILS,
   SqlqlDiagnosticError,
   createExecutableSchema,
+  createExecutableSchemaResult,
 } from "./query";
 export type {
   ExecutableSchema,
@@ -27,6 +28,7 @@ export type {
   QuerySqlOrigin,
 } from "./query";
 export * from "./constraints";
+export * from "./errors";
 export * from "./parser";
 export * from "./provider";
 export * from "./rel";

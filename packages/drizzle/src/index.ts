@@ -51,6 +51,7 @@ import {
   canCompileWithRel,
   extractRelPipeline,
   hasSqlNode,
+  isSupportedRelationalPlan,
   resolveRelationalStrategy,
   unwrapSetOpRel,
   unwrapWithBodyRel,
@@ -874,9 +875,10 @@ function resolveDrizzleRelCompileStrategy(
     withStrategy: "with",
     canCompileBasic: (current) =>
       canCompileBasicRel(current, (table) => !!tableConfigs[table]),
-    validateBasic: (current) => {
-      buildSingleQueryPlan(current, tableConfigs);
-    },
+    validateBasic: (current) =>
+      isSupportedRelationalPlan(() => {
+        buildSingleQueryPlan(current, tableConfigs);
+      }),
     canCompileSetOp: (current) =>
       canCompileSetOpRel(
         current,

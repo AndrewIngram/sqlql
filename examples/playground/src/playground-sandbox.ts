@@ -76,11 +76,22 @@ export interface SandboxSessionSnapshot {
   executedOperations: ExecutedProviderOperation[];
 }
 
-export interface SandboxCreateSessionResult {
+export interface SandboxCreateSessionSuccess {
+  ok: true;
   sessionId: string;
   plan: QueryExecutionPlan;
   translation: PlaygroundTranslation;
 }
+
+export interface SandboxCreateSessionFailure {
+  ok: false;
+  error: {
+    message: string;
+    tag?: string;
+  };
+}
+
+export type SandboxCreateSessionResult = SandboxCreateSessionSuccess | SandboxCreateSessionFailure;
 
 export type SandboxSessionNextResult = QueryStepEvent | { done: true; result: QueryRow[] };
 
@@ -448,7 +459,7 @@ export async function createSandboxSession(
     compiled.sql,
   );
 
-  const session = executableSchema.createSession({
+  const sessionResult = executableSchema.createSessionResult({
     context: runtimeContext,
     sql: compiled.sql,
     options: {
@@ -456,11 +467,25 @@ export async function createSandboxSession(
       captureRows: "full",
     },
   });
+  if (betterResultModule.Result.isError(sessionResult)) {
+    return {
+      ok: false,
+      error: {
+        message: sessionResult.error.message,
+        ...("_tag" in sessionResult.error && typeof sessionResult.error._tag === "string"
+          ? { tag: sessionResult.error._tag }
+          : {}),
+      },
+    };
+  }
+
+  const session = sessionResult.value;
 
   const sessionId = makeSessionId();
   sessionStore.set(sessionId, { session });
 
   return {
+    ok: true,
     sessionId,
     plan: session.getPlan(),
     translation: buildTranslation(compiled.sql, lowered.rel, physicalPlan),
@@ -517,6 +542,9 @@ export async function replaySandboxSession(
   options: { reseed?: boolean } = {},
 ): Promise<SandboxSessionSnapshot> {
   const bundle = await createSandboxSession(compiled, context, options);
+  if (!bundle.ok) {
+    throw new Error(bundle.error.message);
+  }
   const record = readSessionRecord(bundle.sessionId);
   const events: QueryStepEvent[] = [];
 
