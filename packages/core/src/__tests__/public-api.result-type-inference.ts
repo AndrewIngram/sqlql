@@ -5,6 +5,7 @@ import {
   createExecutableSchemaResult,
   type ExecutableSchema,
   type ProviderOperationResult,
+  type QuerySession,
   type TuplProviderBindingError,
   type TuplResult,
 } from "@tupl/core";
@@ -12,7 +13,6 @@ import {
   createSchemaBuilder,
   resolveTableProviderResult,
   type QueryRow,
-  type QuerySession,
   type SchemaDefinition,
 } from "@tupl/core/schema";
 
