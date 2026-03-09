@@ -3,7 +3,7 @@ import {
   bindAdapterEntities,
   createDataEntityHandle,
   type ProviderAdapter,
-} from "@tupl/core";
+} from "@tupl/core/provider";
 import {
   createExecutableSchema,
   createSchemaBuilder,

@@ -79,6 +79,51 @@ const CORE_SOURCE_IMPORTS = import.meta.glob("../../../packages/core/src/**/*.ts
   query: "?raw",
 }) as Record<string, string>;
 
+const INTERNAL_FOUNDATION_SOURCE_IMPORTS = import.meta.glob(
+  "../../../packages/internal-foundation/src/**/*.ts",
+  {
+    eager: true,
+    import: "default",
+    query: "?raw",
+  },
+) as Record<string, string>;
+
+const INTERNAL_PROVIDER_SOURCE_IMPORTS = import.meta.glob(
+  "../../../packages/internal-provider/src/**/*.ts",
+  {
+    eager: true,
+    import: "default",
+    query: "?raw",
+  },
+) as Record<string, string>;
+
+const INTERNAL_SCHEMA_SOURCE_IMPORTS = import.meta.glob(
+  "../../../packages/internal-schema/src/**/*.ts",
+  {
+    eager: true,
+    import: "default",
+    query: "?raw",
+  },
+) as Record<string, string>;
+
+const INTERNAL_PLANNER_SOURCE_IMPORTS = import.meta.glob(
+  "../../../packages/internal-planner/src/**/*.ts",
+  {
+    eager: true,
+    import: "default",
+    query: "?raw",
+  },
+) as Record<string, string>;
+
+const INTERNAL_RUNTIME_SOURCE_IMPORTS = import.meta.glob(
+  "../../../packages/internal-runtime/src/**/*.ts",
+  {
+    eager: true,
+    import: "default",
+    query: "?raw",
+  },
+) as Record<string, string>;
+
 const SCHEMA_SOURCE_IMPORTS = import.meta.glob("../../../packages/schema/src/**/*.ts", {
   eager: true,
   import: "default",
@@ -129,6 +174,36 @@ const CORE_SOURCE_FILES = mapVirtualFiles(
   CORE_SOURCE_IMPORTS,
   "/packages/core/src/",
   `${NODE_MODULES_ROOT_PATH}/@tupl/core`,
+);
+
+const INTERNAL_FOUNDATION_SOURCE_FILES = mapVirtualFiles(
+  INTERNAL_FOUNDATION_SOURCE_IMPORTS,
+  "/packages/internal-foundation/src/",
+  `${NODE_MODULES_ROOT_PATH}/@tupl-internal/foundation`,
+);
+
+const INTERNAL_PROVIDER_SOURCE_FILES = mapVirtualFiles(
+  INTERNAL_PROVIDER_SOURCE_IMPORTS,
+  "/packages/internal-provider/src/",
+  `${NODE_MODULES_ROOT_PATH}/@tupl-internal/provider`,
+);
+
+const INTERNAL_SCHEMA_SOURCE_FILES = mapVirtualFiles(
+  INTERNAL_SCHEMA_SOURCE_IMPORTS,
+  "/packages/internal-schema/src/",
+  `${NODE_MODULES_ROOT_PATH}/@tupl-internal/schema`,
+);
+
+const INTERNAL_PLANNER_SOURCE_FILES = mapVirtualFiles(
+  INTERNAL_PLANNER_SOURCE_IMPORTS,
+  "/packages/internal-planner/src/",
+  `${NODE_MODULES_ROOT_PATH}/@tupl-internal/planner`,
+);
+
+const INTERNAL_RUNTIME_SOURCE_FILES = mapVirtualFiles(
+  INTERNAL_RUNTIME_SOURCE_IMPORTS,
+  "/packages/internal-runtime/src/",
+  `${NODE_MODULES_ROOT_PATH}/@tupl-internal/runtime`,
 );
 
 const SCHEMA_SOURCE_FILES = mapVirtualFiles(
@@ -199,6 +274,11 @@ const PGLITE_ROOT_DECLARATION_FILES: Record<string, string> = {
 
 const STATIC_SOURCE_FILES = {
   ...CORE_SOURCE_FILES,
+  ...INTERNAL_FOUNDATION_SOURCE_FILES,
+  ...INTERNAL_PROVIDER_SOURCE_FILES,
+  ...INTERNAL_SCHEMA_SOURCE_FILES,
+  ...INTERNAL_PLANNER_SOURCE_FILES,
+  ...INTERNAL_RUNTIME_SOURCE_FILES,
   ...SCHEMA_SOURCE_FILES,
   ...DRIZZLE_SOURCE_FILES,
   ...IOREDIS_SOURCE_FILES,

@@ -4,21 +4,20 @@ import {
   collectCapabilityAtomsForFragment,
   createDataEntityHandle,
   inferRouteFamilyForFragment,
-  isRelProjectColumnMapping,
   normalizeDataEntityShape,
   type DataEntityShape,
   type DataEntityHandle,
   type DataEntityReadMetadataMap,
   type InferDataEntityShapeMetadata,
-  type ProviderAdapter,
+  type FragmentProviderAdapter,
+  type LookupProviderAdapter,
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderFragment,
   type ProviderRuntimeBinding,
-  type QueryRow,
-  type RelNode,
-  type ScanFilterClause,
-  type TableScanRequest,
+} from "@tupl/core/provider";
+import { isRelProjectColumnMapping, type RelNode } from "@tupl/core/model/rel";
+import {
   UnsupportedRelationalPlanError,
   buildSingleQueryPlan as buildRelationalSingleQueryPlan,
   canCompileBasicRel,
@@ -34,7 +33,8 @@ import {
   type RelationalScanBindingBase,
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
-} from "@tupl/core";
+} from "@tupl/core/provider/shapes";
+import type { QueryRow, ScanFilterClause, TableScanRequest } from "@tupl/core/schema";
 
 export type KnexLikeQueryBuilder = {
   clone?: (...args: any[]) => KnexLikeQueryBuilder;
@@ -235,7 +235,8 @@ export function createObjectionProvider<
   >,
 >(
   options: CreateObjectionProviderOptions<TContext, TEntities>,
-): ProviderAdapter<TContext> & {
+): FragmentProviderAdapter<TContext> &
+  LookupProviderAdapter<TContext> & {
   entities: {
     [K in keyof TEntities]: DataEntityHandle<
       InferObjectionEntityColumns<TEntities[K]>,
@@ -377,7 +378,8 @@ export function createObjectionProvider<
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
-  } satisfies ProviderAdapter<TContext> & {
+  } satisfies FragmentProviderAdapter<TContext> &
+    LookupProviderAdapter<TContext> & {
     entities: {
       [K in keyof TEntities]: DataEntityHandle<
         InferObjectionEntityColumns<TEntities[K]>,

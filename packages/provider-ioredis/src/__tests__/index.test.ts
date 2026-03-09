@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  AdapterResult,
-  type ProviderFragment,
-} from "@tupl/core";
+import { AdapterResult, type ProviderFragment } from "@tupl/core/provider";
 import {
   createIoredisProvider,
   type RedisLike,
@@ -34,7 +31,7 @@ class StubRedis implements RedisLike {
 }
 
 describe("ioredis adapter", () => {
-  it("exposes typed entity handles and rejects fragment execution in v1", async () => {
+  it("exposes typed entity handles and reports unsupported fragment kinds in v1", async () => {
     const provider = createIoredisProvider<{ tenant: string }>({
       name: "redisProvider",
       redis: new StubRedis(new Map()),
@@ -90,21 +87,6 @@ describe("ioredis adapter", () => {
     expect(scanCapability.supported).toBe(false);
     expect(scanCapability.routeFamily).toBe("scan");
 
-    expect(
-      AdapterResult.isError(await provider.compile(scanFragment, { tenant: "acme" })),
-    ).toBe(true);
-    expect(
-      AdapterResult.isError(
-        await provider.execute(
-          {
-            provider: "redisProvider",
-            kind: "lookup",
-            payload: {},
-          },
-          { tenant: "acme" },
-        ),
-      ),
-    ).toBe(true);
   });
 
   it("resolves lookupMany against Redis hashes with residual filtering and projection", async () => {

@@ -23,28 +23,24 @@ import {
   collectCapabilityAtomsForFragment,
   createDataEntityHandle,
   inferRouteFamilyForFragment,
-  isRelProjectColumnMapping,
   normalizeDataEntityShape,
   type DataEntityColumnMetadata,
   type DataEntityShape,
   type DataEntityHandle,
   type DataEntityReadMetadataMap,
+  type FragmentProviderAdapter,
   type InferDataEntityShapeMetadata,
+  type LookupProviderAdapter,
   type MaybePromise,
-  type ProviderAdapter,
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
   type ProviderFragment,
   type ProviderLookupManyRequest,
   type ProviderRuntimeBinding,
-  type QueryRow,
-  type RelExpr,
-  type RelNode,
-  type ScanFilterClause,
-  type ScanOrderBy,
-  type SqlScalarType,
-  type TableScanRequest,
+} from "@tupl/core/provider";
+import { isRelProjectColumnMapping, type RelExpr, type RelNode } from "@tupl/core/model/rel";
+import {
   UnsupportedRelationalPlanError,
   canCompileBasicRel,
   canCompileSetOpRel,
@@ -60,7 +56,14 @@ import {
   type RelationalScanBindingBase,
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
-} from "@tupl/core";
+} from "@tupl/core/provider/shapes";
+import type {
+  QueryRow,
+  ScanFilterClause,
+  ScanOrderBy,
+  SqlScalarType,
+  TableScanRequest,
+} from "@tupl/core/schema";
 
 export type DrizzleColumnMap<TColumn extends string = string> = Record<TColumn, AnyColumn>;
 
@@ -259,7 +262,8 @@ export function createDrizzleProvider<
   >,
 >(
   options: CreateDrizzleProviderOptions<TContext, TTables>,
-): ProviderAdapter<TContext> & {
+): FragmentProviderAdapter<TContext> &
+  LookupProviderAdapter<TContext> & {
   entities: {
     [K in keyof TTables]: DataEntityHandle<
       InferDrizzleTableColumns<TTables[K]>,
@@ -397,7 +401,8 @@ export function createDrizzleProvider<
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
-  } satisfies ProviderAdapter<TContext> & {
+  } satisfies FragmentProviderAdapter<TContext> &
+    LookupProviderAdapter<TContext> & {
     entities: {
       [K in keyof TTables]: DataEntityHandle<
         InferDrizzleTableColumns<TTables[K]>,

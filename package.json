@@ -13,7 +13,7 @@
     "url": "git+https://github.com/AndrewIngram/tupl.git"
   },
   "scripts": {
-    "build": "pnpm --filter @tupl/core build && pnpm --filter @tupl/schema build && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection build",
+    "build": "pnpm --filter @tupl-internal/foundation build && pnpm --filter @tupl-internal/provider build && pnpm --filter @tupl-internal/schema build && pnpm --filter @tupl-internal/planner build && pnpm --filter @tupl-internal/runtime build && pnpm --filter @tupl/core build && pnpm --filter @tupl/schema build && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection build",
     "build:public": "pnpm run build",
     "clean": "rm -rf packages/core/dist packages/schema/dist packages/provider-*/dist examples/basic/dist",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
@@ -43,6 +43,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.3.0",
     "@typescript/native-preview": "latest",
+    "better-result": "^2.7.0",
     "better-sqlite3": "^12.6.2",
     "oxfmt": "latest",
     "oxlint": "latest",

@@ -1,5 +1,5 @@
 import { boolean, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
-import { createDataEntityHandle } from "@tupl/core";
+import { createDataEntityHandle } from "@tupl/core/provider";
 import { createSchemaBuilder, type SchemaDefinition } from "@tupl/schema";
 
 export const orgsTable = pgTable("orgs", {

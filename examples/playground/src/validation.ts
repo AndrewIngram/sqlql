@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createDataEntityHandle } from "@tupl/core";
+import { createDataEntityHandle } from "@tupl/core/provider";
 import {
   createSchemaBuilder,
   type QueryRow,

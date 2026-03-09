@@ -5,22 +5,21 @@ import {
   collectCapabilityAtomsForFragment,
   createDataEntityHandle,
   inferRouteFamilyForFragment,
-  isRelProjectColumnMapping,
   normalizeDataEntityShape,
   type DataEntityShape,
   type DataEntityHandle,
   type DataEntityReadMetadataMap,
   type InferDataEntityShapeMetadata,
+  type FragmentProviderAdapter,
+  type LookupProviderAdapter,
   type MaybePromise,
-  type ProviderAdapter,
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderFragment,
   type ProviderRuntimeBinding,
-  type QueryRow,
-  type RelNode,
-  type ScanFilterClause,
-  type TableScanRequest,
+} from "@tupl/core/provider";
+import { isRelProjectColumnMapping, type RelNode } from "@tupl/core/model/rel";
+import {
   UnsupportedRelationalPlanError,
   buildSingleQueryPlan as buildRelationalSingleQueryPlan,
   canCompileBasicRel,
@@ -36,7 +35,8 @@ import {
   type RelationalScanBindingBase,
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
-} from "@tupl/core";
+} from "@tupl/core/provider/shapes";
+import type { QueryRow, ScanFilterClause, TableScanRequest } from "@tupl/core/schema";
 
 export type KyselyQueryBuilderLike = {
   select: (...args: any[]) => KyselyQueryBuilderLike;
@@ -204,7 +204,8 @@ export function createKyselyProvider<
   >,
 >(
   options: CreateKyselyProviderOptions<TContext, TEntities>,
-): ProviderAdapter<TContext> & {
+): FragmentProviderAdapter<TContext> &
+  LookupProviderAdapter<TContext> & {
   entities: {
     [K in keyof TEntities]: DataEntityHandle<
       InferKyselyEntityColumns<TDatabase, Extract<K, string>, TEntities[K]>,
@@ -344,7 +345,8 @@ export function createKyselyProvider<
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
-  } satisfies ProviderAdapter<TContext> & {
+  } satisfies FragmentProviderAdapter<TContext> &
+    LookupProviderAdapter<TContext> & {
     entities: {
       [K in keyof TEntities]: DataEntityHandle<
         InferKyselyEntityColumns<TDatabase, Extract<K, string>, TEntities[K]>,

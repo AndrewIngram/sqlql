@@ -17,6 +17,9 @@ importers:
       '@typescript/native-preview':
         specifier: latest
         version: 7.0.0-dev.20260308.1
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2
@@ -231,6 +234,77 @@ importers:
 
   packages/core:
     dependencies:
+      '@tupl-internal/foundation':
+        specifier: workspace:*
+        version: link:../internal-foundation
+      '@tupl-internal/planner':
+        specifier: workspace:*
+        version: link:../internal-planner
+      '@tupl-internal/provider':
+        specifier: workspace:*
+        version: link:../internal-provider
+      '@tupl-internal/runtime':
+        specifier: workspace:*
+        version: link:../internal-runtime
+      '@tupl-internal/schema':
+        specifier: workspace:*
+        version: link:../internal-schema
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
+
+  packages/internal-foundation: {}
+
+  packages/internal-planner:
+    dependencies:
+      '@tupl-internal/foundation':
+        specifier: workspace:*
+        version: link:../internal-foundation
+      '@tupl-internal/provider':
+        specifier: workspace:*
+        version: link:../internal-provider
+      '@tupl-internal/schema':
+        specifier: workspace:*
+        version: link:../internal-schema
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
+
+  packages/internal-provider:
+    dependencies:
+      '@tupl-internal/foundation':
+        specifier: workspace:*
+        version: link:../internal-foundation
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
+
+  packages/internal-runtime:
+    dependencies:
+      '@tupl-internal/foundation':
+        specifier: workspace:*
+        version: link:../internal-foundation
+      '@tupl-internal/planner':
+        specifier: workspace:*
+        version: link:../internal-planner
+      '@tupl-internal/provider':
+        specifier: workspace:*
+        version: link:../internal-provider
+      '@tupl-internal/schema':
+        specifier: workspace:*
+        version: link:../internal-schema
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
+
+  packages/internal-schema:
+    dependencies:
+      '@tupl-internal/foundation':
+        specifier: workspace:*
+        version: link:../internal-foundation
+      '@tupl-internal/provider':
+        specifier: workspace:*
+        version: link:../internal-provider
       better-result:
         specifier: ^2.7.0
         version: 2.7.0

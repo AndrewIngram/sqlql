@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   type ProviderFragment,
-  type QueryRow,
-  type RelNode,
-  type TableScanRequest,
-} from "@tupl/core";
+} from "@tupl/core/provider";
+import type { RelNode } from "@tupl/core/model/rel";
+import type { QueryRow, TableScanRequest } from "@tupl/core/schema";
 import {
   createObjectionProvider,
   type KnexLike,
