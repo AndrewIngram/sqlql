@@ -4,5 +4,14 @@
     "outDir": "dist",
     "types": ["node"]
   },
-  "include": ["src"]
+  "files": [
+    "src/index.ts",
+    "src/schema/index.ts",
+    "src/provider/index.ts",
+    "src/provider/shapes/index.ts",
+    "src/provider-shapes/index.ts",
+    "src/planner/index.ts",
+    "src/model/rel.ts",
+    "src/runtime/executor.ts"
+  ]
 }
