@@ -1,4 +1,4 @@
-import type { PhysicalDialect, SqlScalarType } from "./primitives";
+import type { PhysicalDialect, SqlScalarType } from "../schema/definition";
 
 declare const DATA_ENTITY_COLUMNS_BRAND: unique symbol;
 declare const DATA_ENTITY_ROW_BRAND: unique symbol;

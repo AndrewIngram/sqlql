@@ -38,13 +38,17 @@ import {
   type ProviderFragment,
   type ProviderLookupManyRequest,
   type ProviderRuntimeBinding,
-  type QueryRow,
   type RelExpr,
   type RelNode,
-  type ScanFilterClause,
-  type ScanOrderBy,
-  type SqlScalarType,
-  type TableScanRequest,
+} from "@tupl/core";
+import type {
+  QueryRow,
+  ScanFilterClause,
+  ScanOrderBy,
+  SqlScalarType,
+  TableScanRequest,
+} from "@tupl/core/schema";
+import {
   UnsupportedRelationalPlanError,
   canCompileBasicRel,
   canCompileSetOpRel,
@@ -60,7 +64,7 @@ import {
   type RelationalScanBindingBase,
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
-} from "@tupl/core";
+} from "@tupl/core/provider-shapes";
 
 export type DrizzleColumnMap<TColumn extends string = string> = Record<TColumn, AnyColumn>;
 
@@ -357,7 +361,9 @@ export function createDrizzleProvider<
         case "rel": {
           const strategy = resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
           if (!strategy) {
-            return AdapterResult.err(new Error("Unsupported relational fragment for drizzle provider."));
+            return AdapterResult.err(
+              new Error("Unsupported relational fragment for drizzle provider."),
+            );
           }
           const db = await resolveDrizzleDb(options, context);
           if (!isStrategyAvailableOnDrizzleDb(strategy, db)) {
@@ -873,8 +879,7 @@ function resolveDrizzleRelCompileStrategy(
     basicStrategy: "basic",
     setOpStrategy: "set_op",
     withStrategy: "with",
-    canCompileBasic: (current) =>
-      canCompileBasicRel(current, (table) => !!tableConfigs[table]),
+    canCompileBasic: (current) => canCompileBasicRel(current, (table) => !!tableConfigs[table]),
     validateBasic: (current) =>
       isSupportedRelationalPlan(() => {
         buildSingleQueryPlan(current, tableConfigs);
@@ -882,12 +887,13 @@ function resolveDrizzleRelCompileStrategy(
     canCompileSetOp: (current) =>
       canCompileSetOpRel(
         current,
-        (branch) =>
-          canCompileBasicRel(branch, (table) => !!tableConfigs[table]) ? "basic" : null,
+        (branch) => (canCompileBasicRel(branch, (table) => !!tableConfigs[table]) ? "basic" : null),
         requireColumnProjectMapping,
       ),
     canCompileWith: (current) =>
-      canCompileWithRel(current, (branch) => resolveDrizzleRelCompileStrategy(branch, tableConfigs)),
+      canCompileWithRel(current, (branch) =>
+        resolveDrizzleRelCompileStrategy(branch, tableConfigs),
+      ),
   });
 }
 

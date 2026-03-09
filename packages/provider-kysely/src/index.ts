@@ -17,10 +17,10 @@ import {
   type ProviderCapabilityReport,
   type ProviderFragment,
   type ProviderRuntimeBinding,
-  type QueryRow,
   type RelNode,
-  type ScanFilterClause,
-  type TableScanRequest,
+} from "@tupl/core";
+import type { QueryRow, ScanFilterClause, TableScanRequest } from "@tupl/core/schema";
+import {
   UnsupportedRelationalPlanError,
   buildSingleQueryPlan as buildRelationalSingleQueryPlan,
   canCompileBasicRel,
@@ -36,7 +36,7 @@ import {
   type RelationalScanBindingBase,
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
-} from "@tupl/core";
+} from "@tupl/core/provider-shapes";
 
 export type KyselyQueryBuilderLike = {
   select: (...args: any[]) => KyselyQueryBuilderLike;
@@ -158,11 +158,9 @@ type InferKyselyEntityRow<
     ? TRow
     : Record<string, unknown>;
 
-type InferKyselyEntityColumns<
-  TDatabase,
-  TEntityName extends string,
-  TConfig,
-> = TConfig extends { shape: infer TShape }
+type InferKyselyEntityColumns<TDatabase, TEntityName extends string, TConfig> = TConfig extends {
+  shape: infer TShape;
+}
   ? Extract<keyof Extract<TShape, DataEntityShape<string>>, string>
   : Extract<keyof InferKyselyEntityRow<TDatabase, TEntityName, TConfig>, string>;
 
@@ -170,9 +168,8 @@ type NormalizeKyselyEntityRow<
   TDatabase,
   TEntityName extends string,
   TConfig,
-> = InferKyselyEntityRow<TDatabase, TEntityName, TConfig> & Partial<
-  Record<InferKyselyEntityColumns<TDatabase, TEntityName, TConfig>, unknown>
->;
+> = InferKyselyEntityRow<TDatabase, TEntityName, TConfig> &
+  Partial<Record<InferKyselyEntityColumns<TDatabase, TEntityName, TConfig>, unknown>>;
 
 type InferKyselyEntityColumnMetadata<
   TDatabase,
@@ -197,7 +194,10 @@ function toRef(alias: string | undefined, column: string): { alias?: string; col
 
 export function createKyselyProvider<
   TContext,
-  TDatabase extends Record<string, Record<string, unknown>> = Record<string, Record<string, unknown>>,
+  TDatabase extends Record<string, Record<string, unknown>> = Record<
+    string,
+    Record<string, unknown>
+  >,
   TEntities extends Record<string, KyselyProviderEntityConfig<TContext, any, string>> = Record<
     string,
     KyselyProviderEntityConfig<TContext, any, string>
@@ -286,7 +286,9 @@ export function createKyselyProvider<
         case "rel": {
           const strategy = resolveKyselyRelCompileStrategy(fragment.rel, entityConfigs);
           if (!strategy) {
-            return AdapterResult.err(new Error("Unsupported relational fragment for Kysely provider."));
+            return AdapterResult.err(
+              new Error("Unsupported relational fragment for Kysely provider."),
+            );
           }
           return AdapterResult.ok({
             provider: providerName,
@@ -316,12 +318,15 @@ export function createKyselyProvider<
         case "rel": {
           const compiled = plan.payload as KyselyRelCompiledPlan;
           return AdapterResult.tryPromise({
-            try: () => executeRelSingleQuery(db, entityConfigs, compiled.rel, compiled.strategy, context),
+            try: () =>
+              executeRelSingleQuery(db, entityConfigs, compiled.rel, compiled.strategy, context),
             catch: (error) => (error instanceof Error ? error : new Error(String(error))),
           });
         }
         default:
-          return AdapterResult.err(new Error(`Unsupported Kysely compiled plan kind: ${plan.kind}`));
+          return AdapterResult.err(
+            new Error(`Unsupported Kysely compiled plan kind: ${plan.kind}`),
+          );
       }
     },
     async lookupMany(request, context) {
@@ -362,7 +367,9 @@ export function createKyselyProvider<
       ...(config?.shape
         ? {
             columns: normalizeDataEntityShape(
-              config.shape as DataEntityShape<InferKyselyEntityColumns<TDatabase, typeof entityName, TEntities[typeof entityName]>>,
+              config.shape as DataEntityShape<
+                InferKyselyEntityColumns<TDatabase, typeof entityName, TEntities[typeof entityName]>
+              >,
             ),
           }
         : {}),
@@ -444,7 +451,8 @@ async function executeScan<TContext>(
   }
 
   query = query.select((eb: any) =>
-    request.select.map((column) => eb.ref(`${alias}.${column}`).as(column)));
+    request.select.map((column) => eb.ref(`${alias}.${column}`).as(column)),
+  );
 
   return query.execute();
 }
@@ -472,7 +480,9 @@ function resolveKyselyRelCompileStrategy<TContext>(
         requireColumnProjectMapping,
       ),
     canCompileWith: (current) =>
-      canCompileWithRel(current, (branch) => resolveKyselyRelCompileStrategy(branch, entityConfigs)),
+      canCompileWithRel(current, (branch) =>
+        resolveKyselyRelCompileStrategy(branch, entityConfigs),
+      ),
   });
 }
 
@@ -519,12 +529,7 @@ async function buildKyselyBasicRelSingleQueryBuilder<TContext>(
   for (const joinStep of plan.joinPlan.joins) {
     if (joinStep.joinType === "semi") {
       const leftRef = `${joinStep.leftKey.alias}.${joinStep.leftKey.column}`;
-      const subquery = await buildKyselySemiJoinSubquery(
-        db,
-        entityConfigs,
-        joinStep,
-        context,
-      );
+      const subquery = await buildKyselySemiJoinSubquery(db, entityConfigs, joinStep, context);
       query = query.where(leftRef, "in", subquery);
       continue;
     }
@@ -570,12 +575,14 @@ async function buildKyselyBasicRelSingleQueryBuilder<TContext>(
   query = query.select((eb: any) => selection.map((entry) => entry.toExpression(eb)));
 
   if (plan.pipeline.aggregate && plan.pipeline.aggregate.groupBy.length > 0) {
-    query = query.groupBy?.(
-      plan.pipeline.aggregate.groupBy.map((ref) =>
-        resolveColumnRef(plan.joinPlan.aliases, {
-          ...toRef(ref.alias ?? ref.table, ref.column),
-        })),
-    ) ?? query;
+    query =
+      query.groupBy?.(
+        plan.pipeline.aggregate.groupBy.map((ref) =>
+          resolveColumnRef(plan.joinPlan.aliases, {
+            ...toRef(ref.alias ?? ref.table, ref.column),
+          }),
+        ),
+      ) ?? query;
   }
 
   if (plan.pipeline.sort) {
@@ -671,7 +678,10 @@ async function buildKyselySetOpRelSingleQueryBuilder<TContext>(
   if (wrapper.project) {
     for (const rawMapping of wrapper.project.columns) {
       const mapping = requireColumnProjectMapping(rawMapping);
-      if ((mapping.source.alias || mapping.source.table) && mapping.source.column !== mapping.output) {
+      if (
+        (mapping.source.alias || mapping.source.table) &&
+        mapping.source.column !== mapping.output
+      ) {
         throw new UnsupportedSingleQueryPlanError(
           "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
         );
@@ -735,11 +745,15 @@ async function buildKyselyWithRelSingleQueryBuilder<TContext>(
 
   const body = unwrapWithBodyRel(rel.body);
   if (!body) {
-    throw new UnsupportedSingleQueryPlanError("Unsupported WITH body shape for single-query pushdown.");
+    throw new UnsupportedSingleQueryPlanError(
+      "Unsupported WITH body shape for single-query pushdown.",
+    );
   }
 
   const scanAlias = body.cteScan.alias ?? body.cteScan.table;
-  const from = body.cteScan.alias ? `${body.cteScan.table} as ${body.cteScan.alias}` : body.cteScan.table;
+  const from = body.cteScan.alias
+    ? `${body.cteScan.table} as ${body.cteScan.alias}`
+    : body.cteScan.table;
   let query = withDb.selectFrom(from);
 
   const aliases = new Map<string, ScanBinding<TContext>>([
@@ -764,9 +778,7 @@ async function buildKyselyWithRelSingleQueryBuilder<TContext>(
     }
   }
 
-  const windowByAlias = new Map(
-    (body.window?.functions ?? []).map((fn) => [fn.as, fn] as const),
-  );
+  const windowByAlias = new Map((body.window?.functions ?? []).map((fn) => [fn.as, fn] as const));
 
   const projection = body.project?.columns ?? [
     ...body.cteScan.select.map((column) => ({
@@ -963,7 +975,9 @@ type SelectionEntry = {
 function buildSelection<TContext>(plan: SingleQueryPlan<TContext>): SelectionEntry[] {
   if (!plan.pipeline.aggregate) {
     if (!plan.pipeline.project) {
-      throw new UnsupportedSingleQueryPlanError("Non-aggregate rel fragment requires a project node.");
+      throw new UnsupportedSingleQueryPlanError(
+        "Non-aggregate rel fragment requires a project node.",
+      );
     }
 
     return plan.pipeline.project.columns.map((rawMapping) => {
@@ -984,17 +998,16 @@ function buildSelection<TContext>(plan: SingleQueryPlan<TContext>): SelectionEnt
     plan.pipeline.aggregate.groupBy.map((groupBy) => [groupBy.column, groupBy] as const),
   );
 
-  const projection = plan.pipeline.project?.columns ??
-    [
-      ...plan.pipeline.aggregate.groupBy.map((groupBy) => ({
-        source: { column: groupBy.column },
-        output: groupBy.column,
-      })),
-      ...plan.pipeline.aggregate.metrics.map((metric) => ({
-        source: { column: metric.as },
-        output: metric.as,
-      })),
-    ];
+  const projection = plan.pipeline.project?.columns ?? [
+    ...plan.pipeline.aggregate.groupBy.map((groupBy) => ({
+      source: { column: groupBy.column },
+      output: groupBy.column,
+    })),
+    ...plan.pipeline.aggregate.metrics.map((metric) => ({
+      source: { column: metric.as },
+      output: metric.as,
+    })),
+  ];
 
   return projection.map((rawMapping) => {
     const mapping = requireColumnProjectMapping(rawMapping);
@@ -1002,7 +1015,8 @@ function buildSelection<TContext>(plan: SingleQueryPlan<TContext>): SelectionEnt
     if (metric) {
       return {
         output: mapping.output,
-        toExpression: (eb: any) => buildMetricExpression(eb, metric, plan.joinPlan.aliases).as(mapping.output),
+        toExpression: (eb: any) =>
+          buildMetricExpression(eb, metric, plan.joinPlan.aliases).as(mapping.output),
       } satisfies SelectionEntry;
     }
 
@@ -1043,7 +1057,9 @@ function buildMetricExpression<TContext>(
 
   const fn = (eb as { fn?: Record<string, (value: unknown) => any> }).fn;
   if (!fn) {
-    throw new UnsupportedSingleQueryPlanError("Kysely expression builder does not expose fn helpers.");
+    throw new UnsupportedSingleQueryPlanError(
+      "Kysely expression builder does not expose fn helpers.",
+    );
   }
 
   const fnImpl = fn[metric.fn];
@@ -1061,7 +1077,7 @@ function buildMetricExpression<TContext>(
 
 function resolveSortRef<TContext>(
   plan: SingleQueryPlan<TContext>,
-  term: Extract<RelNode, { kind: "sort" }>['orderBy'][number],
+  term: Extract<RelNode, { kind: "sort" }>["orderBy"][number],
 ): string {
   if (term.source.alias || term.source.table) {
     return resolveColumnRef(plan.joinPlan.aliases, {

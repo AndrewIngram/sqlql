@@ -107,7 +107,11 @@ describe("playground/sql-completion", () => {
     } as const;
 
     const aliasSql = "SELECT * FROM orders o WHERE o.";
-    const aliasSuggestions = getSqlSuggestionLabels(aliasSql, aliasSql.length, schemaForSuggestions);
+    const aliasSuggestions = getSqlSuggestionLabels(
+      aliasSql,
+      aliasSql.length,
+      schemaForSuggestions,
+    );
     expect(aliasSuggestions.context).toBe("alias_column");
     expect(aliasSuggestions.labels).toContain("id");
     expect(aliasSuggestions.labels).toContain("created_at");
@@ -139,7 +143,11 @@ describe("playground/sql-completion", () => {
     } as const;
 
     const aliasSql = "SELECT * FROM orders o ORDER BY o.";
-    const aliasSuggestions = getSqlSuggestionLabels(aliasSql, aliasSql.length, schemaForSuggestions);
+    const aliasSuggestions = getSqlSuggestionLabels(
+      aliasSql,
+      aliasSql.length,
+      schemaForSuggestions,
+    );
     expect(aliasSuggestions.context).toBe("alias_column");
     expect(aliasSuggestions.labels).toContain("created_at");
     expect(aliasSuggestions.labels).toContain("id");

@@ -1,5 +1,5 @@
 import type { DataEntityHandle } from "./data-entity";
-import type { AggregateFunction, ScanFilterClause, ScanOrderBy } from "./primitives";
+import type { AggregateFunction, ScanFilterClause, ScanOrderBy } from "../schema/definition";
 
 export type RelConvention = `provider:${string}` | "local";
 

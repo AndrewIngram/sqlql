@@ -30,4 +30,3 @@ describe("playground/query-selection-state", () => {
     expect(canSelectCatalogQuery("commerce:0", map)).toBe(true);
   });
 });
-

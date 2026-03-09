@@ -19,4 +19,3 @@ describe("playground/query-preview", () => {
     expect(truncateReason(reason, 32).endsWith("…")).toBe(true);
   });
 });
-

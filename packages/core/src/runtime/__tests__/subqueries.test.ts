@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createMethodsSession } from "../../testing/methods-provider";
 import { createArrayTableMethods } from "../../schema/array-methods";
 
-import { defineTableMethods } from "@tupl/core";
+import { defineTableMethods } from "@tupl/core/schema";
 import { commerceRows, commerceSchema } from "../../testing/commerce-fixture";
 import { withQueryHarness } from "../../testing/query-harness";
 

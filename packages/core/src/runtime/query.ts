@@ -1,7 +1,4 @@
-import {
-  type ConstraintValidationOptions,
-  validateTableConstraintRows,
-} from "./constraints";
+import { type ConstraintValidationOptions, validateTableConstraintRows } from "./constraints";
 import { Result, type Result as BetterResult } from "better-result";
 import {
   TuplDiagnosticError,
@@ -13,7 +10,6 @@ import {
   type TuplResult,
 } from "./errors";
 import {
-  normalizeCapability,
   unwrapProviderOperationResult,
   type ProviderAdapter,
   type ProviderCapabilityReport,
@@ -24,11 +20,13 @@ import {
 } from "../provider";
 import { countRelNodes, type RelExpr, type RelNode } from "../model/rel";
 import { executeRelWithProvidersResult } from "./executor";
+import { expandRelViewsResult, lowerSqlToRelResult } from "../planner/planning";
 import {
   buildProviderFragmentForRelResult,
-  expandRelViewsResult,
-  lowerSqlToRelResult,
-} from "../planner/planning";
+  inspectSyncProviderFragmentCapabilityResult,
+  maybeExecuteProviderFragmentResult,
+  summarizeCapabilityReason,
+} from "../provider/fragments";
 import {
   finalizeSchemaDefinition,
   getNormalizedTableBinding,
@@ -324,20 +322,14 @@ function tryQueryStep<T>(operation: string, fn: () => T): BetterResult<T, TuplEr
   }) as BetterResult<T, TuplError>;
 }
 
-async function tryQueryStepAsync<T>(
-  operation: string,
-  fn: () => Promise<T>,
-) {
+async function tryQueryStepAsync<T>(operation: string, fn: () => Promise<T>) {
   return Result.tryPromise({
     try: fn,
     catch: (error) => toTuplRuntimeError(error, operation),
   });
 }
 
-function enforceExecutionRowLimitResult(
-  rows: QueryRow[],
-  guardrails: QueryGuardrails,
-) {
+function enforceExecutionRowLimitResult(rows: QueryRow[], guardrails: QueryGuardrails) {
   if (rows.length > guardrails.maxExecutionRows) {
     return Result.err(
       new TuplGuardrailError({
@@ -389,109 +381,6 @@ async function withTimeoutResult<T>(
   }
 }
 
-function summarizeCapabilityReason(report: ProviderCapabilityReport | null): string {
-  if (!report) {
-    return "Provider pushdown is not available for this query shape.";
-  }
-  if (report.reason && report.reason.length > 0) {
-    return report.reason;
-  }
-  if (report.missingAtoms && report.missingAtoms.length > 0) {
-    return `Missing provider capability atoms: ${report.missingAtoms.join(", ")}.`;
-  }
-  return "Provider pushdown is not available for this query shape.";
-}
-
-function buildCapabilityDiagnostics<TContext>(
-  provider: ProviderAdapter<TContext> | null,
-  fragment: ProviderFragment | null,
-  report: ProviderCapabilityReport | null,
-  queryPolicy?: QueryFallbackPolicy,
-): TuplDiagnostic[] {
-  const diagnostics = [...(report?.diagnostics ?? [])];
-  if (!provider || !fragment || !report || report.supported) {
-    return diagnostics;
-  }
-
-  const policy = resolveFallbackPolicy(queryPolicy, provider.fallbackPolicy);
-  const details: Record<string, unknown> = {
-    provider: provider.name,
-    fragment: fragment.kind,
-  };
-  if (report.routeFamily) {
-    details.routeFamily = report.routeFamily;
-  }
-  if (report.requiredAtoms?.length) {
-    details.requiredAtoms = report.requiredAtoms;
-  }
-  if (report.missingAtoms?.length) {
-    details.missingAtoms = report.missingAtoms;
-  }
-  if (report.estimatedRows != null) {
-    details.estimatedRows = report.estimatedRows;
-  }
-  if (report.estimatedCost != null) {
-    details.estimatedCost = report.estimatedCost;
-  }
-
-  diagnostics.push(
-    makeDiagnostic(
-      policy.allowFallback ? "TUPL_WARN_FALLBACK" : "TUPL_ERR_FALLBACK",
-      policy.allowFallback ? "warning" : "error",
-      summarizeCapabilityReason(report),
-      details,
-      policy.allowFallback ? "0A000" : "42000",
-    ),
-  );
-
-  return diagnostics;
-}
-
-async function resolveProviderCapabilityForRel<TContext>(
-  input: QueryInput<TContext>,
-  rel: RelNode,
-): Promise<BetterResult<QueryCapabilityResolution<TContext>, TuplError>> {
-  const fragmentResult = buildProviderFragmentForRelResult(rel, input.schema, input.context);
-  if (Result.isError(fragmentResult)) {
-    return fragmentResult;
-  }
-
-  const fragment = fragmentResult.value;
-  if (!fragment) {
-    return Result.ok({
-      fragment: null,
-      provider: null,
-      report: null,
-      diagnostics: [],
-    });
-  }
-
-  const provider = input.providers[fragment.provider] ?? null;
-  if (!provider) {
-    return Result.ok({
-      fragment,
-      provider: null,
-      report: null,
-      diagnostics: [],
-    });
-  }
-
-  const capabilityResult = await tryQueryStepAsync("resolve provider capability", () =>
-    Promise.resolve(provider.canExecute(fragment, input.context)),
-  );
-  if (Result.isError(capabilityResult)) {
-    return capabilityResult;
-  }
-
-  const report = normalizeCapability(capabilityResult.value);
-  return Result.ok({
-    fragment,
-    provider,
-    report,
-    diagnostics: buildCapabilityDiagnostics(provider, fragment, report, input.fallbackPolicy),
-  });
-}
-
 function resolveSyncProviderCapabilityForRel<TContext>(
   input: QueryInput<TContext>,
   rel: RelNode,
@@ -521,24 +410,24 @@ function resolveSyncProviderCapabilityForRel<TContext>(
     });
   }
 
-  const capabilityResult = tryQueryStep("resolve provider capability", () =>
-    provider.canExecute(fragment, input.context),
-  );
+  const capabilityResult = inspectSyncProviderFragmentCapabilityResult({
+    provider,
+    fragment,
+    context: input.context,
+    fallbackPolicy: resolveFallbackPolicy(input.fallbackPolicy, provider.fallbackPolicy),
+  });
   if (Result.isError(capabilityResult)) {
     return capabilityResult;
   }
-
-  const capability = capabilityResult.value;
-  if (isPromiseLike(capability)) {
+  if (!capabilityResult.value) {
     return Result.ok(null);
   }
 
-  const report = normalizeCapability(capability);
   return Result.ok({
     fragment,
     provider,
-    report,
-    diagnostics: buildCapabilityDiagnostics(provider, fragment, report, input.fallbackPolicy),
+    report: capabilityResult.value.report,
+    diagnostics: capabilityResult.value.diagnostics,
   });
 }
 
@@ -628,65 +517,36 @@ async function maybeExecuteWholeQueryFragmentResult<TContext>(
   input: QueryInput<TContext>,
   rel: RelNode,
 ): Promise<BetterResult<QueryRow[] | null, TuplError>> {
-  const resolutionResult = await resolveProviderCapabilityForRel(input, rel);
-  if (Result.isError(resolutionResult)) {
-    return resolutionResult;
-  }
-
-  const resolution = resolutionResult.value;
-  if (!resolution.fragment || !resolution.provider || !resolution.report) {
-    return Result.ok(null);
-  }
-
-  if (!resolution.report.supported) {
-    const fallbackResult = maybeRejectFallbackResult(input, resolution);
-    if (Result.isError(fallbackResult)) {
-      return fallbackResult;
-    }
-
-    return Result.ok(null);
-  }
-
-  const compiled = unwrapProviderOperationResult(
-    await resolution.provider.compile(resolution.fragment, input.context),
+  const rowsResult = await maybeExecuteProviderFragmentResult(
+    {
+      schema: input.schema,
+      providers: input.providers,
+      context: input.context,
+      rel,
+      ...(input.fallbackPolicy ? { fallbackPolicy: input.fallbackPolicy } : {}),
+      ...(input.constraintValidation ? { constraintValidation: input.constraintValidation } : {}),
+    },
+    {
+      enforceFallbackPolicy: true,
+    },
   );
-  const executed = await resolution.provider.execute(compiled, input.context);
-  const rows = unwrapProviderOperationResult(executed);
-
-  if (resolution.fragment.kind === "rel") {
-    return Result.ok(mapProviderRowsToRelOutput(rows, rel, input.schema));
+  if (Result.isError(rowsResult)) {
+    return rowsResult;
   }
 
-  if (resolution.fragment.kind === "scan" && rel.kind === "scan") {
-    const binding = getNormalizedTableBinding(input.schema, rel.table);
-    const mappedRows = mapProviderRowsToLogical(
-        rows,
-        rel.select,
-        binding?.kind === "physical" ? binding : null,
-        input.schema.tables[rel.table],
-        {
-          enforceNotNull:
-            !input.constraintValidation || input.constraintValidation.mode === "off",
-          enforceEnum:
-            !input.constraintValidation || input.constraintValidation.mode === "off",
-        },
-      );
+  if (rowsResult.value && rel.kind === "scan") {
     validateTableConstraintRows({
       schema: input.schema,
       tableName: rel.table,
-      rows: mappedRows,
+      rows: rowsResult.value,
       ...(input.constraintValidation ? { options: input.constraintValidation } : {}),
     });
-    return Result.ok(mappedRows);
   }
 
-  return Result.ok(rows);
+  return rowsResult;
 }
 
-function enforcePlannerNodeLimitResult(
-  plannerNodeCount: number,
-  guardrails: QueryGuardrails,
-) {
+function enforcePlannerNodeLimitResult(plannerNodeCount: number, guardrails: QueryGuardrails) {
   if (plannerNodeCount > guardrails.maxPlannerNodes) {
     return Result.err(
       new TuplGuardrailError({
@@ -782,7 +642,9 @@ function createProviderFragmentSession<TContext>(
     };
 
     const compiledResult = await tryQueryStepAsync("compile provider fragment", async () =>
-      unwrapProviderOperationResult(await Promise.resolve(provider.compile(fragment, input.context))),
+      unwrapProviderOperationResult(
+        await Promise.resolve(provider.compile(fragment, input.context)),
+      ),
     );
     if (Result.isError(compiledResult)) {
       state = setFailedStepState(state, compiledResult.error, Date.now());
@@ -1120,7 +982,9 @@ function buildRelExecutionPlan<TContext>(
       case "column":
         return [];
       case "function":
-        return [...new Set(expr.args.flatMap((arg) => visitExprSubqueries(arg, owner, parentScopeId)))];
+        return [
+          ...new Set(expr.args.flatMap((arg) => visitExprSubqueries(arg, owner, parentScopeId))),
+        ];
       case "subquery": {
         const scopeId = nextId("scope_subquery");
         const label =
@@ -1868,7 +1732,8 @@ async function queryInternalResult<TContext>(
     const remoteRows = yield* Result.await(
       withTimeoutResult(
         "execute whole provider fragment",
-        () => maybeExecuteWholeQueryFragmentResult(resolvedInput, expandedRel).then(unwrapQueryResult),
+        () =>
+          maybeExecuteWholeQueryFragmentResult(resolvedInput, expandedRel).then(unwrapQueryResult),
         guardrails.timeoutMs,
       ),
     );

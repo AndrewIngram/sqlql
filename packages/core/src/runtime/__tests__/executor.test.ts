@@ -1,15 +1,9 @@
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
-import {
-  executeRelWithProvidersResult,
-  type ProviderAdapter,
-  type ProviderFragment,
-  type QueryRow,
-  type RelNode,
-  type ScanFilterClause,
-  type TableScanRequest,
-} from "@tupl/core";
+import { type ProviderAdapter, type ProviderFragment, type RelNode } from "@tupl/core";
+import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/core/schema";
+import { executeRelWithProvidersResult } from "../executor";
 import { finalizeProviders } from "../../testing/executable-schema";
 import { buildSchema, buildEntitySchema } from "../../testing/schema-builder";
 
@@ -573,15 +567,15 @@ describe("query/local executor", () => {
 
     const result = (
       await executeRelWithProvidersResult(
-      rel,
-      schema,
-      providers,
-      {},
-      {
-        maxExecutionRows: 1000,
-        maxLookupKeysPerBatch: 1000,
-        maxLookupBatches: 10,
-      },
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
       )
     ).unwrap();
 
@@ -673,15 +667,15 @@ describe("query/local executor", () => {
 
     const result = (
       await executeRelWithProvidersResult(
-      rel,
-      schema,
-      providers,
-      {},
-      {
-        maxExecutionRows: 1000,
-        maxLookupKeysPerBatch: 1000,
-        maxLookupBatches: 10,
-      },
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
       )
     ).unwrap();
 
@@ -787,15 +781,15 @@ describe("query/local executor", () => {
 
     const result = (
       await executeRelWithProvidersResult(
-      rel,
-      schema,
-      providers,
-      {},
-      {
-        maxExecutionRows: 1000,
-        maxLookupKeysPerBatch: 1000,
-        maxLookupBatches: 10,
-      },
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
       )
     ).unwrap();
 
@@ -890,15 +884,15 @@ describe("query/local executor", () => {
 
     const result = (
       await executeRelWithProvidersResult(
-      rel,
-      schema,
-      providers,
-      {},
-      {
-        maxExecutionRows: 1000,
-        maxLookupKeysPerBatch: 1000,
-        maxLookupBatches: 10,
-      },
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
       )
     ).unwrap();
 
@@ -1011,15 +1005,15 @@ describe("query/local executor", () => {
 
     const result = (
       await executeRelWithProvidersResult(
-      rel,
-      schema,
-      providers,
-      {},
-      {
-        maxExecutionRows: 1000,
-        maxLookupKeysPerBatch: 1000,
-        maxLookupBatches: 10,
-      },
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
       )
     ).unwrap();
 

@@ -1,20 +1,22 @@
 import { Result } from "better-result";
 import { aggregateArrayRows, scanArrayRows } from "../schema/array-methods";
 import {
-  type AggregatePlanDecision,
   bindAdapterEntities,
   type ConstraintValidationOptions,
   createDataEntityHandle,
-  createSchemaBuilder,
   createExecutableSchema,
-  type LookupPlanDecision,
-  type PlannedAggregateRequest,
-  type PlannedLookupRequest,
-  type PlannedScanRequest,
   type QueryGuardrails,
   type QuerySessionOptions,
   type ProviderAdapter,
   type ProviderFragment,
+} from "@tupl/core";
+import {
+  createSchemaBuilder,
+  type AggregatePlanDecision,
+  type LookupPlanDecision,
+  type PlannedAggregateRequest,
+  type PlannedLookupRequest,
+  type PlannedScanRequest,
   type QueryRow,
   type ScanPlanDecision,
   type ScanFilterClause,
@@ -25,7 +27,7 @@ import {
   type TableLookupRequest,
   type TableMethodsMap,
   type TableScanRequest,
-} from "@tupl/core";
+} from "@tupl/core/schema";
 
 function toEntityColumns(schema: SchemaDefinition, tableName: string) {
   const table = schema.tables[tableName];
@@ -113,14 +115,20 @@ export function createMethodsProvider<TContext>(
         return Result.ok([]);
       }
 
-      return Result.ok(await executePlannedLookup(method, {
-        table: request.table,
-        ...(request.alias ? { alias: request.alias } : {}),
-        key: request.key,
-        values: request.keys,
-        select: request.select,
-        ...(request.where ? { where: request.where } : {}),
-      }, context));
+      return Result.ok(
+        await executePlannedLookup(
+          method,
+          {
+            table: request.table,
+            ...(request.alias ? { alias: request.alias } : {}),
+            key: request.key,
+            values: request.keys,
+            select: request.select,
+            ...(request.where ? { where: request.where } : {}),
+          },
+          context,
+        ),
+      );
     },
   };
 
@@ -325,8 +333,12 @@ function splitScanRequest(
       select: request.select,
       ...(remoteWhere && remoteWhere.length > 0 ? { where: remoteWhere } : {}),
       ...(remoteOrderBy && remoteOrderBy.length > 0 ? { orderBy: remoteOrderBy } : {}),
-      ...(decision.limitOffset !== "residual" && request.limit != null ? { limit: request.limit } : {}),
-      ...(decision.limitOffset !== "residual" && request.offset != null ? { offset: request.offset } : {}),
+      ...(decision.limitOffset !== "residual" && request.limit != null
+        ? { limit: request.limit }
+        : {}),
+      ...(decision.limitOffset !== "residual" && request.offset != null
+        ? { offset: request.offset }
+        : {}),
     },
     ...((residualWhere && residualWhere.length > 0) ||
     (residualOrderBy && residualOrderBy.length > 0) ||
@@ -376,7 +388,9 @@ function splitLookupRequest(
       id: `where_${index}`,
       clause,
     })) ?? [];
-  const remoteWhere = plannedWhere.filter((term) => whereIds.has(term.id)).map((term) => term.clause);
+  const remoteWhere = plannedWhere
+    .filter((term) => whereIds.has(term.id))
+    .map((term) => term.clause);
   const residualWhere = plannedWhere
     .filter((term) => !whereIds.has(term.id))
     .map((term) => term.clause);
@@ -541,7 +555,9 @@ function splitAggregateRequest(
               ? { groupBy: request.groupBy }
               : {}),
             ...(residualMetrics.length ? { metrics: residualMetrics } : {}),
-            ...(decision.limit === "residual" && request.limit != null ? { limit: request.limit } : {}),
+            ...(decision.limit === "residual" && request.limit != null
+              ? { limit: request.limit }
+              : {}),
           },
         }
       : {}),

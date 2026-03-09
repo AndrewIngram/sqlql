@@ -8,7 +8,7 @@ import {
   type ProviderOperationResult,
   type ProviderCapabilityReport,
 } from "..";
-import type { QueryRow, ScanFilterClause } from "../../model/primitives";
+import type { QueryRow, ScanFilterClause } from "../../schema/definition";
 
 export interface LookupEntityBinding<TColumns extends string = string> {
   lookupKey: TColumns;
@@ -54,10 +54,7 @@ export function validateLookupRequest<TColumns extends string>(
   return Result.ok(undefined);
 }
 
-export function filterLookupRows(
-  rows: QueryRow[],
-  clauses?: ScanFilterClause[],
-): QueryRow[] {
+export function filterLookupRows(rows: QueryRow[], clauses?: ScanFilterClause[]): QueryRow[] {
   return (clauses ?? []).reduce(
     (current, clause) => current.filter((row) => matchesLookupClause(row, clause)),
     rows,

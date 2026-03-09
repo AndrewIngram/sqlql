@@ -11,7 +11,7 @@ import {
   type TableAggregateRequest,
   type TableLookupRequest,
   type TableScanRequest,
-} from "@tupl/core";
+} from "@tupl/core/schema";
 import { buildEntitySchema } from "../../testing/schema-builder";
 
 const EMPTY_CONTEXT = {} as const;

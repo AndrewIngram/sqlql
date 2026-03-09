@@ -16,7 +16,7 @@ import type {
   ScanFilterClause,
   TableAggregateRequest,
   TableScanRequest,
-} from "../model/primitives";
+} from "../schema/definition";
 import type { RelExpr, RelNode } from "../model/rel";
 
 export type {
@@ -395,10 +395,23 @@ function collectCapabilityAtomsForRel(node: RelNode, atoms: Set<ProviderCapabili
       collectCapabilityAtomsForRel(node.input, atoms);
       return;
     case "window":
-      if (node.functions.some((fn) => fn.fn === "dense_rank" || fn.fn === "rank" || fn.fn === "row_number")) {
+      if (
+        node.functions.some(
+          (fn) => fn.fn === "dense_rank" || fn.fn === "rank" || fn.fn === "row_number",
+        )
+      ) {
         atoms.add("window.rank_basic");
       }
-      if (node.functions.some((fn) => fn.fn === "count" || fn.fn === "sum" || fn.fn === "avg" || fn.fn === "min" || fn.fn === "max")) {
+      if (
+        node.functions.some(
+          (fn) =>
+            fn.fn === "count" ||
+            fn.fn === "sum" ||
+            fn.fn === "avg" ||
+            fn.fn === "min" ||
+            fn.fn === "max",
+        )
+      ) {
         atoms.add("window.aggregate_default_frame");
       }
       collectCapabilityAtomsForRel(node.input, atoms);

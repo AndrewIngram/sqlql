@@ -12,12 +12,14 @@ import {
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
   type ProviderRuntimeBinding,
-  type QueryRow,
+} from "@tupl/core";
+import type { QueryRow } from "@tupl/core/schema";
+import {
   buildLookupOnlyUnsupportedReport,
   filterLookupRows,
   projectLookupRow,
   validateLookupRequest,
-} from "@tupl/core";
+} from "@tupl/core/provider-shapes";
 
 export interface RedisPipelineResult {
   hgetall: [Error | null, Record<string, string>];
@@ -66,7 +68,12 @@ export interface IoredisEntityConfig<
 
 type IoredisEntityMap<TContext> = Record<
   string,
-  IoredisEntityConfig<TContext, string, Record<string, unknown>, DataEntityShape<string> | undefined>
+  IoredisEntityConfig<
+    TContext,
+    string,
+    Record<string, unknown>,
+    DataEntityShape<string> | undefined
+  >
 >;
 
 type InferIoredisProviderContext<TEntities extends IoredisEntityMap<any>> = {
@@ -154,12 +161,21 @@ function getEntityConfigOrThrow<TContext>(
 }
 
 function inferEntityHandle<
-  TConfig extends IoredisEntityConfig<any, string, Record<string, unknown>, DataEntityShape<string> | undefined>,
+  TConfig extends IoredisEntityConfig<
+    any,
+    string,
+    Record<string, unknown>,
+    DataEntityShape<string> | undefined
+  >,
 >(
   config: TConfig,
   provider: string,
   adapter: ProviderAdapter<any>,
-): DataEntityHandle<InferEntityColumns<TConfig>, InferEntityRow<TConfig>, InferEntityShape<TConfig>> {
+): DataEntityHandle<
+  InferEntityColumns<TConfig>,
+  InferEntityRow<TConfig>,
+  InferEntityShape<TConfig>
+> {
   return createDataEntityHandle({
     entity: config.entity,
     provider,

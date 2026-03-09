@@ -5,7 +5,6 @@ import * as pgliteModule from "@electric-sql/pglite";
 import * as betterResultModule from "better-result";
 import {
   type ExecutableSchema,
-  type PhysicalPlan,
   type ProviderAdapter,
   type ProviderFragment,
   type QueryExecutionPlan,
@@ -13,6 +12,7 @@ import {
   type QueryStepEvent,
   type RelNode,
 } from "@tupl/core";
+import { type PhysicalPlan, lowerSqlToRel, planPhysicalQuery } from "@tupl/core/planner";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { createVirtualModuleRuntime } from "./playground-module-runtime";
@@ -108,8 +108,8 @@ interface ProviderModuleExports<TContext> {
 }
 
 interface TuplRuntimeModule {
-  lowerSqlToRel: typeof import("@tupl/core").lowerSqlToRel;
-  planPhysicalQuery: typeof import("@tupl/core").planPhysicalQuery;
+  lowerSqlToRel: typeof lowerSqlToRel;
+  planPhysicalQuery: typeof planPhysicalQuery;
 }
 
 interface PlaygroundRuntimeModule {
@@ -269,7 +269,7 @@ function createProviderRuntime<TContext>(
   const dbProviderModule = runtime.executeModule(PLAYGROUND_DB_PROVIDER_FILE_PATH);
   const redisProviderModule = runtime.executeModule(PLAYGROUND_REDIS_PROVIDER_FILE_PATH);
   const tuplModule = runtime.executeModule(
-    `${workspace.rootPath}/node_modules/@tupl/core/index.ts`,
+    `${workspace.rootPath}/node_modules/@tupl/core/planner/index.ts`,
   ) as unknown as TuplRuntimeModule;
   const playgroundRuntimeModule = externalModules["@playground/runtime"] as
     | PlaygroundRuntimeModule

@@ -1,8 +1,16 @@
+export { createExecutableSchema, createExecutableSchemaResult } from "@tupl/core";
+export type {
+  ExecutableSchema,
+  ExecutableSchemaQueryInput,
+  ExecutableSchemaSessionInput,
+  ExplainResult,
+  QuerySession,
+  QuerySessionOptions,
+} from "@tupl/core";
+
 export {
   asIso8601Timestamp,
   coerceValue,
-  createExecutableSchema,
-  createExecutableSchemaResult,
   createPhysicalBindingFromEntity,
   createSchemaBuilder,
   createTableDefinitionFromEntity,
@@ -31,7 +39,7 @@ export {
   validateProviderBindings,
   validateProviderBindingsResult,
   validateRelAgainstSchema,
-} from "@tupl/core";
+} from "@tupl/core/schema";
 
 export type {
   AggregateFunction,
@@ -40,10 +48,6 @@ export type {
   ColumnDefinition,
   ColumnForeignKeyReference,
   ColumnValue,
-  ExecutableSchema,
-  ExecutableSchemaQueryInput,
-  ExecutableSchemaSessionInput,
-  ExplainResult,
   FilterClauseBase,
   ForeignKeyConstraint,
   Iso8601TimestampString,
@@ -66,8 +70,6 @@ export type {
   PlannedScanRequest,
   PrimaryKeyConstraint,
   QueryRow,
-  QuerySession,
-  QuerySessionOptions,
   ReferentialAction,
   ResolveSchemaLinkedEnumsOptions,
   ResolvedColumnDefinition,
@@ -118,4 +120,4 @@ export type {
   AggregatePlanDecision,
   AggregatePlanDecisionById,
   AggregatePlanDecisionRemoteResidual,
-} from "@tupl/core";
+} from "@tupl/core/schema";

@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { queryWithMethods } from "../../testing/methods-provider";
 import { createArrayTableMethods, scanArrayRows } from "../../schema/array-methods";
 
-import { defineTableMethods, type TableMethodsForSchema, type TableScanRequest } from "@tupl/core";
+import {
+  defineTableMethods,
+  type TableMethodsForSchema,
+  type TableScanRequest,
+} from "@tupl/core/schema";
 import { buildEntitySchema } from "../../testing/schema-builder";
 
 const EMPTY_CONTEXT = {} as const;

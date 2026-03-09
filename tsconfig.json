@@ -13,6 +13,9 @@
     "forceConsistentCasingInFileNames": true,
     "paths": {
       "@tupl/core": ["./packages/core/src/index.ts"],
+      "@tupl/core/schema": ["./packages/core/src/schema/index.ts"],
+      "@tupl/core/planner": ["./packages/core/src/planner/index.ts"],
+      "@tupl/core/provider-shapes": ["./packages/core/src/provider-shapes/index.ts"],
       "@tupl/schema": ["./packages/schema/src/index.ts"],
       "@tupl/provider-drizzle": ["./packages/provider-drizzle/src/index.ts"],
       "@tupl/provider-ioredis": ["./packages/provider-ioredis/src/index.ts"],

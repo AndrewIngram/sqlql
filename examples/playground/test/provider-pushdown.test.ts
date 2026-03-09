@@ -67,12 +67,18 @@ describe("playground/provider-pushdown", () => {
         const bundle = await createSession(compiled, scenario.context, { reseed });
         reseed = false;
         const plan = bundle.session.getPlan();
-
-        expect(plan.steps).toHaveLength(1);
         expect(plan.steps[0]?.kind).toBe("remote_fragment");
         expect(plan.steps[0]?.request).toEqual({
           fragment: "rel",
         });
+        expect(plan.steps.filter((step) => step.kind === "remote_fragment")).toHaveLength(1);
+        expect(
+          plan.steps.every((step, index) =>
+            index === 0
+              ? step.kind === "remote_fragment"
+              : step.kind === "projection" && step.dependsOn.includes(plan.steps[0]!.id),
+          ),
+        ).toBe(true);
 
         const snapshot = await runSessionToCompletion(bundle.session, []);
         expect(

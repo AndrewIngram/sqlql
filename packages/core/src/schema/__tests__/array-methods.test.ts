@@ -7,7 +7,7 @@ import {
   scanArrayRows,
 } from "../array-methods";
 
-import { defineTableMethods, type QueryRow } from "@tupl/core";
+import { defineTableMethods, type QueryRow } from "@tupl/core/schema";
 import { buildEntitySchema } from "../../testing/schema-builder";
 
 describe("array methods", () => {

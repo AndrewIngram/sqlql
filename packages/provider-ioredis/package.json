@@ -4,6 +4,11 @@
   "description": "ioredis-backed lookup adapter helpers for tupl",
   "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/provider-ioredis#readme",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewIngram/tupl.git",
+    "directory": "packages/provider-ioredis"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",
@@ -16,18 +21,13 @@
       "require": "./dist/index.cjs"
     }
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/AndrewIngram/tupl.git",
-    "directory": "packages/provider-ioredis"
-  },
   "scripts": {
     "build": "tsdown src/index.ts --tsconfig tsconfig.build.json --format esm,cjs --sourcemap --clean --dts --unbundle",
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "ioredis": "latest",
-    "@tupl/core": "workspace:*"
+    "@tupl/core": "workspace:*",
+    "ioredis": "latest"
   }
 }

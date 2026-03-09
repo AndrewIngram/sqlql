@@ -4,13 +4,15 @@ import { describe, expect, it } from "vitest";
 import {
   createDataEntityHandle,
   createExecutableSchemaResult,
-  createSchemaBuilder,
-  resolveTableProviderResult,
   type ProviderAdapter,
   type ProviderFragment,
+} from "@tupl/core";
+import {
+  createSchemaBuilder,
+  resolveTableProviderResult,
   type QueryRow,
   type SchemaDefinition,
-} from "@tupl/core";
+} from "@tupl/core/schema";
 import { createExecutableSchemaFromProviders } from "../../testing/executable-schema";
 import { buildEntitySchema, buildSchema } from "../../testing/schema-builder";
 

@@ -12,6 +12,12 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         "@": resolve(rootDir, "./src"),
+        "@tupl/core/schema": resolve(rootDir, "../../packages/core/src/schema/index.ts"),
+        "@tupl/core/planner": resolve(rootDir, "../../packages/core/src/planner/index.ts"),
+        "@tupl/core/provider-shapes": resolve(
+          rootDir,
+          "../../packages/core/src/provider-shapes/index.ts",
+        ),
         "@tupl/core": resolve(rootDir, "../../packages/core/src/index.ts"),
         "@tupl/schema": resolve(rootDir, "../../packages/schema/src/index.ts"),
         "@tupl/provider-drizzle": resolve(rootDir, "../../packages/provider-drizzle/src/index.ts"),

@@ -22,7 +22,8 @@ describe("playground/redis-provider", () => {
           entity: "product_view_counts",
           lookupKey: "product_id",
           columns: ["product_id", "view_count"] as const,
-          buildRedisKey: ({ key, context }) => `product_view_counts:${context.userId}:${String(key)}`,
+          buildRedisKey: ({ key, context }) =>
+            `product_view_counts:${context.userId}:${String(key)}`,
           decodeRow: ({ hash }) => {
             if (typeof hash.product_id !== "string" || typeof hash.view_count !== "string") {
               return null;

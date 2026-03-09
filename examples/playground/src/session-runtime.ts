@@ -1,9 +1,4 @@
 import {
-  defaultSqlAstParser,
-  lowerSqlToRel,
-  resolveSchemaLinkedEnums,
-  resolveTableColumnDefinition,
-  type PhysicalPlan,
   type ProviderFragment,
   type QueryExecutionPlan,
   type QuerySession,
@@ -11,7 +6,14 @@ import {
   type QueryStepEvent,
   type RelNode,
 } from "@tupl/core";
-import type { QueryRow, SchemaDefinition } from "@tupl/schema";
+import { defaultSqlAstParser, lowerSqlToRel, type PhysicalPlan } from "@tupl/core/planner";
+import {
+  resolveSchemaLinkedEnums,
+  resolveTableColumnDefinition,
+  type QueryRow,
+  type ResolveSchemaLinkedEnumsOptions,
+  type SchemaDefinition,
+} from "@tupl/schema";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { requestSandboxWorker } from "./playground-sandbox-client";
@@ -497,7 +499,9 @@ export async function preparePlaygroundInput(
       let schema = schemaResult.schema;
       try {
         schema = resolveSchemaLinkedEnums(schema, {
-          resolveEnumValues: (ref) => resolveDownstreamEnumValues(ref),
+          resolveEnumValues: (
+            ref: Parameters<NonNullable<ResolveSchemaLinkedEnumsOptions["resolveEnumValues"]>>[0],
+          ) => resolveDownstreamEnumValues(ref),
           onUnresolved: "throw",
           strictUnmapped: true,
         });

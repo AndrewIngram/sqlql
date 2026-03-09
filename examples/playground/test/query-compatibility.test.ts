@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildQueryCatalog, FACADE_SCHEMA, QUERY_PRESETS } from "../src/examples";
-import {
-  buildQueryCompatibilityMap,
-  checkQueryCompatibility,
-} from "../src/query-compatibility";
+import { buildQueryCompatibilityMap, checkQueryCompatibility } from "../src/query-compatibility";
 import type { SchemaParseResult } from "../src/types";
 
 describe("playground/query-compatibility", () => {
@@ -46,8 +43,8 @@ describe("playground/query-compatibility", () => {
 
     const map = buildQueryCompatibilityMap(invalidSchemaResult, catalog);
     expect(Object.values(map).every((entry) => entry.compatible === false)).toBe(true);
-    expect(Object.values(map).every((entry) => entry.reason === "Fix schema TypeScript first.")).toBe(
-      true,
-    );
+    expect(
+      Object.values(map).every((entry) => entry.reason === "Fix schema TypeScript first."),
+    ).toBe(true);
   });
 });

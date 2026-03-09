@@ -24,11 +24,7 @@ import {
   type RelScanNode,
   type RelWindowFunction,
 } from "../model/rel";
-import {
-  normalizeCapability,
-  type ProviderFragment,
-  type ProvidersMap,
-} from "../provider";
+import { normalizeCapability, type ProviderFragment, type ProvidersMap } from "../provider";
 import type { ScanFilterClause, SchemaDefinition, SchemaViewRelNode } from "../schema";
 import {
   createPhysicalBindingFromEntity,
@@ -367,10 +363,7 @@ export function lowerSqlToRel(sql: string, schema: SchemaDefinition): RelLowerin
   return result.value;
 }
 
-export function lowerSqlToRelResult(
-  sql: string,
-  schema: SchemaDefinition,
-) {
+export function lowerSqlToRelResult(sql: string, schema: SchemaDefinition) {
   return Result.gen(function* () {
     const ast = yield* parseSqliteSelectAstResult(sql);
     return Result.try({
@@ -536,7 +529,9 @@ function validateSupportedWindowOver(expr: Record<string, unknown>): string | nu
 
   const rawName =
     expr.type === "aggr_func"
-      ? (typeof expr.name === "string" ? expr.name : null)
+      ? typeof expr.name === "string"
+        ? expr.name
+        : null
       : (expr.name as { name?: Array<{ value?: unknown }> } | undefined)?.name?.[0]?.value;
   if (typeof rawName !== "string") {
     return "Unsupported window function.";
@@ -1812,7 +1807,9 @@ function buildAggregateProviderFragment(
       ...(normalizedScan.where?.length ? { where: normalizedScan.where } : {}),
       ...(node.groupBy.length
         ? {
-            groupBy: node.groupBy.map((column) => mapColumnRefForAlias(column, aliasToSource).column),
+            groupBy: node.groupBy.map(
+              (column) => mapColumnRefForAlias(column, aliasToSource).column,
+            ),
           }
         : {}),
       metrics: node.metrics.map((metric) => ({
@@ -1829,9 +1826,7 @@ function buildAggregateProviderFragment(
   };
 }
 
-function extractAggregateProviderInput(
-  node: RelNode,
-): {
+function extractAggregateProviderInput(node: RelNode): {
   scan: RelScanNode;
   where: ScanFilterClause[];
 } | null {
@@ -2667,18 +2662,20 @@ function tryLowerSimpleSelect(
 
   const distinctMode = ast.distinct === "DISTINCT";
   const aggregateMode =
-    getGroupByColumns(ast.groupby).length > 0 || hasAggregateProjection(ast.columns) || distinctMode;
+    getGroupByColumns(ast.groupby).length > 0 ||
+    hasAggregateProjection(ast.columns) ||
+    distinctMode;
 
   const projections = aggregateMode
     ? null
-      : parseProjection(
-          ast.columns,
-          bindings,
-          aliasToBinding,
-          parseNamedWindowSpecifications(ast.window),
-          schema,
-          cteNames,
-        );
+    : parseProjection(
+        ast.columns,
+        bindings,
+        aliasToBinding,
+        parseNamedWindowSpecifications(ast.window),
+        schema,
+        cteNames,
+      );
   if (!aggregateMode && projections == null) {
     return null;
   }
@@ -2728,7 +2725,9 @@ function tryLowerSimpleSelect(
   }
 
   const aggregateMetrics = safeAggregateProjections
-    .filter((projection): projection is ParsedAggregateMetricProjection => projection.kind === "metric")
+    .filter(
+      (projection): projection is ParsedAggregateMetricProjection => projection.kind === "metric",
+    )
     .map((projection) => projection.metric);
 
   const aggregateMetricAliases = new Map<string, string>(
@@ -2737,7 +2736,13 @@ function tryLowerSimpleSelect(
   const hiddenHavingMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"] = [];
   const havingExpr =
     aggregateMode && ast.having
-      ? lowerHavingExpr(ast.having, bindings, aliasToBinding, aggregateMetricAliases, hiddenHavingMetrics)
+      ? lowerHavingExpr(
+          ast.having,
+          bindings,
+          aliasToBinding,
+          aggregateMetricAliases,
+          hiddenHavingMetrics,
+        )
       : null;
   if (ast.having && (!aggregateMode || !havingExpr)) {
     return null;
@@ -2748,7 +2753,11 @@ function tryLowerSimpleSelect(
     ast.orderby,
     bindings,
     aliasToBinding,
-    new Set((aggregateMode ? safeAggregateProjections : safeProjections).map((projection) => projection.output)),
+    new Set(
+      (aggregateMode ? safeAggregateProjections : safeProjections).map(
+        (projection) => projection.output,
+      ),
+    ),
   );
   if (orderByTerms == null) {
     return null;
@@ -2837,7 +2846,9 @@ function tryLowerSimpleSelect(
         }
       }
       if ("column" in projection.function && projection.function.column?.alias) {
-        columnsByAlias.get(projection.function.column.alias)?.add(projection.function.column.column);
+        columnsByAlias
+          .get(projection.function.column.alias)
+          ?.add(projection.function.column.column);
       }
       for (const orderTerm of projection.function.orderBy) {
         if (orderTerm.source.alias) {
@@ -3101,12 +3112,12 @@ function tryLowerSimpleSelect(
               }
             : projection.kind === "metric"
               ? {
-                kind: "column" as const,
-                source: {
-                  column: projection.metric.as,
-                },
-                output: projection.output,
-              }
+                  kind: "column" as const,
+                  source: {
+                    column: projection.metric.as,
+                  },
+                  output: projection.output,
+                }
               : {
                   kind: "expr" as const,
                   expr: projection.expr!,
@@ -3131,9 +3142,9 @@ function tryLowerSimpleSelect(
                       ? {
                           column: projection.source!.column,
                         }
-                    : {
-                        column: projection.function.as,
-                      },
+                      : {
+                          column: projection.function.as,
+                        },
               }),
           output: projection.output,
         })),
@@ -3276,13 +3287,7 @@ function parseProjection(
       continue;
     }
 
-    const expr = lowerSqlAstToRelExpr(
-      entry.expr,
-      bindings,
-      aliasToBinding,
-      schema,
-      cteNames,
-    );
+    const expr = lowerSqlAstToRelExpr(entry.expr, bindings, aliasToBinding, schema, cteNames);
     if (!expr) {
       return null;
     }
@@ -3473,20 +3478,8 @@ function lowerBinaryExprToRelExpr(
       return null;
     }
     const left = lowerSqlAstToRelExpr(expr.left, bindings, aliasToBinding, schema, cteNames);
-    const low = lowerSqlAstToRelExpr(
-      range.value[0],
-      bindings,
-      aliasToBinding,
-      schema,
-      cteNames,
-    );
-    const high = lowerSqlAstToRelExpr(
-      range.value[1],
-      bindings,
-      aliasToBinding,
-      schema,
-      cteNames,
-    );
+    const low = lowerSqlAstToRelExpr(range.value[0], bindings, aliasToBinding, schema, cteNames);
+    const high = lowerSqlAstToRelExpr(range.value[1], bindings, aliasToBinding, schema, cteNames);
     if (!left || !low || !high) {
       return null;
     }
@@ -3880,7 +3873,10 @@ function getGroupByColumns(rawGroupBy: unknown): unknown[] {
   return Array.isArray(groupBy.columns) ? groupBy.columns : [];
 }
 
-function parsePositiveOrdinalLiteral(raw: unknown, clause: "GROUP BY" | "ORDER BY"): number | undefined {
+function parsePositiveOrdinalLiteral(
+  raw: unknown,
+  clause: "GROUP BY" | "ORDER BY",
+): number | undefined {
   const expr = raw as { type?: unknown; value?: unknown };
   if (expr?.type !== "number") {
     return undefined;
@@ -3957,16 +3953,17 @@ function parseAggregateProjections(
         return null;
       }
 
-    out.push({
-      kind: "metric",
-      output,
-      metric,
-    });
+      out.push({
+        kind: "metric",
+        output,
+        metric,
+      });
       continue;
     }
 
     const column = resolveColumnRef(entry.expr, bindings, aliasToBinding);
-    const output = typeof entry.as === "string" && entry.as.length > 0 ? entry.as : column?.column ?? "expr";
+    const output =
+      typeof entry.as === "string" && entry.as.length > 0 ? entry.as : (column?.column ?? "expr");
     if (column) {
       out.push({
         kind: "group",
@@ -3979,13 +3976,7 @@ function parseAggregateProjections(
       continue;
     }
 
-    const expr = lowerSqlAstToRelExpr(
-      entry.expr,
-      bindings,
-      aliasToBinding,
-      schema,
-      cteNames,
-    );
+    const expr = lowerSqlAstToRelExpr(entry.expr, bindings, aliasToBinding, schema, cteNames);
     if (!expr) {
       return null;
     }
@@ -4167,9 +4158,21 @@ function lowerHavingExpr(
       };
     }
     case "binary_expr":
-      return lowerHavingBinaryExpr(expr, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+      return lowerHavingBinaryExpr(
+        expr,
+        bindings,
+        aliasToBinding,
+        aggregateMetricAliases,
+        hiddenMetrics,
+      );
     case "function":
-      return lowerHavingFunctionExpr(expr, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+      return lowerHavingFunctionExpr(
+        expr,
+        bindings,
+        aliasToBinding,
+        aggregateMetricAliases,
+        hiddenMetrics,
+      );
     default:
       if ("ast" in expr) {
         return null;
@@ -4199,9 +4202,27 @@ function lowerHavingBinaryExpr(
     if (range?.type !== "expr_list" || !Array.isArray(range.value) || range.value.length !== 2) {
       return null;
     }
-    const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
-    const low = lowerHavingExpr(range.value[0], bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
-    const high = lowerHavingExpr(range.value[1], bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const left = lowerHavingExpr(
+      expr.left,
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
+    const low = lowerHavingExpr(
+      range.value[0],
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
+    const high = lowerHavingExpr(
+      range.value[1],
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
     if (!left || !low || !high) {
       return null;
     }
@@ -4213,7 +4234,13 @@ function lowerHavingBinaryExpr(
   }
 
   if (operator === "IN" || operator === "NOT IN") {
-    const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const left = lowerHavingExpr(
+      expr.left,
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
     const values = parseHavingExprListToRelExprArgs(
       expr.right,
       bindings,
@@ -4232,7 +4259,13 @@ function lowerHavingBinaryExpr(
   }
 
   if (operator === "IS" || operator === "IS NOT") {
-    const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const left = lowerHavingExpr(
+      expr.left,
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
     const rightLiteral = parseLiteral(expr.right);
     if (!left || rightLiteral !== null) {
       return null;
@@ -4244,8 +4277,20 @@ function lowerHavingBinaryExpr(
     };
   }
 
-  const left = lowerHavingExpr(expr.left, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
-  const right = lowerHavingExpr(expr.right, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+  const left = lowerHavingExpr(
+    expr.left,
+    bindings,
+    aliasToBinding,
+    aggregateMetricAliases,
+    hiddenMetrics,
+  );
+  const right = lowerHavingExpr(
+    expr.right,
+    bindings,
+    aliasToBinding,
+    aggregateMetricAliases,
+    hiddenMetrics,
+  );
   if (!left || !right) {
     return null;
   }
@@ -4342,7 +4387,13 @@ function parseHavingFunctionArgsToRelExpr(
   const values = Array.isArray(raw) ? raw : [raw];
   const args: RelExpr[] = [];
   for (const value of values) {
-    const arg = lowerHavingExpr(value, bindings, aliasToBinding, aggregateMetricAliases, hiddenMetrics);
+    const arg = lowerHavingExpr(
+      value,
+      bindings,
+      aliasToBinding,
+      aggregateMetricAliases,
+      hiddenMetrics,
+    );
     if (!arg) {
       return null;
     }
@@ -4529,11 +4580,16 @@ function resolveNonAggregateOrderBy(
   orderBy: ResolvedOrderTerm[];
   materializations: RelProjectExprMapping[];
 } {
-  const projectionsByOutput = new Map(projections.map((projection) => [projection.output, projection] as const));
+  const projectionsByOutput = new Map(
+    projections.map((projection) => [projection.output, projection] as const),
+  );
   const materializations: RelProjectExprMapping[] = [];
   const orderBy: ResolvedOrderTerm[] = [];
 
-  const resolveProjectionSource = (projection: SelectProjection, ordinal?: number): ResolvedOrderTerm["source"] => {
+  const resolveProjectionSource = (
+    projection: SelectProjection,
+    ordinal?: number,
+  ): ResolvedOrderTerm["source"] => {
     if (projection.kind === "column") {
       return toParsedOrderSource(projection.source, projection.output);
     }
@@ -4576,7 +4632,10 @@ function resolveNonAggregateOrderBy(
     }
 
     orderBy.push({
-      source: resolveProjectionSource(projection, term.kind === "ordinal" ? term.position : undefined),
+      source: resolveProjectionSource(
+        projection,
+        term.kind === "ordinal" ? term.position : undefined,
+      ),
       direction: term.direction,
     });
   }
@@ -4591,14 +4650,19 @@ function resolveAggregateOrderBy(
   orderByTerms: ParsedOrderByTerm[],
   projections: ParsedAggregateProjection[],
 ): ResolvedOrderTerm[] {
-  const projectionsByOutput = new Map(projections.map((projection) => [projection.output, projection] as const));
+  const projectionsByOutput = new Map(
+    projections.map((projection) => [projection.output, projection] as const),
+  );
   const groupOutputsBySource = new Map<string, string>();
 
   for (const projection of projections) {
     if (projection.kind !== "group" || !projection.source) {
       continue;
     }
-    groupOutputsBySource.set(`${projection.source.alias ?? ""}.${projection.source.column}`, projection.source.column);
+    groupOutputsBySource.set(
+      `${projection.source.alias ?? ""}.${projection.source.column}`,
+      projection.source.column,
+    );
   }
 
   const resolveProjectionSource = (
@@ -4639,7 +4703,10 @@ function resolveAggregateOrderBy(
     }
 
     return {
-      source: resolveProjectionSource(projection, term.kind === "ordinal" ? term.position : undefined),
+      source: resolveProjectionSource(
+        projection,
+        term.kind === "ordinal" ? term.position : undefined,
+      ),
       direction: term.direction,
     };
   });
@@ -4682,13 +4749,7 @@ function parseWhereFilters(
 
   const parts = flattenConjunctiveWhere(where);
   if (parts == null) {
-    const residualExpr = lowerSqlAstToRelExpr(
-      where,
-      bindings,
-      aliasToBinding,
-      schema,
-      cteNames,
-    );
+    const residualExpr = lowerSqlAstToRelExpr(where, bindings, aliasToBinding, schema, cteNames);
     if (!residualExpr) {
       return null;
     }
@@ -4705,13 +4766,7 @@ function parseWhereFilters(
   for (const part of parts) {
     const parsed = parseLiteralFilter(part, bindings, aliasToBinding);
     if (!parsed) {
-      const residual = lowerSqlAstToRelExpr(
-        part,
-        bindings,
-        aliasToBinding,
-        schema,
-        cteNames,
-      );
+      const residual = lowerSqlAstToRelExpr(part, bindings, aliasToBinding, schema, cteNames);
       if (!residual) {
         return null;
       }

@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createMethodsProvider } from "../../testing/methods-provider";
 import { createArrayTableMethods, scanArrayRows } from "../../schema/array-methods";
 
-import { defineTableMethods, type TableLookupRequest, type TableScanRequest } from "@tupl/core";
+import {
+  defineTableMethods,
+  type TableLookupRequest,
+  type TableScanRequest,
+} from "@tupl/core/schema";
 import { commerceRows, commerceSchema } from "../../testing/commerce-fixture";
 import { withQueryHarness } from "../../testing/query-harness";
 import { buildEntitySchema } from "../../testing/schema-builder";
@@ -98,9 +102,7 @@ describe("query/joins", () => {
           ]);
         } else {
           const teamsCall = calls.find((call) => call.table === "teams");
-          expect(teamsCall?.request.select).toEqual(
-            expect.arrayContaining(["id", "name", "tier"]),
-          );
+          expect(teamsCall?.request.select).toEqual(expect.arrayContaining(["id", "name", "tier"]));
           expect(teamsCall?.request.where).toEqual(
             expect.arrayContaining([{ op: "eq", column: "tier", value: "enterprise" }]),
           );

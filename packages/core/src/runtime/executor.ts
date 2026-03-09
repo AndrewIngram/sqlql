@@ -1,14 +1,7 @@
 import { Result, type Result as BetterResult } from "better-result";
 
-import {
-  type ConstraintValidationOptions,
-  validateTableConstraintRows,
-} from "./constraints";
-import {
-  TuplExecutionError,
-  TuplGuardrailError,
-  TuplPlanningError,
-} from "./errors";
+import { type ConstraintValidationOptions, validateTableConstraintRows } from "./constraints";
+import { TuplExecutionError, TuplGuardrailError, TuplPlanningError } from "./errors";
 import {
   getDataEntityAdapter,
   normalizeCapability,
@@ -82,10 +75,7 @@ function tryExecutionStep<T>(operation: string, fn: () => T) {
   });
 }
 
-async function tryExecutionStepAsync<T>(
-  operation: string,
-  fn: () => Promise<T>,
-) {
+async function tryExecutionStepAsync<T>(operation: string, fn: () => Promise<T>) {
   return Result.tryPromise({
     try: fn,
     catch: (error) => toTuplExecutionError(error, operation),
@@ -101,9 +91,7 @@ export async function executeRelWithProvidersResult<TContext>(
   options: {
     constraintValidation?: ConstraintValidationOptions;
   } = {},
-): Promise<
-  BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const executionContext: RelExecutionContext<TContext> = {
     schema,
     providers,
@@ -234,7 +222,9 @@ async function tryExecuteRemoteSubtreeResult<TContext>(
   }
 
   const compiledResult = await tryExecutionStepAsync("compile subtree provider fragment", () =>
-    Promise.resolve(provider.compile(fragment, context.context)).then(unwrapProviderOperationResult),
+    Promise.resolve(provider.compile(fragment, context.context)).then(
+      unwrapProviderOperationResult,
+    ),
   );
   if (Result.isError(compiledResult)) {
     return compiledResult;
@@ -272,7 +262,8 @@ async function tryExecuteRemoteSubtreeResult<TContext>(
         physicalBinding,
         tableDefinition,
         {
-          enforceNotNull: !context.constraintValidation || context.constraintValidation.mode === "off",
+          enforceNotNull:
+            !context.constraintValidation || context.constraintValidation.mode === "off",
           enforceEnum: !context.constraintValidation || context.constraintValidation.mode === "off",
         },
       ),
@@ -466,7 +457,9 @@ async function executeScanResult<TContext>(
   }
 
   const compiledResult = await tryExecutionStepAsync("compile scan provider fragment", () =>
-    Promise.resolve(provider.compile(fragment, context.context)).then(unwrapProviderOperationResult),
+    Promise.resolve(provider.compile(fragment, context.context)).then(
+      unwrapProviderOperationResult,
+    ),
   );
   if (Result.isError(compiledResult)) {
     return compiledResult;
@@ -486,7 +479,8 @@ async function executeScanResult<TContext>(
       physicalBinding,
       tableDefinition,
       {
-        enforceNotNull: !context.constraintValidation || context.constraintValidation.mode === "off",
+        enforceNotNull:
+          !context.constraintValidation || context.constraintValidation.mode === "off",
         enforceEnum: !context.constraintValidation || context.constraintValidation.mode === "off",
       },
     ),
@@ -682,7 +676,8 @@ async function maybeExecuteLookupJoinResult<TContext>(
         context.schema.tables[rightScan.table] ??
           (rightScan.entity ? createTableDefinitionFromEntity(rightScan.entity) : undefined),
         {
-          enforceNotNull: !context.constraintValidation || context.constraintValidation.mode === "off",
+          enforceNotNull:
+            !context.constraintValidation || context.constraintValidation.mode === "off",
           enforceEnum: !context.constraintValidation || context.constraintValidation.mode === "off",
         },
       ),
@@ -839,7 +834,9 @@ function applyWindowFunction(
       const aggregateFn = fn as Extract<typeof fn, { fn: "count" | "sum" | "avg" | "min" | "max" }>;
       const frameEntries = aggregateFn.orderBy.length > 0 ? entries.slice(0, idx + 1) : entries;
       const values = aggregateFn.column
-        ? frameEntries.map((current) => readRowValue(current.row, toColumnKey(aggregateFn.column!)) ?? null)
+        ? frameEntries.map(
+            (current) => readRowValue(current.row, toColumnKey(aggregateFn.column!)) ?? null,
+          )
         : frameEntries.map(() => 1);
       const metricValues = aggregateFn.distinct
         ? [...new Map(values.map((value) => [JSON.stringify(value), value])).values()]
@@ -881,9 +878,7 @@ function compareWindowEntries(
 async function executeProjectResult<TContext>(
   project: RelProjectNode,
   context: RelExecutionContext<TContext>,
-): Promise<
-  BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const rowsResult = await executeRelNodeResult(project.input, context);
   if (Result.isError(rowsResult)) {
     return rowsResult;
@@ -913,9 +908,7 @@ async function executeProjectResult<TContext>(
 async function executeAggregateResult<TContext>(
   aggregate: Extract<RelNode, { kind: "aggregate" }>,
   context: RelExecutionContext<TContext>,
-): Promise<
-  BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const rowsResult = await executeRelNodeResult(aggregate.input, context);
   if (Result.isError(rowsResult)) {
     return rowsResult;
@@ -1007,9 +1000,7 @@ async function executeSortResult<TContext>(
 async function executeLimitOffsetResult<TContext>(
   limitOffset: Extract<RelNode, { kind: "limit_offset" }>,
   context: RelExecutionContext<TContext>,
-): Promise<
-  BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const rowsResult = await executeRelNodeResult(limitOffset.input, context);
   if (Result.isError(rowsResult)) {
     return rowsResult;
@@ -1031,9 +1022,7 @@ async function executeLimitOffsetResult<TContext>(
 async function executeSetOpResult<TContext>(
   setOp: Extract<RelNode, { kind: "set_op" }>,
   context: RelExecutionContext<TContext>,
-): Promise<
-  BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const leftRowsResult = await executeRelNodeResult(setOp.left, context);
   if (Result.isError(leftRowsResult)) {
     return leftRowsResult;
@@ -1065,9 +1054,7 @@ async function executeSetOpResult<TContext>(
 async function executeWithResult<TContext>(
   withNode: Extract<RelNode, { kind: "with" }>,
   context: RelExecutionContext<TContext>,
-): Promise<
-  BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const cteRows = new Map(context.cteRows);
   const nested: RelExecutionContext<TContext> = {
     ...context,
@@ -1316,7 +1303,9 @@ function compileSchemaViewRelNodeResult(
   }
 }
 
-function resolveSchemaColRefResult(ref: { ref?: string }): BetterResult<string, TuplExecutionError> {
+function resolveSchemaColRefResult(ref: {
+  ref?: string;
+}): BetterResult<string, TuplExecutionError> {
   if (!ref.ref) {
     return Result.err(
       new TuplExecutionError({
@@ -1730,9 +1719,7 @@ function evaluateRelExprResult(
 async function prepareSubqueryResultsResult<TContext>(
   node: RelNode,
   context: RelExecutionContext<TContext>,
-): Promise<
-  BetterResult<void, TuplPlanningError | TuplExecutionError | TuplGuardrailError>
-> {
+): Promise<BetterResult<void, TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
   const visited = new Set<string>();
 
   const prepareExpr = async (
@@ -1772,7 +1759,7 @@ async function prepareSubqueryResultsResult<TContext>(
             ? rows.length > 0
             : rows.length === 0
               ? null
-              : rows[0]?.[expr.outputColumn ?? "" ] ?? null;
+              : (rows[0]?.[expr.outputColumn ?? ""] ?? null);
         context.subqueryResults.set(expr.id, value);
         return Result.ok(undefined);
       }

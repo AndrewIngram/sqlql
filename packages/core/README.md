@@ -14,4 +14,3 @@ pnpm add @tupl/core
 
 - Repository: <https://github.com/AndrewIngram/tupl>
 - Schema-focused API: [`@tupl/schema`](https://github.com/AndrewIngram/tupl/tree/main/packages/schema)
-

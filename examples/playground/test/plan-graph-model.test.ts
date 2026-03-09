@@ -89,9 +89,9 @@ describe("playground/plan-graph-model", () => {
     const selectedNode = model.nodes.find(
       (node) => node.id === "join:uw" && node.type === "planStep",
     );
-    expect(selectedNode && selectedNode.type === "planStep" ? selectedNode.data.isSelected : false).toBe(
-      true,
-    );
+    expect(
+      selectedNode && selectedNode.type === "planStep" ? selectedNode.data.isSelected : false,
+    ).toBe(true);
 
     const highlightedNodes = model.nodes
       .filter((node) => node.type === "planStep" && node.data.isHighlighted)
@@ -200,7 +200,8 @@ describe("playground/plan-graph-model", () => {
       width: scopeWidth,
       height: scopeHeight,
     };
-    const overlap = rootRect.x < scopeRect.x + scopeRect.width &&
+    const overlap =
+      rootRect.x < scopeRect.x + scopeRect.width &&
       rootRect.x + rootRect.width > scopeRect.x &&
       rootRect.y < scopeRect.y + scopeRect.height &&
       rootRect.y + rootRect.height > scopeRect.y;
@@ -271,7 +272,8 @@ describe("playground/plan-graph-model", () => {
       height: 170,
     };
 
-    const overlap = aRect.x < bRect.x + bRect.width &&
+    const overlap =
+      aRect.x < bRect.x + bRect.width &&
       aRect.x + aRect.width > bRect.x &&
       aRect.y < bRect.y + bRect.height &&
       aRect.y + aRect.height > bRect.y;

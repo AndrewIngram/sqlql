@@ -15,4 +15,3 @@ pnpm add @tupl/provider-kysely kysely
 - Repository: <https://github.com/AndrewIngram/tupl>
 - Core runtime: [`@tupl/core`](https://github.com/AndrewIngram/tupl/tree/main/packages/core)
 - Schema APIs: [`@tupl/schema`](https://github.com/AndrewIngram/tupl/tree/main/packages/schema)
-

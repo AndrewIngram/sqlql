@@ -1,14 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  AdapterResult,
-  type ProviderFragment,
-} from "@tupl/core";
-import {
-  createIoredisProvider,
-  type RedisLike,
-  type RedisPipelineLike,
-} from "../index";
+import { AdapterResult, type ProviderFragment } from "@tupl/core";
+import { createIoredisProvider, type RedisLike, type RedisPipelineLike } from "../index";
 
 class StubPipeline implements RedisPipelineLike {
   private readonly keys: string[] = [];
@@ -21,7 +14,9 @@ class StubPipeline implements RedisPipelineLike {
   }
 
   async exec() {
-    return this.keys.map((key) => [null, this.hashes.get(key) ?? {}] as [Error | null, Record<string, string>]);
+    return this.keys.map(
+      (key) => [null, this.hashes.get(key) ?? {}] as [Error | null, Record<string, string>],
+    );
   }
 }
 
@@ -47,7 +42,8 @@ describe("ioredis adapter", () => {
             product_id: { type: "text", nullable: false },
             view_count: { type: "integer", nullable: false },
           },
-          buildRedisKey: ({ key, context }) => `product_view_counts:${context.tenant}:${String(key)}`,
+          buildRedisKey: ({ key, context }) =>
+            `product_view_counts:${context.tenant}:${String(key)}`,
           decodeRow: ({ hash }) => ({
             product_id: hash.product_id ?? "",
             view_count: Number(hash.view_count ?? 0),
@@ -90,9 +86,9 @@ describe("ioredis adapter", () => {
     expect(scanCapability.supported).toBe(false);
     expect(scanCapability.routeFamily).toBe("scan");
 
-    expect(
-      AdapterResult.isError(await provider.compile(scanFragment, { tenant: "acme" })),
-    ).toBe(true);
+    expect(AdapterResult.isError(await provider.compile(scanFragment, { tenant: "acme" }))).toBe(
+      true,
+    );
     expect(
       AdapterResult.isError(
         await provider.execute(
@@ -140,7 +136,8 @@ describe("ioredis adapter", () => {
           entity: "product_view_counts",
           lookupKey: "product_id",
           columns: ["product_id", "view_count"] as const,
-          buildRedisKey: ({ key, context }) => `product_view_counts:${context.tenant}:${String(key)}`,
+          buildRedisKey: ({ key, context }) =>
+            `product_view_counts:${context.tenant}:${String(key)}`,
           decodeRow: ({ hash }) => {
             if (!hash.product_id || !hash.view_count) {
               return null;

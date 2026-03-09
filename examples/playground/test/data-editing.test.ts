@@ -37,7 +37,10 @@ describe("playground/data-editing", () => {
     });
 
     expect(
-      coerceCellInput({ type: "text", nullable: false, enum: ["pending", "paid"] as const }, "paid"),
+      coerceCellInput(
+        { type: "text", nullable: false, enum: ["pending", "paid"] as const },
+        "paid",
+      ),
     ).toEqual({
       ok: true,
       value: "paid",

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { createDataEntityHandle } from "@tupl/core";
 import {
   asIso8601Timestamp,
-  createDataEntityHandle,
   createSchemaBuilder,
   defineTableMethods,
   getNormalizedTableBinding,
@@ -10,7 +10,7 @@ import {
   resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
   toSqlDDL,
-} from "@tupl/core";
+} from "@tupl/core/schema";
 import { buildSchema, buildEntitySchema } from "../../testing/schema-builder";
 
 describe("createSchemaBuilder", () => {

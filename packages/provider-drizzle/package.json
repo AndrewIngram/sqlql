@@ -4,6 +4,11 @@
   "description": "Drizzle adapter helpers for tupl",
   "homepage": "https://github.com/AndrewIngram/tupl/tree/main/packages/provider-drizzle#readme",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewIngram/tupl.git",
+    "directory": "packages/provider-drizzle"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",
@@ -16,11 +21,6 @@
       "require": "./dist/index.cjs"
     }
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/AndrewIngram/tupl.git",
-    "directory": "packages/provider-drizzle"
-  },
   "scripts": {
     "build": "tsdown src/index.ts --tsconfig tsconfig.build.json --format esm,cjs --sourcemap --clean --dts --unbundle",
     "prepublishOnly": "pnpm run build",
@@ -29,10 +29,10 @@
   "dependencies": {
     "@tupl/core": "workspace:*"
   },
-  "peerDependencies": {
-    "drizzle-orm": ">=0.28.3"
-  },
   "devDependencies": {
     "drizzle-orm": "^0.45.1"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.28.3"
   }
 }

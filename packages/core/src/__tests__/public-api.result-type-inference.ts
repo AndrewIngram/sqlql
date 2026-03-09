@@ -3,19 +3,21 @@ import type { Result as BetterResult } from "better-result";
 import {
   AdapterResult,
   createExecutableSchemaResult,
-  createSchemaBuilder,
-  resolveTableProviderResult,
   type ExecutableSchema,
   type ProviderOperationResult,
-  type QueryRow,
   type QuerySession,
-  type SchemaDefinition,
   type TuplProviderBindingError,
   type TuplResult,
 } from "@tupl/core";
+import {
+  createSchemaBuilder,
+  resolveTableProviderResult,
+  type QueryRow,
+  type SchemaDefinition,
+} from "@tupl/core/schema";
 
 type Equal<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Expect<T extends true> = T;
 
 const builder = createSchemaBuilder<Record<string, never>>();
@@ -31,10 +33,7 @@ type _createExecutableSchemaResultStaysExplicit = Expect<
 declare const executableSchema: ExecutableSchema<Record<string, never>, SchemaDefinition>;
 
 type _queryResultStaysExplicit = Expect<
-  Equal<
-    ReturnType<typeof executableSchema.queryResult>,
-    Promise<TuplResult<QueryRow[]>>
-  >
+  Equal<ReturnType<typeof executableSchema.queryResult>, Promise<TuplResult<QueryRow[]>>>
 >;
 
 type _createSessionResultStaysExplicit = Expect<

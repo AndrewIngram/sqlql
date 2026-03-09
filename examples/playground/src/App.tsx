@@ -1111,9 +1111,7 @@ export function App(): React.JSX.Element {
 
   const [schemaCodeText, setSchemaCodeText] = useState(DEFAULT_FACADE_SCHEMA_CODE);
   const [providerCodeText, setProviderCodeText] = useState(DEFAULT_DB_PROVIDER_CODE);
-  const [redisProviderCodeText, setRedisProviderCodeText] = useState(
-    DEFAULT_REDIS_PROVIDER_CODE,
-  );
+  const [redisProviderCodeText, setRedisProviderCodeText] = useState(DEFAULT_REDIS_PROVIDER_CODE);
   const contextCodeText = DEFAULT_CONTEXT_CODE;
   const [rowsJsonText, setRowsJsonText] = useState(
     defaultScenario ? serializeJson(defaultScenario.rows) : "{}\n",
@@ -1398,9 +1396,7 @@ export function App(): React.JSX.Element {
     if (query.length === 0) {
       return [REDIS_INPUT_TABLE_NAME];
     }
-    return REDIS_INPUT_TABLE_NAME.toLowerCase().includes(query)
-      ? [REDIS_INPUT_TABLE_NAME]
-      : [];
+    return REDIS_INPUT_TABLE_NAME.toLowerCase().includes(query) ? [REDIS_INPUT_TABLE_NAME] : [];
   }, [downstreamTableFilter]);
   const hasAnyFilteredTables =
     filteredPostgresTableNames.length > 0 || filteredRedisTableNames.length > 0;

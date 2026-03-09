@@ -1,17 +1,19 @@
 import {
   bindAdapterEntities,
   createDataEntityHandle,
-  createSchemaBuilder,
   createExecutableSchema,
+  type DataEntityColumnMap,
+  type ProviderAdapter,
+} from "@tupl/core";
+import {
+  createSchemaBuilder,
   getNormalizedTableBinding,
   isNormalizedSourceColumnBinding,
-  type DataEntityColumnMap,
   type NormalizedColumnBinding,
-  type ProviderAdapter,
   type SchemaColumnLensDefinition,
   type SchemaDefinition,
   type TableColumnDefinition,
-} from "@tupl/core";
+} from "@tupl/core/schema";
 
 export function finalizeProviders<TContext>(
   providers: Record<string, Omit<ProviderAdapter<TContext>, "name"> | ProviderAdapter<TContext>>,

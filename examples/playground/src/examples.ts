@@ -758,7 +758,8 @@ ORDER BY order_id, product_sku;
   {
     id: "product_engagement",
     label: "Product engagement",
-    description: "Cross-provider facade view over SQL-backed products and Redis-backed view counters.",
+    description:
+      "Cross-provider facade view over SQL-backed products and Redis-backed view counters.",
     sql: `
 SELECT product_name, product_category, view_count
 FROM product_engagement

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "software-design-philosophy": {
+      "source": "wondelai/skills",
+      "sourceType": "github",
+      "computedHash": "3c1501694f474624974d53247ec3a72ded98c32050ddd56b1406c9470bbf9eb7"
+    }
+  }
+}
