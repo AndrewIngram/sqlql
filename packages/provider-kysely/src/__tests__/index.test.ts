@@ -18,6 +18,10 @@ interface KyselyCalls {
 function createMockKyselyDb(
   rowsByFrom: Map<string, QueryRow[]>,
   rowsByJoin: Map<string, QueryRow[]>,
+  options?: {
+    omitFnHelpers?: Array<"count" | "sum" | "avg" | "min" | "max">;
+    supportDistinct?: boolean;
+  },
 ): {
   db: KyselyDatabaseLike;
   calls: KyselyCalls;
@@ -78,6 +82,64 @@ function createMockKyselyDb(
         },
         select(selectArg: unknown) {
           if (typeof selectArg === "function") {
+            const makeAggregateExpression = (kind: "agg", output: string) => ({
+              kind,
+              output,
+              distinct() {
+                return {
+                  as(nextOutput: string) {
+                    return {
+                      kind,
+                      output: nextOutput,
+                    };
+                  },
+                };
+              },
+            });
+            const omittedHelpers = new Set(options?.omitFnHelpers ?? []);
+            const fnHelpers: Record<string, (ref?: string) => { as: (output: string) => unknown }> =
+              {};
+            if (!omittedHelpers.has("count")) {
+              fnHelpers.count = (_ref?: string) => ({
+                as(output: string) {
+                  return options?.supportDistinct
+                    ? makeAggregateExpression("agg", output)
+                    : { kind: "agg", output };
+                },
+              });
+            }
+            if (!omittedHelpers.has("sum")) {
+              fnHelpers.sum = (_ref?: string) => ({
+                as(output: string) {
+                  return options?.supportDistinct
+                    ? makeAggregateExpression("agg", output)
+                    : { kind: "agg", output };
+                },
+              });
+            }
+            if (!omittedHelpers.has("avg")) {
+              fnHelpers.avg = (_ref?: string) => ({
+                as(output: string) {
+                  return options?.supportDistinct
+                    ? makeAggregateExpression("agg", output)
+                    : { kind: "agg", output };
+                },
+              });
+            }
+            if (!omittedHelpers.has("min")) {
+              fnHelpers.min = (_ref?: string) => ({
+                as(output: string) {
+                  return { kind: "agg", output };
+                },
+              });
+            }
+            if (!omittedHelpers.has("max")) {
+              fnHelpers.max = (_ref?: string) => ({
+                as(output: string) {
+                  return { kind: "agg", output };
+                },
+              });
+            }
             const eb = {
               ref(ref: string) {
                 return {
@@ -98,41 +160,7 @@ function createMockKyselyDb(
                     },
                   };
                 },
-                count(_ref: string) {
-                  return {
-                    as(output: string) {
-                      return { kind: "agg", output };
-                    },
-                  };
-                },
-                sum(_ref: string) {
-                  return {
-                    as(output: string) {
-                      return { kind: "agg", output };
-                    },
-                  };
-                },
-                avg(_ref: string) {
-                  return {
-                    as(output: string) {
-                      return { kind: "agg", output };
-                    },
-                  };
-                },
-                min(_ref: string) {
-                  return {
-                    as(output: string) {
-                      return { kind: "agg", output };
-                    },
-                  };
-                },
-                max(_ref: string) {
-                  return {
-                    as(output: string) {
-                      return { kind: "agg", output };
-                    },
-                  };
-                },
+                ...fnHelpers,
               },
             };
 
@@ -281,6 +309,58 @@ function buildWithWindowRel(): RelNode {
       output: [{ name: "vendor_email" }, { name: "spend_rank" }],
     },
     output: [{ name: "vendor_email" }, { name: "spend_rank" }],
+  };
+}
+
+function buildAggregateRel(
+  metric:
+    | Extract<RelNode, { kind: "aggregate" }>["metrics"][number]
+    | Array<Extract<RelNode, { kind: "aggregate" }>["metrics"][number]> = [
+    { fn: "count", as: "order_count" },
+    {
+      fn: "sum",
+      column: { alias: "o", column: "total_cents" },
+      as: "total_spend",
+      distinct: true,
+    },
+  ],
+): RelNode {
+  const metrics = Array.isArray(metric) ? metric : [metric];
+  return {
+    id: "project_aggregate",
+    kind: "project",
+    convention: "provider:dbProvider",
+    input: {
+      id: "sort_aggregate",
+      kind: "sort",
+      convention: "provider:dbProvider",
+      orderBy: [
+        { source: { column: metrics[metrics.length - 1]?.as ?? "order_count" }, direction: "desc" },
+      ],
+      input: {
+        id: "aggregate_orders",
+        kind: "aggregate",
+        convention: "provider:dbProvider",
+        input: {
+          id: "scan_orders",
+          kind: "scan",
+          convention: "provider:dbProvider",
+          table: "orders",
+          alias: "o",
+          select: ["user_id", "total_cents"],
+          output: [{ name: "o.user_id" }, { name: "o.total_cents" }],
+        },
+        groupBy: [{ alias: "o", column: "user_id" }],
+        metrics,
+        output: [{ name: "user_id" }, ...metrics.map((entry) => ({ name: entry.as }))],
+      },
+      output: [{ name: "user_id" }, ...metrics.map((entry) => ({ name: entry.as }))],
+    },
+    columns: [
+      { source: { column: "user_id" }, output: "user_id" },
+      ...metrics.map((entry) => ({ source: { column: entry.as }, output: entry.as })),
+    ],
+    output: [{ name: "user_id" }, ...metrics.map((entry) => ({ name: entry.as }))],
   };
 }
 
@@ -507,5 +587,71 @@ describe("kysely adapter", () => {
     );
 
     expect(result).toBe(true);
+  });
+
+  it("executes aggregate rel fragments with grouped metrics", async () => {
+    const { db, calls } = createMockKyselyDb(
+      new Map<string, QueryRow[]>([
+        ["orders as o", [{ "o.user_id": "u1", order_count: 2, total_spend: 4500 }]],
+      ]),
+      new Map<string, QueryRow[]>(),
+      { supportDistinct: true },
+    );
+
+    const provider = createKyselyProvider({
+      name: "dbProvider",
+      db,
+      entities: {
+        orders: { table: "orders" },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "dbProvider",
+          rel: buildAggregateRel(),
+        },
+        {},
+      )
+    ).unwrap();
+    const rows = (await provider.execute(plan, {})).unwrap();
+
+    expect(rows).toEqual([{ user_id: "u1", order_count: 2, total_spend: 4500 }]);
+    expect(calls.executeCount).toBe(1);
+    expect(calls.orderBy).toHaveLength(1);
+  });
+
+  it("fails clearly when the expression builder lacks a required aggregate helper", async () => {
+    const { db } = createMockKyselyDb(new Map(), new Map(), {
+      omitFnHelpers: ["avg"],
+    });
+    const provider = createKyselyProvider({
+      name: "dbProvider",
+      db,
+      entities: {
+        orders: { table: "orders" },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "dbProvider",
+          rel: buildAggregateRel({
+            fn: "avg",
+            column: { alias: "o", column: "total_cents" },
+            as: "average_spend",
+          }),
+        },
+        {},
+      )
+    ).unwrap();
+
+    await expect(
+      Promise.resolve(provider.execute(plan, {})).then((result) => result.unwrap()),
+    ).rejects.toThrow("Unsupported aggregate function: avg.");
   });
 });

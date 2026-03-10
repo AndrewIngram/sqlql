@@ -23,6 +23,16 @@ function createMockKnex(
     let currentSourceKey = sourceKey;
     let rows = [...(rowsBySource.get(sourceKey) ?? [])];
     const projections: Array<{ output: string; source: string }> = [];
+    const appendProjection = (columnMap: unknown, aliasOnly = false): void => {
+      if (columnMap && typeof columnMap === "object" && !Array.isArray(columnMap)) {
+        for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
+          projections.push({
+            output,
+            source: aliasOnly ? output : String(source ?? output),
+          });
+        }
+      }
+    };
 
     const builder: KnexLikeQueryBuilder & {
       __sourceKey?: string;
@@ -98,14 +108,7 @@ function createMockKnex(
         return builder;
       },
       select(columnMap: unknown) {
-        if (columnMap && typeof columnMap === "object" && !Array.isArray(columnMap)) {
-          for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
-            projections.push({
-              output,
-              source: String(source ?? output),
-            });
-          }
-        }
+        appendProjection(columnMap);
         return builder;
       },
       groupBy() {
@@ -122,22 +125,28 @@ function createMockKnex(
         rows = rows.slice(value);
         return builder;
       },
-      count() {
+      count(columnMap?: unknown) {
+        appendProjection(columnMap, true);
         return builder;
       },
-      countDistinct() {
+      countDistinct(columnMap?: unknown) {
+        appendProjection(columnMap, true);
         return builder;
       },
-      sum() {
+      sum(columnMap?: unknown) {
+        appendProjection(columnMap, true);
         return builder;
       },
-      avg() {
+      avg(columnMap?: unknown) {
+        appendProjection(columnMap, true);
         return builder;
       },
-      min() {
+      min(columnMap?: unknown) {
+        appendProjection(columnMap, true);
         return builder;
       },
-      max() {
+      max(columnMap?: unknown) {
+        appendProjection(columnMap, true);
         return builder;
       },
       async execute() {
@@ -276,6 +285,65 @@ function buildWithWindowRel(): RelNode {
       output: [{ name: "vendor_email" }, { name: "spend_rank" }],
     },
     output: [{ name: "vendor_email" }, { name: "spend_rank" }],
+  };
+}
+
+function buildAggregateRel(
+  metrics:
+    | Extract<RelNode, { kind: "aggregate" }>["metrics"][number]
+    | Array<Extract<RelNode, { kind: "aggregate" }>["metrics"][number]> = [
+    {
+      fn: "count",
+      column: { alias: "o", column: "id" },
+      as: "order_count",
+      distinct: true,
+    },
+    {
+      fn: "sum",
+      column: { alias: "o", column: "total_cents" },
+      as: "total_spend",
+    },
+  ],
+): RelNode {
+  const metricList = Array.isArray(metrics) ? metrics : [metrics];
+  return {
+    id: "project_aggregate",
+    kind: "project",
+    convention: "provider:dbProvider",
+    input: {
+      id: "sort_aggregate",
+      kind: "sort",
+      convention: "provider:dbProvider",
+      orderBy: [
+        {
+          source: { column: metricList[metricList.length - 1]?.as ?? "order_count" },
+          direction: "desc",
+        },
+      ],
+      input: {
+        id: "aggregate_orders",
+        kind: "aggregate",
+        convention: "provider:dbProvider",
+        input: {
+          id: "scan_orders",
+          kind: "scan",
+          convention: "provider:dbProvider",
+          table: "orders",
+          alias: "o",
+          select: ["id", "user_id", "total_cents"],
+          output: [{ name: "o.id" }, { name: "o.user_id" }, { name: "o.total_cents" }],
+        },
+        groupBy: [{ alias: "o", column: "user_id" }],
+        metrics: metricList,
+        output: [{ name: "user_id" }, ...metricList.map((entry) => ({ name: entry.as }))],
+      },
+      output: [{ name: "user_id" }, ...metricList.map((entry) => ({ name: entry.as }))],
+    },
+    columns: [
+      { source: { column: "user_id" }, output: "user_id" },
+      ...metricList.map((entry) => ({ source: { column: entry.as }, output: entry.as })),
+    ],
+    output: [{ name: "user_id" }, ...metricList.map((entry) => ({ name: entry.as }))],
   };
 }
 
@@ -515,5 +583,81 @@ describe("objection adapter", () => {
     );
 
     expect(result).toBe(true);
+  });
+
+  it("executes aggregate rel fragments with grouped metrics", async () => {
+    const calls: ObjectionCalls = {
+      where: [],
+      whereIn: [],
+      executeCount: 0,
+      baseContexts: [],
+    };
+    const knex = createMockKnex(
+      new Map<string, QueryRow[]>([
+        ["orders as o", [{ "o.user_id": "u1", order_count: 2, total_spend: 4500 }]],
+      ]),
+      new Map<string, QueryRow[]>(),
+      calls,
+    );
+
+    const provider = createObjectionProvider({
+      name: "dbProvider",
+      knex,
+      entities: {
+        orders: { table: "orders", base: () => knex.table("orders") },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "dbProvider",
+          rel: buildAggregateRel(),
+        },
+        {},
+      )
+    ).unwrap();
+    const rows = (await provider.execute(plan, {})).unwrap();
+
+    expect(rows).toEqual([{ user_id: "u1", order_count: 2, total_spend: 4500 }]);
+    expect(calls.executeCount).toBe(1);
+  });
+
+  it("fails clearly for sum(distinct ...) aggregate pushdown", async () => {
+    const calls: ObjectionCalls = {
+      where: [],
+      whereIn: [],
+      executeCount: 0,
+      baseContexts: [],
+    };
+    const knex = createMockKnex(new Map(), new Map(), calls);
+    const provider = createObjectionProvider({
+      name: "dbProvider",
+      knex,
+      entities: {
+        orders: { table: "orders", base: () => knex.table("orders") },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "dbProvider",
+          rel: buildAggregateRel({
+            fn: "sum",
+            column: { alias: "o", column: "total_cents" },
+            as: "total_spend",
+            distinct: true,
+          }),
+        },
+        {},
+      )
+    ).unwrap();
+
+    await expect(
+      Promise.resolve(provider.execute(plan, {})).then((result) => result.unwrap()),
+    ).rejects.toThrow("Knex sum(distinct ...) is not supported in this adapter yet.");
   });
 });

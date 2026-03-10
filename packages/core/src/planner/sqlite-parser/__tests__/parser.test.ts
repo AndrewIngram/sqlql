@@ -1,7 +1,10 @@
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
-import { parseSqliteSelectAst, parseSqliteSelectAstResult } from "../parser";
+import {
+  parseSqliteSelectAst,
+  parseSqliteSelectAstResult,
+} from "../../../../../internal-planner/src/planner/sqlite-parser/parser";
 
 describe("sqlite-parser", () => {
   it("parses boolean precedence as OR over AND", () => {

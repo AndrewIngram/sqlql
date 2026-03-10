@@ -199,6 +199,469 @@ function flattenSqlTokens(value: unknown): unknown[] {
   return out;
 }
 
+function projectSelectionRows(selection: Record<string, unknown>, rows: TestRow[]): QueryRow[] {
+  return rows.map((row) => {
+    const projected: QueryRow = {};
+    for (const [outputName, column] of Object.entries(selection)) {
+      const sourceName =
+        column &&
+        typeof column === "object" &&
+        "name" in column &&
+        typeof (column as { name?: unknown }).name === "string"
+          ? String((column as { name: string }).name)
+          : outputName;
+      projected[outputName] = row[sourceName] ?? null;
+    }
+    return projected;
+  });
+}
+
+function stableTestRowKey(row: TestRow): string {
+  return JSON.stringify(Object.entries(row).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function createSetOpCapableDb(rowsByTable: Map<object, TestRow[]>): {
+  db: DrizzleQueryExecutor;
+  calls: RecordingDbCalls;
+} {
+  const calls: RecordingDbCalls = {
+    whereConditions: [],
+    orderByClauses: [],
+    limitValues: [],
+    offsetValues: [],
+    executeCount: 0,
+  };
+
+  const db: DrizzleQueryExecutor = {
+    select(...args: unknown[]) {
+      const selection = (args[0] ?? {}) as Record<string, unknown>;
+      let rows: TestRow[] = [];
+
+      const builder = {
+        __rows: rows,
+        from(table: object) {
+          rows = [...(rowsByTable.get(table) ?? [])];
+          builder.__rows = rows;
+          return builder;
+        },
+        unionAll(right: { __rows?: TestRow[] }) {
+          rows = [...rows, ...(right.__rows ?? [])];
+          builder.__rows = rows;
+          return builder;
+        },
+        union(right: { __rows?: TestRow[] }) {
+          rows = [
+            ...new Map(
+              [...rows, ...(right.__rows ?? [])].map((row) => [stableTestRowKey(row), row]),
+            ).values(),
+          ];
+          builder.__rows = rows;
+          return builder;
+        },
+        intersect(right: { __rows?: TestRow[] }) {
+          const rightKeys = new Set((right.__rows ?? []).map((row) => stableTestRowKey(row)));
+          rows = rows.filter((row) => rightKeys.has(stableTestRowKey(row)));
+          builder.__rows = rows;
+          return builder;
+        },
+        except(right: { __rows?: TestRow[] }) {
+          const rightKeys = new Set((right.__rows ?? []).map((row) => stableTestRowKey(row)));
+          rows = rows.filter((row) => !rightKeys.has(stableTestRowKey(row)));
+          builder.__rows = rows;
+          return builder;
+        },
+        orderBy(...clauses: unknown[]) {
+          calls.orderByClauses.push(clauses);
+          return builder;
+        },
+        limit(value: number) {
+          calls.limitValues.push(value);
+          rows = rows.slice(0, value);
+          builder.__rows = rows;
+          return builder;
+        },
+        offset(value: number) {
+          calls.offsetValues.push(value);
+          rows = rows.slice(value);
+          builder.__rows = rows;
+          return builder;
+        },
+        async execute() {
+          calls.executeCount = (calls.executeCount ?? 0) + 1;
+          return projectSelectionRows(selection, rows);
+        },
+      };
+
+      return builder;
+    },
+  };
+
+  return { db, calls };
+}
+
+function createWithCapableDb(
+  rowsByTable: Map<object, TestRow[]>,
+  rowsByCte: Map<string, TestRow[]>,
+): {
+  db: DrizzleQueryExecutor & {
+    $with: (name: string) => { as: (_query: unknown) => Record<string, unknown> };
+    with: (...ctes: unknown[]) => {
+      select: (selection: Record<string, unknown>) => {
+        from: (source: unknown) => {
+          where: (condition: unknown) => unknown;
+          orderBy: (...clauses: unknown[]) => unknown;
+          limit: (value: number) => unknown;
+          offset: (value: number) => unknown;
+          execute: () => Promise<QueryRow[]>;
+        };
+      };
+    };
+  };
+  calls: RecordingDbCalls;
+} {
+  const calls: RecordingDbCalls = {
+    whereConditions: [],
+    orderByClauses: [],
+    limitValues: [],
+    offsetValues: [],
+    executeCount: 0,
+  };
+
+  const db = {
+    select(...args: unknown[]) {
+      const selection = (args[0] ?? {}) as Record<string, unknown>;
+      let rows: TestRow[] = [];
+
+      const builder = {
+        from(table: object) {
+          rows = [...(rowsByTable.get(table) ?? [])];
+          return builder;
+        },
+        where(condition: unknown) {
+          calls.whereConditions.push(condition);
+          return builder;
+        },
+        orderBy(...clauses: unknown[]) {
+          calls.orderByClauses.push(clauses);
+          return builder;
+        },
+        limit(value: number) {
+          calls.limitValues.push(value);
+          rows = rows.slice(0, value);
+          return builder;
+        },
+        offset(value: number) {
+          calls.offsetValues.push(value);
+          rows = rows.slice(value);
+          return builder;
+        },
+        async execute() {
+          calls.executeCount = (calls.executeCount ?? 0) + 1;
+          return projectSelectionRows(selection, rows);
+        },
+      };
+
+      return builder;
+    },
+    $with(name: string) {
+      return {
+        as() {
+          return {
+            __sourceKey: name,
+            id: { name: "id" },
+            total_cents: { name: "total_cents" },
+            spend_rank: { name: "spend_rank" },
+          };
+        },
+      };
+    },
+    with(..._ctes: unknown[]) {
+      return {
+        select(selection: Record<string, unknown>) {
+          return {
+            from(source: unknown) {
+              const sourceKey =
+                source && typeof source === "object" && "__sourceKey" in (source as object)
+                  ? String((source as { __sourceKey?: unknown }).__sourceKey ?? "")
+                  : String(source ?? "");
+              let rows = [...(rowsByCte.get(sourceKey) ?? [])];
+
+              const builder = {
+                where(condition: unknown) {
+                  calls.whereConditions.push(condition);
+                  return builder;
+                },
+                orderBy(...clauses: unknown[]) {
+                  calls.orderByClauses.push(clauses);
+                  return builder;
+                },
+                limit(value: number) {
+                  calls.limitValues.push(value);
+                  rows = rows.slice(0, value);
+                  return builder;
+                },
+                offset(value: number) {
+                  calls.offsetValues.push(value);
+                  rows = rows.slice(value);
+                  return builder;
+                },
+                async execute() {
+                  calls.executeCount = (calls.executeCount ?? 0) + 1;
+                  return projectSelectionRows(selection, rows);
+                },
+              };
+
+              return builder;
+            },
+          };
+        },
+      };
+    },
+  } satisfies DrizzleQueryExecutor & {
+    $with: (name: string) => { as: (_query: unknown) => Record<string, unknown> };
+    with: (...ctes: unknown[]) => {
+      select: (selection: Record<string, unknown>) => {
+        from: (source: unknown) => {
+          where: (condition: unknown) => unknown;
+          orderBy: (...clauses: unknown[]) => unknown;
+          limit: (value: number) => unknown;
+          offset: (value: number) => unknown;
+          execute: () => Promise<QueryRow[]>;
+        };
+      };
+    };
+  };
+
+  return { db, calls };
+}
+
+function createDbExecuteFallbackDb(rowsByTable: Map<object, TestRow[]>): {
+  db: DrizzleQueryExecutor & { execute: (query: unknown) => Promise<QueryRow[]> };
+  calls: RecordingDbCalls;
+} {
+  const calls: RecordingDbCalls = {
+    whereConditions: [],
+    orderByClauses: [],
+    limitValues: [],
+    offsetValues: [],
+    executeCount: 0,
+  };
+
+  const db = {
+    select(...args: unknown[]) {
+      const selection = (args[0] ?? {}) as Record<string, unknown>;
+      let rows: TestRow[] = [];
+
+      const builder = {
+        __rows: rows,
+        __selection: selection,
+        from(table: object) {
+          rows = [...(rowsByTable.get(table) ?? [])];
+          builder.__rows = rows;
+          return builder;
+        },
+        getSQL() {
+          return { queryChunks: ["select"] };
+        },
+      };
+
+      return builder;
+    },
+    async execute(query: unknown) {
+      calls.executeCount = (calls.executeCount ?? 0) + 1;
+      const builder = query as {
+        __rows?: TestRow[];
+        __selection?: Record<string, unknown>;
+      };
+      return projectSelectionRows(builder.__selection ?? {}, builder.__rows ?? []);
+    },
+  } satisfies DrizzleQueryExecutor & { execute: (query: unknown) => Promise<QueryRow[]> };
+
+  return { db, calls };
+}
+
+function buildAggregateRel(): RelNode {
+  return {
+    id: "project_aggregate",
+    kind: "project",
+    convention: "provider:drizzle",
+    input: {
+      id: "sort_aggregate",
+      kind: "sort",
+      convention: "provider:drizzle",
+      orderBy: [{ source: { column: "total_spend" }, direction: "desc" }],
+      input: {
+        id: "aggregate_orders",
+        kind: "aggregate",
+        convention: "provider:drizzle",
+        input: {
+          id: "scan_orders",
+          kind: "scan",
+          convention: "provider:drizzle",
+          table: "orders",
+          alias: "o",
+          select: ["user_id", "total_cents"],
+          output: [],
+        },
+        groupBy: [{ alias: "o", column: "user_id" }],
+        metrics: [
+          { fn: "count", as: "order_count" },
+          {
+            fn: "sum",
+            column: { alias: "o", column: "total_cents" },
+            as: "total_spend",
+            distinct: true,
+          },
+        ],
+        output: [],
+      },
+      output: [],
+    },
+    columns: [
+      { source: { column: "user_id" }, output: "user_id" },
+      { source: { column: "order_count" }, output: "order_count" },
+      { source: { column: "total_spend" }, output: "total_spend" },
+    ],
+    output: [],
+  };
+}
+
+function buildSetOpRel(): RelNode {
+  return {
+    id: "limit_set_op",
+    kind: "limit_offset",
+    convention: "provider:drizzle",
+    limit: 2,
+    input: {
+      id: "sort_set_op",
+      kind: "sort",
+      convention: "provider:drizzle",
+      orderBy: [{ source: { column: "id" }, direction: "asc" }],
+      input: {
+        id: "union_orders",
+        kind: "set_op",
+        convention: "provider:drizzle",
+        op: "union_all",
+        left: {
+          id: "project_left",
+          kind: "project",
+          convention: "provider:drizzle",
+          input: {
+            id: "scan_left",
+            kind: "scan",
+            convention: "provider:drizzle",
+            table: "orders_west",
+            alias: "ow",
+            select: ["id"],
+            output: [],
+          },
+          columns: [{ source: { alias: "ow", column: "id" }, output: "id" }],
+          output: [],
+        },
+        right: {
+          id: "project_right",
+          kind: "project",
+          convention: "provider:drizzle",
+          input: {
+            id: "scan_right",
+            kind: "scan",
+            convention: "provider:drizzle",
+            table: "orders_east",
+            alias: "oe",
+            select: ["id"],
+            output: [],
+          },
+          columns: [{ source: { alias: "oe", column: "id" }, output: "id" }],
+          output: [],
+        },
+        output: [],
+      },
+      output: [],
+    },
+    output: [],
+  };
+}
+
+function buildWithWindowRel(): RelNode {
+  return {
+    id: "with_ranked_orders",
+    kind: "with",
+    convention: "provider:drizzle",
+    ctes: [
+      {
+        name: "ranked_orders",
+        query: {
+          id: "project_orders",
+          kind: "project",
+          convention: "provider:drizzle",
+          input: {
+            id: "scan_orders",
+            kind: "scan",
+            convention: "provider:drizzle",
+            table: "orders",
+            alias: "o",
+            select: ["id", "total_cents"],
+            output: [],
+          },
+          columns: [
+            { source: { alias: "o", column: "id" }, output: "id" },
+            { source: { alias: "o", column: "total_cents" }, output: "total_cents" },
+          ],
+          output: [],
+        },
+      },
+    ],
+    body: {
+      id: "limit_ranked_orders",
+      kind: "limit_offset",
+      convention: "provider:drizzle",
+      limit: 1,
+      input: {
+        id: "sort_ranked_orders",
+        kind: "sort",
+        convention: "provider:drizzle",
+        orderBy: [{ source: { column: "spend_rank" }, direction: "asc" }],
+        input: {
+          id: "project_ranked_orders",
+          kind: "project",
+          convention: "provider:drizzle",
+          input: {
+            id: "window_ranked_orders",
+            kind: "window",
+            convention: "provider:drizzle",
+            input: {
+              id: "scan_ranked_orders",
+              kind: "scan",
+              convention: "provider:drizzle",
+              table: "ranked_orders",
+              alias: "ro",
+              select: ["id", "total_cents"],
+              output: [],
+            },
+            functions: [
+              {
+                fn: "dense_rank",
+                as: "spend_rank",
+                partitionBy: [],
+                orderBy: [{ source: { column: "total_cents" }, direction: "desc" }],
+              },
+            ],
+            output: [],
+          },
+          columns: [
+            { source: { column: "id" }, output: "id" },
+            { source: { column: "spend_rank" }, output: "spend_rank" },
+          ],
+          output: [],
+        },
+        output: [],
+      },
+      output: [],
+    },
+    output: [],
+  };
+}
+
 describe("drizzle adapter", () => {
   it("exposes entity handles and reports unsupported fragment kinds", async () => {
     const usersTable = { name: "users_table" };
@@ -951,5 +1414,179 @@ describe("drizzle adapter", () => {
     ]);
     expect(calls.whereConditions).toHaveLength(1);
     expect(calls.orderByClauses).toHaveLength(1);
+  });
+
+  it("executes aggregate rel fragments with grouped metrics as a single downstream query", async () => {
+    const ordersTable = {
+      name: "orders",
+      user_id: { name: "user_id" },
+      total_cents: { name: "total_cents" },
+      _: { config: { dialect: "pg" } },
+    };
+    const { db, calls } = createJoinCapableDb(
+      new Map<object, TestRow[]>([
+        [ordersTable, [{ user_id: "u1", order_count: 2, total_spend: 4500 }]],
+      ]),
+      new Map<string, TestRow[]>(),
+    );
+
+    const provider = createDrizzleProvider({
+      db,
+      tables: {
+        orders: { table: ordersTable },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "drizzle",
+          rel: buildAggregateRel(),
+        },
+        {},
+      )
+    ).unwrap();
+    const rows = (await provider.execute(plan, {})).unwrap();
+
+    expect(rows).toEqual([{ user_id: "u1", order_count: 2, total_spend: 4500 }]);
+    expect(calls.executeCount).toBe(1);
+    expect(calls.orderByClauses).toHaveLength(1);
+  });
+
+  it("executes set-op rel fragments through the single-query path", async () => {
+    const westOrdersTable = {
+      name: "orders_west",
+      id: { name: "id" },
+      _: { config: { dialect: "pg" } },
+    };
+    const eastOrdersTable = {
+      name: "orders_east",
+      id: { name: "id" },
+      _: { config: { dialect: "pg" } },
+    };
+    const { db, calls } = createSetOpCapableDb(
+      new Map<object, TestRow[]>([
+        [westOrdersTable, [{ id: "o1" }]],
+        [eastOrdersTable, [{ id: "o2" }]],
+      ]),
+    );
+
+    const provider = createDrizzleProvider({
+      db,
+      tables: {
+        orders_west: { table: westOrdersTable },
+        orders_east: { table: eastOrdersTable },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "drizzle",
+          rel: buildSetOpRel(),
+        },
+        {},
+      )
+    ).unwrap();
+    const rows = (await provider.execute(plan, {})).unwrap();
+
+    expect(rows).toEqual([{ id: "o1" }, { id: "o2" }]);
+    expect(calls.executeCount).toBe(1);
+    expect(calls.orderByClauses).toHaveLength(1);
+    expect(calls.limitValues).toEqual([2]);
+  });
+
+  it("executes WITH rel fragments through the single-query path", async () => {
+    const ordersTable = {
+      name: "orders",
+      id: { name: "id" },
+      total_cents: { name: "total_cents" },
+      _: { config: { dialect: "pg" } },
+    };
+    const { db, calls } = createWithCapableDb(
+      new Map<object, TestRow[]>([[ordersTable, [{ id: "o2", total_cents: 3000 }]]]),
+      new Map<string, TestRow[]>([
+        [
+          "ranked_orders",
+          [
+            { id: "o2", total_cents: 3000, spend_rank: 1 },
+            { id: "o1", total_cents: 1500, spend_rank: 2 },
+          ],
+        ],
+      ]),
+    );
+
+    const provider = createDrizzleProvider({
+      db,
+      tables: {
+        orders: { table: ordersTable },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "drizzle",
+          rel: buildWithWindowRel(),
+        },
+        {},
+      )
+    ).unwrap();
+    const rows = (await provider.execute(plan, {})).unwrap();
+
+    expect(rows).toEqual([{ id: "o2", spend_rank: 1 }]);
+    expect(calls.executeCount).toBeGreaterThan(0);
+    expect(calls.orderByClauses).toHaveLength(1);
+    expect(calls.limitValues).toEqual([1]);
+  });
+
+  it("dispatches relational execution through db.execute when the builder lacks execute()", async () => {
+    const ordersTable = {
+      name: "orders",
+      id: { name: "id" },
+      _: { config: { dialect: "pg" } },
+    };
+    const { db, calls } = createDbExecuteFallbackDb(
+      new Map<object, TestRow[]>([[ordersTable, [{ id: "o1" }]]]),
+    );
+    const provider = createDrizzleProvider({
+      db,
+      tables: {
+        orders: { table: ordersTable },
+      },
+    });
+
+    const plan = (
+      await provider.compile(
+        {
+          kind: "rel",
+          provider: "drizzle",
+          rel: {
+            id: "project_orders",
+            kind: "project",
+            convention: "provider:drizzle",
+            input: {
+              id: "scan_orders",
+              kind: "scan",
+              convention: "provider:drizzle",
+              table: "orders",
+              alias: "o",
+              select: ["id"],
+              output: [],
+            },
+            columns: [{ source: { alias: "o", column: "id" }, output: "id" }],
+            output: [],
+          },
+        },
+        {},
+      )
+    ).unwrap();
+    const rows = (await provider.execute(plan, {})).unwrap();
+
+    expect(rows).toEqual([{ id: "o1" }]);
+    expect(calls.executeCount).toBe(1);
   });
 });

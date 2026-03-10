@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { ProviderFragment } from "../..";
-import { buildScanUnsupportedReport } from "../scan-core";
+import type { ProviderFragment } from "@tupl/core/provider";
+import { buildScanUnsupportedReport } from "@tupl/core/provider/shapes";
 
 describe("scan provider core", () => {
   it("builds a standard unsupported report for scan fragments", () => {

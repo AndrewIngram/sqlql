@@ -1,8 +1,6 @@
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
-import { buildSchema, buildEntitySchema } from "../../testing/schema-builder";
-import { finalizeProviders } from "../../testing/executable-schema";
 import {
   buildProviderFragmentForRelResult,
   expandRelViewsResult,
@@ -10,7 +8,9 @@ import {
   lowerSqlToRelResult,
   planPhysicalQuery,
   planPhysicalQueryResult,
-} from "../planning";
+} from "@tupl/core/planner";
+import { buildSchema, buildEntitySchema } from "../../testing/schema-builder";
+import { finalizeProviders } from "../../testing/executable-schema";
 
 describe("query/planning", () => {
   it("lowers simple select/join into relational operators", () => {
