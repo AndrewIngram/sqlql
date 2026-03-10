@@ -207,6 +207,6 @@ export interface TableAggregateRequest<
 }
 
 export type QueryRow<
-  _TSchema extends SchemaDefinition | never = never,
+  _TSchema extends SchemaDefinition = never,
   _TTableName extends string = string,
 > = Record<string, unknown>;

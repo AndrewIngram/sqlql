@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { stringifyUnknownValue } from "@tupl-internal/foundation";
 import { createMethodsProvider } from "../../testing/methods-provider";
 import { createArrayTableMethods, scanArrayRows } from "../../schema/array-methods";
 
@@ -340,8 +341,8 @@ describe("query/joins", () => {
 
         const sortRows = (rows: Array<Record<string, unknown>>) =>
           [...rows].sort((left, right) => {
-            const leftKey = `${String(left.id ?? "")}:${String(left.user_id ?? "")}`;
-            const rightKey = `${String(right.id ?? "")}:${String(right.user_id ?? "")}`;
+            const leftKey = `${stringifyUnknownValue(left.id)}:${stringifyUnknownValue(left.user_id)}`;
+            const rightKey = `${stringifyUnknownValue(right.id)}:${stringifyUnknownValue(right.user_id)}`;
             return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
           });
 

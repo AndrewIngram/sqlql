@@ -5,6 +5,7 @@ import {
   collectRelTables,
   createSqlRel,
   isRelProjectColumnMapping,
+  stringifyUnknownValue,
   type RelColumnRef,
   type RelExpr,
   type RelJoinNode,
@@ -229,7 +230,7 @@ function toRelLiteralValue(value: unknown): string | number | boolean | null {
   ) {
     return value;
   }
-  throw new Error(`Unsupported literal filter value: ${String(value)}`);
+  throw new Error(`Unsupported literal filter value: ${stringifyUnknownValue(value)}`);
 }
 
 function toParsedOrderSource(
@@ -1554,7 +1555,7 @@ function parseRelColumnRef(ref: string): RelColumnRef {
 
 function compileViewRelForPlanner(
   _viewName: string,
-  definition: SchemaViewRelNode | unknown,
+  definition: unknown,
   schema: SchemaDefinition,
 ): RelNode {
   if (
@@ -3432,7 +3433,7 @@ function lowerSqlAstToRelExpr(
 
   switch (expr.type) {
     case "string":
-      return { kind: "literal", value: String(expr.value ?? "") };
+      return { kind: "literal", value: typeof expr.value === "string" ? expr.value : "" };
     case "number":
       return typeof expr.value === "number" ? { kind: "literal", value: expr.value } : null;
     case "bool":
@@ -4116,7 +4117,7 @@ function lowerHavingExpr(
 
   switch (expr.type) {
     case "string":
-      return { kind: "literal", value: String(expr.value ?? "") };
+      return { kind: "literal", value: typeof expr.value === "string" ? expr.value : "" };
     case "number":
       return typeof expr.value === "number" ? { kind: "literal", value: expr.value } : null;
     case "bool":
@@ -5143,14 +5144,14 @@ function resolveColumnRef(
   return undefined;
 }
 
-function parseLiteral(raw: unknown): unknown | undefined {
+function parseLiteral(raw: unknown): unknown {
   const expr = raw as { type?: unknown; value?: unknown };
 
   switch (expr?.type) {
     case "single_quote_string":
     case "double_quote_string":
     case "string":
-      return String(expr.value ?? "");
+      return typeof expr.value === "string" ? expr.value : "";
     case "number": {
       const value = expr.value;
       if (typeof value === "number") {

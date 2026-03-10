@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { stringifyUnknownValue } from "@tupl/core";
 import { type FragmentProviderAdapter, type ProviderFragment } from "@tupl/core/provider";
 import type { RelNode } from "@tupl/core/model/rel";
 import type { QueryRow } from "@tupl/core/schema";
@@ -285,8 +286,9 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
           typeof source === "object" &&
           "__sourceKey" in (source as Record<string, unknown>)
         ) {
-          currentSourceKey = String(
-            (source as { __sourceKey?: unknown }).__sourceKey ?? currentSourceKey,
+          currentSourceKey = stringifyUnknownValue(
+            (source as { __sourceKey?: unknown }).__sourceKey,
+            currentSourceKey,
           );
         } else if (typeof source === "string") {
           currentSourceKey = source;
@@ -298,8 +300,8 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
       innerJoin(table: unknown) {
         const rightKey =
           table && typeof table === "object" && "__sourceKey" in (table as Record<string, unknown>)
-            ? String((table as { __sourceKey?: unknown }).__sourceKey ?? "right")
-            : String(table ?? "right");
+            ? stringifyUnknownValue((table as { __sourceKey?: unknown }).__sourceKey, "right")
+            : stringifyUnknownValue(table, "right");
         rows = [...(rowsByJoin.get(`${currentSourceKey}->${rightKey}`) ?? rows)];
         return builder;
       },
@@ -333,7 +335,7 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
           for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
             projections.push({
               output,
-              source: String(source ?? output),
+              source: stringifyUnknownValue(source, output),
             });
           }
         }

@@ -182,6 +182,7 @@ export function createVirtualModuleRuntime(
     };
 
     const transpiled = transpileWorkspaceModuleOrThrow(source, path);
+    // oxlint-disable-next-line typescript-eslint/no-implied-eval -- The playground executes transpiled in-memory modules intentionally.
     const runner = new Function(
       "exports",
       "module",

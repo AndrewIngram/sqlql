@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 
 import { Result } from "better-result";
+import { stringifyUnknownValue } from "@tupl-internal/foundation";
 import {
   getNormalizedTableBinding,
   registerNormalizedSchema,
@@ -239,7 +240,9 @@ function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
           return term.direction === "asc" ? 1 : -1;
         }
 
-        const comparison = String(leftValue).localeCompare(String(rightValue));
+        const comparison = stringifyUnknownValue(leftValue).localeCompare(
+          stringifyUnknownValue(rightValue),
+        );
         if (comparison !== 0) {
           return term.direction === "asc" ? comparison : -comparison;
         }
@@ -384,8 +387,8 @@ function compareNonNull(left: unknown, right: unknown): number {
     return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
   }
 
-  const leftString = String(left);
-  const rightString = String(right);
+  const leftString = stringifyUnknownValue(left);
+  const rightString = stringifyUnknownValue(right);
   if (leftString === rightString) {
     return 0;
   }

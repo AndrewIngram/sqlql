@@ -16,6 +16,7 @@ import {
   type ProviderFragment,
   type ProviderRuntimeBinding,
 } from "@tupl/core/provider";
+import { stringifyUnknownValue } from "@tupl/core";
 import { isRelProjectColumnMapping, type RelNode } from "@tupl/core/model/rel";
 import {
   UnsupportedRelationalPlanError,
@@ -332,12 +333,12 @@ export function createObjectionProvider<
             } satisfies ObjectionRelCompiledPlan,
           });
         }
-        default:
+        default: {
+          const fragmentKind = stringifyUnknownValue((fragment as { kind?: unknown }).kind);
           return AdapterResult.err(
-            new Error(
-              `Unsupported Objection fragment kind: ${(fragment as { kind?: unknown }).kind}`,
-            ),
+            new Error(`Unsupported Objection fragment kind: ${fragmentKind}`),
           );
+        }
       }
     },
     async execute(plan, context) {

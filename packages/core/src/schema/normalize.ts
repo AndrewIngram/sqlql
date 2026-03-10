@@ -1,7 +1,6 @@
 import type { DataEntityColumnMetadata } from "../model/data-entity";
 import type { RelColumnRef, RelExpr, RelNode } from "../model/rel";
 import { getDataEntityAdapter } from "../provider";
-import type { SchemaViewRelNode } from "./dsl";
 import type {
   QueryRow,
   SchemaDataEntityHandle,
@@ -25,7 +24,7 @@ export interface NormalizedPhysicalTableBinding {
 
 export interface NormalizedViewTableBinding<TContext = unknown> {
   kind: "view";
-  rel: (context: TContext) => SchemaViewRelNode | unknown;
+  rel: (context: TContext) => unknown;
   columnBindings: Record<string, NormalizedColumnBinding>;
   columnToSource: Record<string, string>;
 }

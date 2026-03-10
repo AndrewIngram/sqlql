@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { stringifyUnknownValue } from "@tupl/core";
 import { type ProviderFragment } from "@tupl/core/provider";
 import type { RelNode } from "@tupl/core/model/rel";
 import type { QueryRow } from "@tupl/core/schema";
@@ -382,8 +383,8 @@ function createWithCapableDb(
             from(source: unknown) {
               const sourceKey =
                 source && typeof source === "object" && "__sourceKey" in (source as object)
-                  ? String((source as { __sourceKey?: unknown }).__sourceKey ?? "")
-                  : String(source ?? "");
+                  ? stringifyUnknownValue((source as { __sourceKey?: unknown }).__sourceKey)
+                  : stringifyUnknownValue(source);
               let rows = [...(rowsByCte.get(sourceKey) ?? [])];
 
               const builder = {
@@ -1026,7 +1027,7 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const lookupMany = provider.lookupMany;
+    const lookupMany = provider.lookupMany?.bind(provider);
     if (!lookupMany) {
       throw new Error("Expected drizzle lookupMany to be defined.");
     }
@@ -1177,7 +1178,7 @@ describe("drizzle adapter", () => {
       };
     };
     const withoutWithDb = {
-      select: withCapableDb.select,
+      select: (...args: Parameters<typeof withCapableDb.select>) => withCapableDb.select(...args),
     } satisfies DrizzleQueryExecutor;
 
     expect(

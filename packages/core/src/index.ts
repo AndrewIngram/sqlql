@@ -41,6 +41,7 @@ export {
 export * from "./provider";
 export * from "./model/rel";
 export * from "./provider/shapes";
+export { stringifyUnknownValue } from "@tupl-internal/foundation";
 export {
   defaultSqlAstParser,
   lowerSqlToRel,

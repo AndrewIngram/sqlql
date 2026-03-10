@@ -16,7 +16,7 @@ const MONACO_INDENT_OPTIONS = {
 interface DataTableJsonEditorProps {
   tableName: string;
   rows: QueryRow[];
-  onRowsChange(rows: QueryRow[]): void;
+  onRowsChange(this: void, rows: QueryRow[]): void;
   tableValidationIssues: string[];
   className?: string;
   editorClassName?: string;

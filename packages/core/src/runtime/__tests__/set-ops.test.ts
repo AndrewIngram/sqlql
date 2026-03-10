@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { stringifyUnknownValue } from "@tupl-internal/foundation";
 
 import { commerceRows, commerceSchema } from "../../testing/commerce-fixture";
 import { withQueryHarness } from "../../testing/query-harness";
@@ -10,8 +11,8 @@ function sortRowsByKey(
   key: string,
 ): Array<Record<string, unknown>> {
   return [...rows].sort((left, right) => {
-    const leftValue = String(left[key] ?? "");
-    const rightValue = String(right[key] ?? "");
+    const leftValue = stringifyUnknownValue(left[key]);
+    const rightValue = stringifyUnknownValue(right[key]);
     return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
   });
 }

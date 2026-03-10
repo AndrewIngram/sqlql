@@ -39,6 +39,7 @@ import {
   type ProviderLookupManyRequest,
   type ProviderRuntimeBinding,
 } from "@tupl/core/provider";
+import { stringifyUnknownValue } from "@tupl/core";
 import { isRelProjectColumnMapping, type RelExpr, type RelNode } from "@tupl/core/model/rel";
 import {
   UnsupportedRelationalPlanError,
@@ -383,12 +384,10 @@ export function createDrizzleProvider<
             } satisfies DrizzleRelCompiledPlan,
           });
         }
-        default:
-          return AdapterResult.err(
-            new Error(
-              `Unsupported drizzle fragment kind: ${(fragment as { kind?: unknown }).kind}`,
-            ),
-          );
+        default: {
+          const fragmentKind = stringifyUnknownValue((fragment as { kind?: unknown }).kind);
+          return AdapterResult.err(new Error(`Unsupported drizzle fragment kind: ${fragmentKind}`));
+        }
       }
     },
     async execute(plan, context) {
@@ -718,7 +717,8 @@ function deriveEntityColumnsFromTable(table: object): DataEntityHandle<string>["
 }
 
 function inferTuplTypeFromDrizzleColumn(column: AnyColumn): SqlScalarType | undefined {
-  const dataType = String((column as { dataType?: unknown }).dataType ?? "").toLowerCase();
+  const dataTypeValue = (column as { dataType?: unknown }).dataType;
+  const dataType = typeof dataTypeValue === "string" ? dataTypeValue.toLowerCase() : "";
   const sqlType = typeof column.getSQLType === "function" ? column.getSQLType().toLowerCase() : "";
   const normalizedSqlType = sqlType.replace(/\s+/g, " ");
 
@@ -1493,7 +1493,7 @@ function resolveWithBodyProjectionSource(
   source: Record<string, unknown>,
   windowExpressions: Map<string, unknown>,
   scanAlias: string,
-): AnyColumn | unknown {
+): unknown {
   const mapping = requireColumnProjectMapping(rawMapping);
   if (windowExpressions.has(mapping.source.column)) {
     return windowExpressions.get(mapping.source.column)!;

@@ -18,6 +18,7 @@ import {
   type ProviderFragment,
   type ProviderRuntimeBinding,
 } from "@tupl/core/provider";
+import { stringifyUnknownValue } from "@tupl/core";
 import { isRelProjectColumnMapping, type RelNode } from "@tupl/core/model/rel";
 import {
   UnsupportedRelationalPlanError,
@@ -300,10 +301,10 @@ export function createKyselyProvider<
             } satisfies KyselyRelCompiledPlan,
           });
         }
-        default:
-          return AdapterResult.err(
-            new Error(`Unsupported Kysely fragment kind: ${(fragment as { kind?: unknown }).kind}`),
-          );
+        default: {
+          const fragmentKind = stringifyUnknownValue((fragment as { kind?: unknown }).kind);
+          return AdapterResult.err(new Error(`Unsupported Kysely fragment kind: ${fragmentKind}`));
+        }
       }
     },
     async execute(plan, context) {
