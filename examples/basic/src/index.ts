@@ -4,6 +4,7 @@ import {
   createDataEntityHandle,
   type ProviderAdapter,
 } from "@tupl/core/provider";
+import { stringifyUnknownValue } from "@tupl/core";
 import {
   createExecutableSchema,
   createSchemaBuilder,
@@ -89,7 +90,9 @@ function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
           return term.direction === "asc" ? 1 : -1;
         }
 
-        const comparison = toSortKey(leftValue).localeCompare(toSortKey(rightValue));
+        const comparison = stringifyUnknownValue(leftValue).localeCompare(
+          stringifyUnknownValue(rightValue),
+        );
         if (comparison !== 0) {
           return term.direction === "asc" ? comparison : -comparison;
         }
@@ -108,24 +111,6 @@ function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   }
 
   return out.map((row) => projectRow(row, request.select));
-}
-
-function toSortKey(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
 }
 
 function matchesFilters(row: QueryRow, filters: ScanFilterClause[]): boolean {

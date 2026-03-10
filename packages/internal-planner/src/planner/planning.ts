@@ -5,6 +5,7 @@ import {
   collectRelTables,
   createSqlRel,
   isRelProjectColumnMapping,
+  stringifyUnknownValue,
   type RelColumnRef,
   type RelExpr,
   type RelJoinNode,
@@ -5237,27 +5238,6 @@ function parseNumericLiteral(value: unknown): number | undefined {
   }
 
   return undefined;
-}
-
-function stringifyUnknownValue(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
 }
 
 function appearsInRel(node: RelNode, alias: string): boolean {

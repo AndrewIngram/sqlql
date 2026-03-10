@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { stringifyUnknownValue } from "@tupl/core";
 import { type FragmentProviderAdapter, type ProviderFragment } from "@tupl/core/provider";
 import type { RelNode } from "@tupl/core/model/rel";
 import type { QueryRow } from "@tupl/core/schema";
@@ -13,24 +14,6 @@ import {
   type KnexLike,
   type KnexLikeQueryBuilder,
 } from "../../packages/provider-objection/src";
-
-function toTestString(value: unknown, fallback = ""): string {
-  if (value == null) {
-    return fallback;
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 function buildRel(): RelNode {
   return {
@@ -303,7 +286,7 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
           typeof source === "object" &&
           "__sourceKey" in (source as Record<string, unknown>)
         ) {
-          currentSourceKey = toTestString(
+          currentSourceKey = stringifyUnknownValue(
             (source as { __sourceKey?: unknown }).__sourceKey,
             currentSourceKey,
           );
@@ -317,8 +300,8 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
       innerJoin(table: unknown) {
         const rightKey =
           table && typeof table === "object" && "__sourceKey" in (table as Record<string, unknown>)
-            ? toTestString((table as { __sourceKey?: unknown }).__sourceKey, "right")
-            : toTestString(table, "right");
+            ? stringifyUnknownValue((table as { __sourceKey?: unknown }).__sourceKey, "right")
+            : stringifyUnknownValue(table, "right");
         rows = [...(rowsByJoin.get(`${currentSourceKey}->${rightKey}`) ?? rows)];
         return builder;
       },
@@ -352,7 +335,7 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
           for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
             projections.push({
               output,
-              source: toTestString(source, output),
+              source: stringifyUnknownValue(source, output),
             });
           }
         }

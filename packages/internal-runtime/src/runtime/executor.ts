@@ -14,6 +14,7 @@ import {
 } from "@tupl-internal/provider";
 import {
   isRelProjectColumnMapping,
+  stringifyUnknownValue,
   type RelExpr,
   type RelJoinNode,
   type RelNode,
@@ -2011,27 +2012,6 @@ function compareNonNull(left: unknown, right: unknown): number {
     return 0;
   }
   return leftString < rightString ? -1 : 1;
-}
-
-function stringifyUnknownValue(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
 }
 
 function toFiniteNumberResult(

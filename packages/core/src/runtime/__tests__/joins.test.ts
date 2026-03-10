@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { stringifyUnknownValue } from "@tupl-internal/foundation";
 import { createMethodsProvider } from "../../testing/methods-provider";
 import { createArrayTableMethods, scanArrayRows } from "../../schema/array-methods";
 
@@ -340,8 +341,8 @@ describe("query/joins", () => {
 
         const sortRows = (rows: Array<Record<string, unknown>>) =>
           [...rows].sort((left, right) => {
-            const leftKey = `${toComparableString(left.id)}:${toComparableString(left.user_id)}`;
-            const rightKey = `${toComparableString(right.id)}:${toComparableString(right.user_id)}`;
+            const leftKey = `${stringifyUnknownValue(left.id)}:${stringifyUnknownValue(left.user_id)}`;
+            const rightKey = `${stringifyUnknownValue(right.id)}:${stringifyUnknownValue(right.user_id)}`;
             return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
           });
 
@@ -357,21 +358,3 @@ describe("query/joins", () => {
     );
   });
 });
-
-function toComparableString(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
-}

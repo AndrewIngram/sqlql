@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { stringifyUnknownValue } from "@tupl/core";
 import { type ProviderFragment } from "@tupl/core/provider";
 import type { RelNode } from "@tupl/core/model/rel";
 import type { QueryRow } from "@tupl/core/schema";
@@ -19,24 +20,6 @@ interface RecordingDbCalls {
   limitValues: number[];
   offsetValues: number[];
   executeCount?: number;
-}
-
-function toTestString(value: unknown, fallback = ""): string {
-  if (value == null) {
-    return fallback;
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function createRecordingDb(rowsByTable: Map<object, TestRow[]>): {
@@ -400,8 +383,8 @@ function createWithCapableDb(
             from(source: unknown) {
               const sourceKey =
                 source && typeof source === "object" && "__sourceKey" in (source as object)
-                  ? toTestString((source as { __sourceKey?: unknown }).__sourceKey)
-                  : toTestString(source);
+                  ? stringifyUnknownValue((source as { __sourceKey?: unknown }).__sourceKey)
+                  : stringifyUnknownValue(source);
               let rows = [...(rowsByCte.get(sourceKey) ?? [])];
 
               const builder = {

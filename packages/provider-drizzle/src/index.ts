@@ -39,6 +39,7 @@ import {
   type ProviderLookupManyRequest,
   type ProviderRuntimeBinding,
 } from "@tupl/core/provider";
+import { stringifyUnknownValue } from "@tupl/core";
 import { isRelProjectColumnMapping, type RelExpr, type RelNode } from "@tupl/core/model/rel";
 import {
   UnsupportedRelationalPlanError,
@@ -384,7 +385,7 @@ export function createDrizzleProvider<
           });
         }
         default: {
-          const fragmentKind = formatUnknownValue((fragment as { kind?: unknown }).kind);
+          const fragmentKind = stringifyUnknownValue((fragment as { kind?: unknown }).kind);
           return AdapterResult.err(new Error(`Unsupported drizzle fragment kind: ${fragmentKind}`));
         }
       }
@@ -510,24 +511,6 @@ function normalizeDialectName(name: string | undefined): "postgres" | "sqlite" |
     return "sqlite";
   }
   return null;
-}
-
-function formatUnknownValue(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
 }
 
 async function executeDrizzlePlan<TContext>(

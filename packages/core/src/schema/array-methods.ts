@@ -1,3 +1,5 @@
+import { stringifyUnknownValue } from "@tupl-internal/foundation";
+
 import type {
   AggregateFunction,
   QueryRow,
@@ -392,8 +394,8 @@ function compareNullableValues(left: unknown, right: unknown): number {
     return Number(left) < Number(right) ? -1 : 1;
   }
 
-  const leftString = toComparableString(left);
-  const rightString = toComparableString(right);
+  const leftString = stringifyUnknownValue(left);
+  const rightString = stringifyUnknownValue(right);
   return leftString < rightString ? -1 : 1;
 }
 
@@ -408,30 +410,12 @@ function compareNonNull(left: unknown, right: unknown): number {
     return leftNum === rightNum ? 0 : leftNum < rightNum ? -1 : 1;
   }
 
-  const leftString = toComparableString(left);
-  const rightString = toComparableString(right);
+  const leftString = stringifyUnknownValue(left);
+  const rightString = stringifyUnknownValue(right);
   if (leftString === rightString) {
     return 0;
   }
   return leftString < rightString ? -1 : 1;
-}
-
-function toComparableString(value: unknown): string {
-  if (value == null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
 }
 
 function readRows<TRow extends QueryRow>(rows: ArrayRowSource<TRow>): TRow[] {

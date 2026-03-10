@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { stringifyUnknownValue } from "@tupl/core";
 import { type ProviderFragment } from "@tupl/core/provider";
 import type { RelNode } from "@tupl/core/model/rel";
 import type { QueryRow, TableScanRequest } from "@tupl/core/schema";
@@ -10,24 +11,6 @@ interface ObjectionCalls {
   whereIn: unknown[][];
   executeCount: number;
   baseContexts: string[];
-}
-
-function toTestString(value: unknown, fallback = ""): string {
-  if (value == null) {
-    return fallback;
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return value.toString();
-  }
-
-  try {
-    return JSON.stringify(value) ?? fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function createMockKnex(
@@ -46,7 +29,7 @@ function createMockKnex(
         for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
           projections.push({
             output,
-            source: aliasOnly ? output : toTestString(source, output),
+            source: aliasOnly ? output : stringifyUnknownValue(source, output),
           });
         }
       }
@@ -72,7 +55,7 @@ function createMockKnex(
           typeof source === "object" &&
           "__sourceKey" in (source as Record<string, unknown>)
         ) {
-          currentSourceKey = toTestString(
+          currentSourceKey = stringifyUnknownValue(
             (source as { __sourceKey?: unknown }).__sourceKey,
             currentSourceKey,
           );
@@ -83,7 +66,7 @@ function createMockKnex(
           const first = entries[0];
           if (first) {
             const alias = first[0];
-            const table = toTestString(first[1]);
+            const table = stringifyUnknownValue(first[1]);
             currentSourceKey = `${table} as ${alias}`;
           }
         }
@@ -94,8 +77,8 @@ function createMockKnex(
       innerJoin(table: unknown) {
         const rightKey =
           table && typeof table === "object" && "__sourceKey" in (table as Record<string, unknown>)
-            ? toTestString((table as { __sourceKey?: unknown }).__sourceKey, "right")
-            : toTestString(table, "right");
+            ? stringifyUnknownValue((table as { __sourceKey?: unknown }).__sourceKey, "right")
+            : stringifyUnknownValue(table, "right");
         rows = [...(rowsByJoin.get(`${currentSourceKey}->${rightKey}`) ?? rows)];
         return builder;
       },
