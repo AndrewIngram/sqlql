@@ -29,8 +29,8 @@ interface PlanGraphProps {
   currentStepId: string | null;
   selectedStepId: string | null;
   isVisible?: boolean;
-  onSelectStep(stepId: string): void;
-  onClearSelection?(): void;
+  onSelectStep(this: void, stepId: string): void;
+  onClearSelection?(this: void): void;
   heightClassName?: string;
   containerClassName?: string;
 }

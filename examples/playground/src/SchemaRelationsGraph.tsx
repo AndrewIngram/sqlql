@@ -25,8 +25,8 @@ import {
 interface SchemaRelationsGraphProps {
   schema: SchemaDefinition;
   selectedTableName: string | null;
-  onSelectTable(tableName: string): void;
-  onClearSelection?(): void;
+  onSelectTable(this: void, tableName: string): void;
+  onClearSelection?(this: void): void;
   isVisible?: boolean;
   heightClassName?: string;
   frameClassName?: string;

@@ -20,10 +20,10 @@ import { cn } from "@/lib/utils";
 interface DataGridProps {
   table: TableDefinition;
   rows: QueryRow[];
-  onRowsChange(rows: QueryRow[]): void;
+  onRowsChange(this: void, rows: QueryRow[]): void;
   scrollAreaClassName?: string;
   selectedRowIndex?: number | null;
-  onSelectRow?(rowIndex: number): void;
+  onSelectRow?(this: void, rowIndex: number): void;
   editable?: boolean;
 }
 
@@ -199,7 +199,7 @@ export function DataGrid({
                       ) : enumValues.length > 0 ? (
                         <select
                           className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"
-                          value={currentValue == null ? "__null__" : String(currentValue)}
+                          value={currentValue == null ? "__null__" : formatCellValue(currentValue)}
                           onChange={(event) =>
                             commitCellText(
                               rowIndex,

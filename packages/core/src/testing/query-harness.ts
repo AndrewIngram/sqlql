@@ -239,7 +239,9 @@ function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
           return term.direction === "asc" ? 1 : -1;
         }
 
-        const comparison = String(leftValue).localeCompare(String(rightValue));
+        const comparison = toComparableString(leftValue).localeCompare(
+          toComparableString(rightValue),
+        );
         if (comparison !== 0) {
           return term.direction === "asc" ? comparison : -comparison;
         }
@@ -384,10 +386,28 @@ function compareNonNull(left: unknown, right: unknown): number {
     return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
   }
 
-  const leftString = String(left);
-  const rightString = String(right);
+  const leftString = toComparableString(left);
+  const rightString = toComparableString(right);
   if (leftString === rightString) {
     return 0;
   }
   return leftString < rightString ? -1 : 1;
+}
+
+function toComparableString(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }

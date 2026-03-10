@@ -616,7 +616,7 @@ function uniqueNonNullValues(rows: QueryRow[], columnName: string): string[] {
     if (value == null) {
       continue;
     }
-    values.add(String(value));
+    values.add(formatCellValue(value));
   }
   return [...values].sort((a, b) => a.localeCompare(b));
 }
@@ -1417,8 +1417,8 @@ export function App(): React.JSX.Element {
         continue;
       }
 
-      const org = String(orgValue);
-      const userIdValue = String(userValue);
+      const org = formatCellValue(orgValue);
+      const userIdValue = formatCellValue(userValue);
       if (org.length === 0 || userIdValue.length === 0) {
         continue;
       }
@@ -1451,8 +1451,8 @@ export function App(): React.JSX.Element {
         continue;
       }
 
-      const org = String(orgValue);
-      const userIdValue = String(userValue);
+      const org = formatCellValue(orgValue);
+      const userIdValue = formatCellValue(userValue);
       if (org.length === 0 || userIdValue.length === 0) {
         continue;
       }

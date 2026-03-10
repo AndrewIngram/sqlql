@@ -10,10 +10,28 @@ function sortRowsByKey(
   key: string,
 ): Array<Record<string, unknown>> {
   return [...rows].sort((left, right) => {
-    const leftValue = String(left[key] ?? "");
-    const rightValue = String(right[key] ?? "");
+    const leftValue = toComparableString(left[key]);
+    const rightValue = toComparableString(right[key]);
     return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
   });
+}
+
+function toComparableString(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }
 
 describe("query/set-ops", () => {

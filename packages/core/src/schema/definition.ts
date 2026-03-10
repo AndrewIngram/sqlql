@@ -487,7 +487,7 @@ export type AggregatePlanDecision<
 > = AggregatePlanDecisionById | AggregatePlanDecisionRemoteResidual<TTable, TColumn, TColumns>;
 
 export type QueryRow<
-  TSchema extends SchemaDefinition | never = never,
+  TSchema extends SchemaDefinition = never,
   TTableName extends string = string,
 > = [TSchema] extends [never]
   ? Record<string, unknown>

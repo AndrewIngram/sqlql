@@ -384,11 +384,8 @@ export function createDrizzleProvider<
           });
         }
         default:
-          return AdapterResult.err(
-            new Error(
-              `Unsupported drizzle fragment kind: ${(fragment as { kind?: unknown }).kind}`,
-            ),
-          );
+          const fragmentKind = formatUnknownValue((fragment as { kind?: unknown }).kind);
+          return AdapterResult.err(new Error(`Unsupported drizzle fragment kind: ${fragmentKind}`));
       }
     },
     async execute(plan, context) {
@@ -512,6 +509,24 @@ function normalizeDialectName(name: string | undefined): "postgres" | "sqlite" |
     return "sqlite";
   }
   return null;
+}
+
+function formatUnknownValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }
 
 async function executeDrizzlePlan<TContext>(
@@ -718,7 +733,8 @@ function deriveEntityColumnsFromTable(table: object): DataEntityHandle<string>["
 }
 
 function inferTuplTypeFromDrizzleColumn(column: AnyColumn): SqlScalarType | undefined {
-  const dataType = String((column as { dataType?: unknown }).dataType ?? "").toLowerCase();
+  const dataTypeValue = (column as { dataType?: unknown }).dataType;
+  const dataType = typeof dataTypeValue === "string" ? dataTypeValue.toLowerCase() : "";
   const sqlType = typeof column.getSQLType === "function" ? column.getSQLType().toLowerCase() : "";
   const normalizedSqlType = sqlType.replace(/\s+/g, " ");
 
@@ -1493,7 +1509,7 @@ function resolveWithBodyProjectionSource(
   source: Record<string, unknown>,
   windowExpressions: Map<string, unknown>,
   scanAlias: string,
-): AnyColumn | unknown {
+): unknown {
   const mapping = requireColumnProjectMapping(rawMapping);
   if (windowExpressions.has(mapping.source.column)) {
     return windowExpressions.get(mapping.source.column)!;

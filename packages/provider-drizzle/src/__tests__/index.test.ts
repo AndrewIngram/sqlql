@@ -21,6 +21,24 @@ interface RecordingDbCalls {
   executeCount?: number;
 }
 
+function toTestString(value: unknown, fallback = ""): string {
+  if (value == null) {
+    return fallback;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function createRecordingDb(rowsByTable: Map<object, TestRow[]>): {
   db: DrizzleQueryExecutor;
   calls: RecordingDbCalls;
@@ -382,8 +400,8 @@ function createWithCapableDb(
             from(source: unknown) {
               const sourceKey =
                 source && typeof source === "object" && "__sourceKey" in (source as object)
-                  ? String((source as { __sourceKey?: unknown }).__sourceKey ?? "")
-                  : String(source ?? "");
+                  ? toTestString((source as { __sourceKey?: unknown }).__sourceKey)
+                  : toTestString(source);
               let rows = [...(rowsByCte.get(sourceKey) ?? [])];
 
               const builder = {
@@ -1026,7 +1044,7 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const lookupMany = provider.lookupMany;
+    const lookupMany = provider.lookupMany?.bind(provider);
     if (!lookupMany) {
       throw new Error("Expected drizzle lookupMany to be defined.");
     }
@@ -1177,7 +1195,7 @@ describe("drizzle adapter", () => {
       };
     };
     const withoutWithDb = {
-      select: withCapableDb.select,
+      select: (...args: Parameters<typeof withCapableDb.select>) => withCapableDb.select(...args),
     } satisfies DrizzleQueryExecutor;
 
     expect(

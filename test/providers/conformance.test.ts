@@ -14,6 +14,24 @@ import {
   type KnexLikeQueryBuilder,
 } from "../../packages/provider-objection/src";
 
+function toTestString(value: unknown, fallback = ""): string {
+  if (value == null) {
+    return fallback;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function buildRel(): RelNode {
   return {
     id: "project_1",
@@ -285,8 +303,9 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
           typeof source === "object" &&
           "__sourceKey" in (source as Record<string, unknown>)
         ) {
-          currentSourceKey = String(
-            (source as { __sourceKey?: unknown }).__sourceKey ?? currentSourceKey,
+          currentSourceKey = toTestString(
+            (source as { __sourceKey?: unknown }).__sourceKey,
+            currentSourceKey,
           );
         } else if (typeof source === "string") {
           currentSourceKey = source;
@@ -298,8 +317,8 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
       innerJoin(table: unknown) {
         const rightKey =
           table && typeof table === "object" && "__sourceKey" in (table as Record<string, unknown>)
-            ? String((table as { __sourceKey?: unknown }).__sourceKey ?? "right")
-            : String(table ?? "right");
+            ? toTestString((table as { __sourceKey?: unknown }).__sourceKey, "right")
+            : toTestString(table, "right");
         rows = [...(rowsByJoin.get(`${currentSourceKey}->${rightKey}`) ?? rows)];
         return builder;
       },
@@ -333,7 +352,7 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
           for (const [output, source] of Object.entries(columnMap as Record<string, unknown>)) {
             projections.push({
               output,
-              source: String(source ?? output),
+              source: toTestString(source, output),
             });
           }
         }

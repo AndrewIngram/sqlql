@@ -627,7 +627,7 @@ async function maybeExecuteLookupJoinResult<TContext>(
   if (!rightProvider || !supportsLookupMany(rightProvider)) {
     return Result.ok(null);
   }
-  const lookupMany = rightProvider.lookupMany;
+  const lookupMany = rightProvider.lookupMany.bind(rightProvider);
 
   const leftKey = `${join.leftKey.alias}.${join.leftKey.column}`;
   const rightPhysicalBinding =
@@ -1094,7 +1094,7 @@ async function executeWithResult<TContext>(
 
 function compileViewRelToExecutableResult(
   viewName: string,
-  definition: SchemaViewRelNode | unknown,
+  definition: unknown,
   schema: SchemaDefinition,
 ): BetterResult<RelNode, TuplExecutionError> {
   if (isRelNode(definition)) {
@@ -1619,7 +1619,7 @@ function evaluateRelExprResult(
           return Result.ok(leftResult.value % rightResult.value);
         }
         case "concat":
-          return Result.ok(args.map((arg) => (arg == null ? "" : String(arg))).join(""));
+          return Result.ok(args.map((arg) => stringifyUnknownValue(arg)).join(""));
         case "like":
           return Result.ok(
             typeof args[0] === "string" && typeof args[1] === "string"
@@ -1651,18 +1651,18 @@ function evaluateRelExprResult(
               : false,
           );
         case "lower":
-          return Result.ok(args[0] == null ? null : String(args[0]).toLowerCase());
+          return Result.ok(args[0] == null ? null : stringifyUnknownValue(args[0]).toLowerCase());
         case "upper":
-          return Result.ok(args[0] == null ? null : String(args[0]).toUpperCase());
+          return Result.ok(args[0] == null ? null : stringifyUnknownValue(args[0]).toUpperCase());
         case "trim":
-          return Result.ok(args[0] == null ? null : String(args[0]).trim());
+          return Result.ok(args[0] == null ? null : stringifyUnknownValue(args[0]).trim());
         case "length":
-          return Result.ok(args[0] == null ? null : String(args[0]).length);
+          return Result.ok(args[0] == null ? null : stringifyUnknownValue(args[0]).length);
         case "substr": {
           if (args[0] == null || args[1] == null) {
             return Result.ok(null);
           }
-          const input = String(args[0]);
+          const input = stringifyUnknownValue(args[0]);
           const startResult = toFiniteNumberResult(args[1], "SUBSTR");
           if (Result.isError(startResult)) {
             return startResult;
@@ -1859,12 +1859,10 @@ function castValueResult(value: unknown, target: unknown) {
   if (value == null) {
     return Result.ok(null);
   }
-  const normalized = String(target ?? "")
-    .trim()
-    .toLowerCase();
+  const normalized = typeof target === "string" ? target.trim().toLowerCase() : "";
   switch (normalized) {
     case "text":
-      return Result.ok(String(value));
+      return Result.ok(stringifyUnknownValue(value));
     case "integer":
     case "int":
       return Result.ok(Math.trunc(Number(value)));
@@ -1991,8 +1989,8 @@ function compareNullableValues(left: unknown, right: unknown): number {
     return Number(left) < Number(right) ? -1 : 1;
   }
 
-  const leftString = String(left);
-  const rightString = String(right);
+  const leftString = stringifyUnknownValue(left);
+  const rightString = stringifyUnknownValue(right);
   return leftString < rightString ? -1 : 1;
 }
 
@@ -2007,12 +2005,33 @@ function compareNonNull(left: unknown, right: unknown): number {
     return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
   }
 
-  const leftString = String(left);
-  const rightString = String(right);
+  const leftString = stringifyUnknownValue(left);
+  const rightString = stringifyUnknownValue(right);
   if (leftString === rightString) {
     return 0;
   }
   return leftString < rightString ? -1 : 1;
+}
+
+function stringifyUnknownValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }
 
 function toFiniteNumberResult(

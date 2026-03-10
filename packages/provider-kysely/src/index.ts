@@ -301,9 +301,8 @@ export function createKyselyProvider<
           });
         }
         default:
-          return AdapterResult.err(
-            new Error(`Unsupported Kysely fragment kind: ${(fragment as { kind?: unknown }).kind}`),
-          );
+          const fragmentKind = formatUnknownValue((fragment as { kind?: unknown }).kind);
+          return AdapterResult.err(new Error(`Unsupported Kysely fragment kind: ${fragmentKind}`));
       }
     },
     async execute(plan, context) {
@@ -1088,4 +1087,22 @@ function resolveSortRef<TContext>(
   }
 
   return term.source.column;
+}
+
+function formatUnknownValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }

@@ -1,5 +1,5 @@
 import type { DataEntityColumnMetadata, DataEntityReadMetadataMap } from "../model/data-entity";
-import type { RelExpr } from "../model/rel";
+import type { RelExpr, RelNode } from "../model/rel";
 import { getDataEntityAdapter } from "../provider";
 import {
   registerNormalizedSchema,
@@ -245,7 +245,7 @@ interface DslViewDefinition<
   rel: (
     context: TContext,
     helpers: SchemaDslViewRelHelpers,
-  ) => SchemaViewRelNodeInput<TRelColumns> | unknown;
+  ) => SchemaViewRelNodeInput<TRelColumns> | RelNode;
   columns: Record<TColumns, DslViewColumnInput<TRelColumns>>;
   constraints?: TableConstraints;
 }
@@ -482,7 +482,7 @@ type SchemaBuilderViewMethods<TContext> = {
     rel: (
       helpers: SchemaDslViewRelHelpers,
       context: TContext,
-    ) => SchemaViewRelNodeInput<TRelColumns> | unknown,
+    ) => SchemaViewRelNodeInput<TRelColumns> | RelNode,
     input: {
       columns:
         | ((helpers: {
@@ -498,7 +498,7 @@ type SchemaBuilderViewMethods<TContext> = {
   ): DslViewDefinition<TContext, TColumns, TRelColumns>;
   <TColumns extends string>(
     name: string,
-    rel: (context: TContext) => SchemaViewRelNodeInput<string> | unknown,
+    rel: (context: TContext) => SchemaViewRelNodeInput<string> | RelNode,
     input: {
       columns: Record<TColumns, DslViewColumnInput<string>>;
       constraints?: TableConstraints;
@@ -583,7 +583,7 @@ export function createSchemaBuilder<TContext>(): SchemaBuilder<TContext> {
     }
     const rel = (context: TContext, helpers: SchemaDslViewRelHelpers) =>
       relFactory.length === 0
-        ? (relFactory as () => SchemaViewRelNodeInput<string> | unknown)()
+        ? (relFactory as () => SchemaViewRelNodeInput<string> | RelNode)()
         : relFactory(helpers, context);
     const columns =
       typeof input.columns === "function"
@@ -973,7 +973,7 @@ function resolveViewRelDefinition(
   definition: unknown,
   resolveTableToken: (token: SchemaDslTableToken<string>) => string,
   resolveEntityToken: (entity: SchemaDataEntityHandle<string>) => string,
-): SchemaViewRelNode | unknown {
+): unknown {
   if (
     definition &&
     typeof definition === "object" &&

@@ -229,7 +229,7 @@ function toRelLiteralValue(value: unknown): string | number | boolean | null {
   ) {
     return value;
   }
-  throw new Error(`Unsupported literal filter value: ${String(value)}`);
+  throw new Error(`Unsupported literal filter value: ${stringifyUnknownValue(value)}`);
 }
 
 function toParsedOrderSource(
@@ -1554,7 +1554,7 @@ function parseRelColumnRef(ref: string): RelColumnRef {
 
 function compileViewRelForPlanner(
   _viewName: string,
-  definition: SchemaViewRelNode | unknown,
+  definition: unknown,
   schema: SchemaDefinition,
 ): RelNode {
   if (
@@ -3432,7 +3432,7 @@ function lowerSqlAstToRelExpr(
 
   switch (expr.type) {
     case "string":
-      return { kind: "literal", value: String(expr.value ?? "") };
+      return { kind: "literal", value: typeof expr.value === "string" ? expr.value : "" };
     case "number":
       return typeof expr.value === "number" ? { kind: "literal", value: expr.value } : null;
     case "bool":
@@ -4116,7 +4116,7 @@ function lowerHavingExpr(
 
   switch (expr.type) {
     case "string":
-      return { kind: "literal", value: String(expr.value ?? "") };
+      return { kind: "literal", value: typeof expr.value === "string" ? expr.value : "" };
     case "number":
       return typeof expr.value === "number" ? { kind: "literal", value: expr.value } : null;
     case "bool":
@@ -5143,14 +5143,14 @@ function resolveColumnRef(
   return undefined;
 }
 
-function parseLiteral(raw: unknown): unknown | undefined {
+function parseLiteral(raw: unknown): unknown {
   const expr = raw as { type?: unknown; value?: unknown };
 
   switch (expr?.type) {
     case "single_quote_string":
     case "double_quote_string":
     case "string":
-      return String(expr.value ?? "");
+      return typeof expr.value === "string" ? expr.value : "";
     case "number": {
       const value = expr.value;
       if (typeof value === "number") {
@@ -5237,6 +5237,27 @@ function parseNumericLiteral(value: unknown): number | undefined {
   }
 
   return undefined;
+}
+
+function stringifyUnknownValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }
 
 function appearsInRel(node: RelNode, alias: string): boolean {
