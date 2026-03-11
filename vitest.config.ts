@@ -5,10 +5,6 @@ import { resolve } from "node:path";
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 const workspaceAliases = [
   {
-    find: /^@tupl\/core$/,
-    replacement: resolve(rootDir, "packages/core/src/index.ts"),
-  },
-  {
     find: /^@tupl\/foundation$/,
     replacement: resolve(rootDir, "packages/foundation/src/index.ts"),
   },
@@ -84,7 +80,7 @@ export default defineConfig({
       "test/providers/*.test.ts",
       "examples/playground/test/**/*.test.ts",
     ],
-    exclude: ["packages/core/src/runtime/__tests__/compliance/standards-gaps.todo.test.ts"],
+    exclude: ["packages/runtime/src/__tests__/compliance/standards-gaps.todo.test.ts"],
     coverage: sharedCoverageConfig,
   },
 });

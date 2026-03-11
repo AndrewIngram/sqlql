@@ -1,0 +1,57 @@
+import { commerceRows, commerceSchema } from "../../../../../test/support/commerce-fixture";
+import { registerParityCases, type ComplianceCase } from "../../../../../test/support/case-runner";
+
+const cases: ComplianceCase[] = [
+  {
+    name: "ROW_NUMBER over partition/order",
+    sql: `
+      SELECT
+        o.id,
+        o.org_id,
+        ROW_NUMBER() OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS rn
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+  },
+  {
+    name: "RANK and DENSE_RANK over ordered values",
+    sql: `
+      SELECT
+        o.id,
+        o.org_id,
+        RANK() OVER (PARTITION BY o.org_id ORDER BY o.total_cents DESC) AS rnk,
+        DENSE_RANK() OVER (PARTITION BY o.org_id ORDER BY o.total_cents DESC) AS dense_rnk
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+  },
+  {
+    name: "COUNT(*) window partition",
+    sql: `
+      SELECT
+        o.id,
+        COUNT(*) OVER (PARTITION BY o.org_id) AS org_count
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+  },
+  {
+    name: "running SUM window partition/order",
+    sql: `
+      SELECT
+        o.id,
+        SUM(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS running_total
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+  },
+];
+
+registerParityCases(
+  "compliance/window-parity",
+  {
+    schema: commerceSchema,
+    rowsByTable: commerceRows,
+  },
+  cases,
+);

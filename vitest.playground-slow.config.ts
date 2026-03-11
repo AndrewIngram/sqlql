@@ -7,10 +7,6 @@ import { sharedCoverageConfig, SLOW_PLAYGROUND_TEST_FILES } from "./vitest.confi
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 const workspaceAliases = [
   {
-    find: /^@tupl\/core$/,
-    replacement: resolve(rootDir, "packages/core/src/index.ts"),
-  },
-  {
     find: /^@tupl\/foundation$/,
     replacement: resolve(rootDir, "packages/foundation/src/index.ts"),
   },

@@ -19,6 +19,6 @@ This audit tracks shallow wrapper layers that add interface surface without hidi
 
 ## Guardrails
 
-- No non-root wrapper file outside `packages/core` should exist solely to re-export one deeper module.
+- No non-root wrapper file should exist solely to re-export one deeper module.
 - Public subpath exports should point at the real module that owns the concept.
 - Single-concept packages should keep their implementation at `src/index.ts` unless a second top-level concept justifies a subtree.

@@ -12,7 +12,6 @@
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
-      "@tupl/core": ["./packages/core/src/index.ts"],
       "@tupl/schema": ["./packages/schema/src/index.ts"],
       "@tupl/provider-drizzle": ["./packages/provider-drizzle/src/index.ts"],
       "@tupl/provider-ioredis": ["./packages/provider-ioredis/src/index.ts"],

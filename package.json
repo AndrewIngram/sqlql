@@ -15,7 +15,7 @@
   "scripts": {
     "build": "pnpm --filter @tupl/foundation build && pnpm --filter @tupl/provider-kit build && pnpm --filter @tupl/schema-model build && pnpm --filter @tupl/planner build && pnpm --filter @tupl/runtime build && pnpm --filter @tupl/schema build && pnpm -r --filter @tupl/provider-drizzle --filter @tupl/provider-ioredis --filter @tupl/provider-kysely --filter @tupl/provider-objection build",
     "build:public": "pnpm run build",
-    "clean": "rm -rf packages/core/dist packages/foundation/dist packages/provider-kit/dist packages/schema-model/dist packages/planner/dist packages/runtime/dist packages/schema/dist packages/provider-*/dist examples/basic/dist",
+    "clean": "rm -rf packages/foundation/dist packages/provider-kit/dist packages/schema-model/dist packages/planner/dist packages/runtime/dist packages/schema/dist packages/provider-*/dist examples/basic/dist",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

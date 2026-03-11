@@ -165,14 +165,10 @@ describe("package boundaries", () => {
     }
   });
 
-  it("avoids wrapper-only files outside the temporary core package", () => {
+  it("avoids wrapper-only files outside package roots and approved subpath roots", () => {
     const offenders: string[] = [];
 
     for (const pkgDir of readdirSync(join(REPO_ROOT, "packages"))) {
-      if (pkgDir === "core") {
-        continue;
-      }
-
       const srcDir = join(REPO_ROOT, "packages", pkgDir, "src");
       if (!statSync(srcDir).isDirectory()) {
         continue;
