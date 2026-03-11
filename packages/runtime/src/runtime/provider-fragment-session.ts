@@ -1,19 +1,12 @@
-import { Result, type Result as BetterResult } from "better-result";
+import { Result } from "better-result";
 
-import { countRelNodes, TuplRuntimeError, type RelNode, type TuplError } from "@tupl/foundation";
+import { TuplRuntimeError, type RelNode } from "@tupl/foundation";
 import {
   supportsFragmentExecution,
-  unwrapProviderOperationResult,
   type ProviderAdapter,
   type ProviderFragment,
 } from "@tupl/provider-kit";
-import { expandRelViewsResult, lowerSqlToRelResult } from "@tupl/planner";
-import {
-  getNormalizedTableBinding,
-  mapProviderRowsToLogical,
-  mapProviderRowsToRelOutput,
-  type QueryRow,
-} from "@tupl/schema-model";
+import { type QueryRow } from "@tupl/schema-model";
 
 import type {
   QueryExecutionPlan,
@@ -24,23 +17,15 @@ import type {
   QueryStepState,
   TuplDiagnostic,
 } from "./contracts";
-import { tryQueryStep, tryQueryStepAsync, unwrapQueryResult } from "./diagnostics";
+import { unwrapQueryResult } from "./diagnostics";
 import {
-  maybeRejectFallbackResult,
-  resolveSyncProviderCapabilityForRel,
-  resolveSyncProviderCapabilityForRelResult,
-  withTimeoutResult,
-} from "./provider-execution";
+  buildProviderFragmentDoneEvent,
+  runProviderFragmentOnceResult,
+} from "./provider-fragment-replay";
 import {
-  enforceExecutionRowLimitResult,
-  enforcePlannerNodeLimitResult,
-  resolveGuardrails,
-} from "./policy";
-import {
-  assertNoSqlNodesWithoutProviderFragmentResult,
-  normalizeRuntimeSchemaResult,
-} from "./query-runner";
-import { setFailedStepState } from "./session-state";
+  createInitialProviderFragmentState,
+  createProviderFragmentPlan,
+} from "./provider-session-lifecycle";
 
 /**
  * Provider-fragment sessions own sync provider-fragment session creation and execution.
@@ -64,46 +49,8 @@ export function createProviderFragmentSession<TContext>(
   let executed = false;
   let result: QueryRow[] | null = null;
   let eventDispatched = false;
-
-  const stepId = "remote_fragment_1";
-  const plan: QueryExecutionPlan = {
-    steps: [
-      {
-        id: stepId,
-        kind: "remote_fragment",
-        dependsOn: [],
-        summary: `Execute provider fragment (${providerName})`,
-        phase: "fetch",
-        operation: {
-          name: "provider_fragment",
-          details: {
-            provider: providerName,
-          },
-        },
-        request: {
-          fragment: fragment.kind,
-        },
-        ...(diagnostics.length > 0 ? { diagnostics } : {}),
-      },
-    ],
-    scopes: [
-      {
-        id: "scope_root",
-        kind: "root",
-        label: "Root query",
-      },
-    ],
-    ...(diagnostics.length > 0 ? { diagnostics } : {}),
-  };
-
-  let state: QueryStepState = {
-    id: stepId,
-    kind: "remote_fragment",
-    status: "ready",
-    summary: `Execute provider fragment (${providerName})`,
-    dependsOn: [],
-    ...(diagnostics.length > 0 ? { diagnostics } : {}),
-  };
+  const plan: QueryExecutionPlan = createProviderFragmentPlan(providerName, fragment, diagnostics);
+  let state: QueryStepState = createInitialProviderFragmentState(providerName, diagnostics);
 
   const runResult = async () => {
     if (executed) {
@@ -111,84 +58,26 @@ export function createProviderFragmentSession<TContext>(
     }
 
     executed = true;
-    const startedAt = Date.now();
+    const executedResult = await runProviderFragmentOnceResult({
+      provider,
+      providerName,
+      fragment,
+      rel,
+      sessionInput: input,
+      guardrails,
+      state,
+    });
+    if (Result.isError(executedResult)) {
+      state = executedResult.error.state;
+      return Result.err(executedResult.error.error);
+    }
+
     state = {
-      ...state,
-      status: "running",
-      startedAt,
-    };
-
-    const compiledResult = await tryQueryStepAsync("compile provider fragment", async () =>
-      unwrapProviderOperationResult(
-        await Promise.resolve(provider.compile(fragment, input.context)),
-      ),
-    );
-    if (Result.isError(compiledResult)) {
-      state = setFailedStepState(state, compiledResult.error, Date.now());
-      return compiledResult;
-    }
-
-    const executeRowsResult = await withTimeoutResult(
-      "execute provider fragment",
-      async () =>
-        unwrapProviderOperationResult(await provider.execute(compiledResult.value, input.context)),
-      guardrails.timeoutMs,
-    );
-    if (Result.isError(executeRowsResult)) {
-      state = setFailedStepState(state, executeRowsResult.error, Date.now());
-      return executeRowsResult;
-    }
-
-    let rows = executeRowsResult.value;
-    if (fragment.kind === "rel") {
-      const mappedRowsResult = tryQueryStep("map provider rows to logical rel output rows", () =>
-        mapProviderRowsToRelOutput(rows, rel, input.schema),
-      );
-      if (Result.isError(mappedRowsResult)) {
-        state = setFailedStepState(state, mappedRowsResult.error, Date.now());
-        return mappedRowsResult;
-      }
-      rows = mappedRowsResult.value;
-    } else if (fragment.kind === "scan" && rel.kind === "scan") {
-      const mappedRowsResult = tryQueryStep("map provider rows to logical rows", () => {
-        const binding = getNormalizedTableBinding(input.schema, rel.table);
-        return mapProviderRowsToLogical(
-          rows,
-          rel.select,
-          binding?.kind === "physical" ? binding : null,
-          input.schema.tables[rel.table],
-        );
-      });
-      if (Result.isError(mappedRowsResult)) {
-        state = setFailedStepState(state, mappedRowsResult.error, Date.now());
-        return mappedRowsResult;
-      }
-      rows = mappedRowsResult.value;
-    }
-
-    const limitedRowsResult = enforceExecutionRowLimitResult(rows, guardrails);
-    if (Result.isError(limitedRowsResult)) {
-      state = setFailedStepState(state, limitedRowsResult.error, Date.now());
-      return limitedRowsResult;
-    }
-
-    result = rows;
-
-    const endedAt = Date.now();
-    state = {
-      ...state,
-      status: "done",
-      routeUsed: "provider_fragment",
-      rowCount: rows.length,
-      outputRowCount: rows.length,
-      startedAt,
-      endedAt,
-      durationMs: endedAt - startedAt,
-      ...(input.options?.captureRows === "full" ? { rows } : {}),
+      ...executedResult.value.state,
       ...(diagnostics.length > 0 ? { diagnostics } : {}),
     };
-
-    return Result.ok(rows);
+    result = executedResult.value.rows;
+    return Result.ok(result);
   };
 
   const run = async (): Promise<QueryRow[]> => unwrapQueryResult(await runResult());
@@ -199,22 +88,12 @@ export function createProviderFragmentSession<TContext>(
       await run();
       if (!eventDispatched) {
         eventDispatched = true;
-        const event: QueryStepEvent = {
-          id: stepId,
-          kind: "remote_fragment",
-          status: "done",
-          summary: state.summary,
-          dependsOn: [],
-          executionIndex: 1,
-          startedAt: state.startedAt ?? Date.now(),
-          endedAt: state.endedAt ?? Date.now(),
-          durationMs: state.durationMs ?? 0,
-          routeUsed: "provider_fragment",
-          ...(state.rowCount != null ? { rowCount: state.rowCount } : {}),
-          ...(state.outputRowCount != null ? { outputRowCount: state.outputRowCount } : {}),
-          ...(input.options?.captureRows === "full" ? { rows: result ?? [] } : {}),
-          ...(diagnostics.length > 0 ? { diagnostics } : {}),
-        };
+        const event: QueryStepEvent = buildProviderFragmentDoneEvent({
+          state,
+          rows: result ?? [],
+          captureRows: input.options?.captureRows,
+          diagnostics,
+        });
 
         input.options?.onEvent?.(event);
         return event;
@@ -227,102 +106,6 @@ export function createProviderFragmentSession<TContext>(
     },
     runToCompletion: async () => run(),
     getResult: () => result,
-    getStepState: (id: string) => (id === stepId ? state : undefined),
+    getStepState: (id: string) => (id === "remote_fragment_1" ? state : undefined),
   };
-}
-
-export function tryCreateSyncProviderFragmentSession<TContext>(
-  input: QuerySessionInput<TContext>,
-  guardrails: QueryGuardrails,
-  rel: RelNode,
-): BetterResult<QuerySession | null, TuplError> {
-  const resolutionResult = resolveSyncProviderCapabilityForRel(input, rel);
-  if (Result.isError(resolutionResult)) {
-    return resolutionResult;
-  }
-
-  const resolution = resolutionResult.value;
-  if (!resolution || !resolution.fragment || !resolution.provider || !resolution.report) {
-    return Result.ok(null);
-  }
-
-  if (!resolution.report.supported) {
-    const fallbackResult = maybeRejectFallbackResult(input, resolution);
-    if (Result.isError(fallbackResult)) {
-      return fallbackResult;
-    }
-    return Result.ok(null);
-  }
-
-  return Result.ok(
-    createProviderFragmentSession(
-      input,
-      guardrails,
-      resolution.provider,
-      resolution.fragment.provider,
-      resolution.fragment,
-      rel,
-      resolution.diagnostics,
-    ),
-  );
-}
-
-export function resolveSessionPreparationResult<TContext>(input: QuerySessionInput<TContext>) {
-  const resolvedInputResult = normalizeRuntimeSchemaResult(input);
-  if (Result.isError(resolvedInputResult)) {
-    return resolvedInputResult;
-  }
-
-  const resolvedInput = resolvedInputResult.value;
-  const guardrails = resolveGuardrails(input.queryGuardrails);
-  const loweredResult = lowerSqlToRelResult(resolvedInput.sql, resolvedInput.schema);
-  if (Result.isError(loweredResult)) {
-    return loweredResult;
-  }
-
-  const plannerNodeCount = countRelNodes(loweredResult.value.rel);
-  const plannerNodeCountResult = enforcePlannerNodeLimitResult(plannerNodeCount, guardrails);
-  if (Result.isError(plannerNodeCountResult)) {
-    return plannerNodeCountResult;
-  }
-
-  const expandedRelResult = expandRelViewsResult(
-    loweredResult.value.rel,
-    resolvedInput.schema,
-    resolvedInput.context,
-  );
-  if (Result.isError(expandedRelResult)) {
-    return expandedRelResult;
-  }
-
-  const expandedRel = expandedRelResult.value;
-  const providerSessionResult = tryCreateSyncProviderFragmentSession(
-    resolvedInput,
-    guardrails,
-    expandedRel,
-  );
-  if (Result.isError(providerSessionResult)) {
-    return providerSessionResult;
-  }
-
-  const capabilityResolutionResult = resolveSyncProviderCapabilityForRelResult(
-    resolvedInput,
-    expandedRel,
-  );
-  if (Result.isError(capabilityResolutionResult)) {
-    return capabilityResolutionResult;
-  }
-
-  const executableRelResult = assertNoSqlNodesWithoutProviderFragmentResult(expandedRel);
-  if (Result.isError(executableRelResult)) {
-    return executableRelResult;
-  }
-
-  return Result.ok({
-    resolvedInput,
-    guardrails,
-    providerSession: providerSessionResult.value,
-    executableRel: executableRelResult.value,
-    diagnostics: capabilityResolutionResult.value?.diagnostics ?? [],
-  });
 }
