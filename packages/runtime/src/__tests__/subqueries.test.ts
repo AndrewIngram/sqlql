@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createMethodsSession } from "../../../../test/support/methods-provider";
-import { createArrayTableMethods } from "../../../../test/support/array-methods";
+import { createMethodsSession, withQueryHarness } from "@tupl/test-support/runtime";
+import { createArrayTableMethods } from "@tupl/test-support/methods";
 
-import { defineTableMethods } from "@tupl/schema";
-import { commerceRows, commerceSchema } from "../../../../test/support/commerce-fixture";
-import { withQueryHarness } from "../../../../test/support/query-harness";
+import { defineTableMethods } from "@tupl/schema-model";
+import { commerceRows, commerceSchema } from "@tupl/test-support/fixtures";
 
 const EMPTY_CONTEXT = {} as const;
 

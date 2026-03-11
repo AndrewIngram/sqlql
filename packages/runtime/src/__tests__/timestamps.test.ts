@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { withQueryHarness } from "../../../../test/support/query-harness";
-import { buildEntitySchema } from "../../../../test/support/schema-builder";
+import { withQueryHarness } from "@tupl/test-support/runtime";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
 

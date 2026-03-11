@@ -1,5 +1,5 @@
 import { createDataEntityHandle } from "@tupl/provider-kit";
-import { createSchemaBuilder } from "@tupl/schema";
+import { createSchemaBuilder } from "@tupl/schema-model";
 
 const ordersEntity = createDataEntityHandle({
   entity: "orders_raw",

@@ -1,0 +1,29 @@
+{
+  "name": "@tupl/test-support",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./methods": "./src/methods.ts",
+    "./runtime": "./src/runtime.ts",
+    "./fixtures": "./src/fixtures.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tupl/foundation": "workspace:*",
+    "@tupl/provider-kit": "workspace:*",
+    "@tupl/runtime": "workspace:*",
+    "@tupl/schema-model": "workspace:*",
+    "better-result": "^2.7.0",
+    "better-sqlite3": "^12.6.2",
+    "vitest": "latest"
+  }
+}

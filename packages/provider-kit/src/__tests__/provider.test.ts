@@ -12,9 +12,9 @@ import {
   type QueryRow,
   type ScanFilterClause,
   type TableScanRequest,
-} from "@tupl/schema";
-import { createExecutableSchemaFromProviders } from "../../../../test/support/executable-schema";
-import { buildSchema, buildEntitySchema } from "../../../../test/support/schema-builder";
+} from "@tupl/schema-model";
+import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
+import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {

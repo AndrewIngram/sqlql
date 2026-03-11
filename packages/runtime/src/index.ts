@@ -3,6 +3,7 @@
  * Callers should depend on its execution contracts rather than planner or provider implementation details.
  */
 export * from "./runtime/constraints";
+export * from "./runtime/contracts";
 export * from "./runtime/executor";
 export * from "./runtime/query";
 export {

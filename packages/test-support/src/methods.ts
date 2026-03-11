@@ -1,14 +1,13 @@
 import { stringifyUnknownValue } from "@tupl/foundation";
 
 import type {
-  AggregateFunction,
   QueryRow,
   TableAggregateMetric,
   TableAggregateRequest,
   TableLookupRequest,
   TableMethods,
   TableScanRequest,
-} from "@tupl/schema";
+} from "@tupl/schema-model";
 
 export type ArrayRowSource<TRow extends QueryRow = QueryRow> = TRow[] | (() => TRow[]);
 
@@ -17,6 +16,9 @@ export interface ArrayTableMethodsOptions {
   includeAggregate?: boolean;
 }
 
+/**
+ * Array-backed methods own simple in-memory execution used by shared tests.
+ */
 export function createArrayTableMethods<
   TContext = unknown,
   TRow extends QueryRow = QueryRow,
@@ -227,10 +229,7 @@ function readMetricValues<TColumn extends string>(
   return [...new Map(values.map((value) => [JSON.stringify(value), value])).values()];
 }
 
-function toFiniteNumber(
-  value: unknown,
-  functionName: AggregateFunction | Uppercase<AggregateFunction>,
-): number {
+function toFiniteNumber(value: unknown, functionName: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     throw new Error(`${functionName} expects numeric values.`);
@@ -324,20 +323,24 @@ function filterRows<TRow extends QueryRow, TColumn extends string>(
         break;
       }
       case "like":
-        out = out.filter(
-          (row) =>
-            typeof row[clause.column] === "string" &&
+        out = out.filter((row) => {
+          const value = row[clause.column];
+          return (
+            typeof value === "string" &&
             typeof clause.value === "string" &&
-            matchesLikePattern(row[clause.column] as string, clause.value),
-        );
+            matchesLike(value, clause.value)
+          );
+        });
         break;
       case "not_like":
-        out = out.filter(
-          (row) =>
-            typeof row[clause.column] === "string" &&
+        out = out.filter((row) => {
+          const value = row[clause.column];
+          return (
+            typeof value === "string" &&
             typeof clause.value === "string" &&
-            !matchesLikePattern(row[clause.column] as string, clause.value),
-        );
+            !matchesLike(value, clause.value)
+          );
+        });
         break;
       case "is_distinct_from":
         out = out.filter((row) => row[clause.column] !== clause.value);
@@ -357,7 +360,21 @@ function filterRows<TRow extends QueryRow, TColumn extends string>(
   return out;
 }
 
-function matchesLikePattern(value: string, pattern: string): boolean {
+function projectRows<TRow extends QueryRow>(rows: TRow[], columns: string[]): QueryRow[] {
+  return rows.map((row) => {
+    const projected: QueryRow = {};
+    for (const column of columns) {
+      projected[column] = row[column] ?? null;
+    }
+    return projected;
+  });
+}
+
+function readRows<TRow extends QueryRow>(rows: ArrayRowSource<TRow>): TRow[] {
+  return typeof rows === "function" ? rows() : rows;
+}
+
+function matchesLike(value: string, pattern: string): boolean {
   const escaped = pattern
     .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     .replace(/%/g, ".*")
@@ -365,18 +382,16 @@ function matchesLikePattern(value: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, "su").test(value);
 }
 
-function projectRows(rows: QueryRow[], select: string[]): QueryRow[] {
-  return rows.map((row) => {
-    const out: QueryRow = {};
-    for (const column of select) {
-      out[column] = row[column] ?? null;
-    }
-    return out;
-  });
+function compareNonNull(left: unknown, right: unknown): number {
+  if (typeof left === "number" && typeof right === "number") {
+    return left === right ? 0 : left < right ? -1 : 1;
+  }
+
+  return stringifyUnknownValue(left).localeCompare(stringifyUnknownValue(right));
 }
 
 function compareNullableValues(left: unknown, right: unknown): number {
-  if (left === right) {
+  if (left == null && right == null) {
     return 0;
   }
   if (left == null) {
@@ -385,39 +400,5 @@ function compareNullableValues(left: unknown, right: unknown): number {
   if (right == null) {
     return 1;
   }
-
-  if (typeof left === "number" && typeof right === "number") {
-    return left < right ? -1 : 1;
-  }
-
-  if (typeof left === "boolean" && typeof right === "boolean") {
-    return Number(left) < Number(right) ? -1 : 1;
-  }
-
-  const leftString = stringifyUnknownValue(left);
-  const rightString = stringifyUnknownValue(right);
-  return leftString < rightString ? -1 : 1;
-}
-
-function compareNonNull(left: unknown, right: unknown): number {
-  if (typeof left === "number" && typeof right === "number") {
-    return left === right ? 0 : left < right ? -1 : 1;
-  }
-
-  if (typeof left === "boolean" && typeof right === "boolean") {
-    const leftNum = Number(left);
-    const rightNum = Number(right);
-    return leftNum === rightNum ? 0 : leftNum < rightNum ? -1 : 1;
-  }
-
-  const leftString = stringifyUnknownValue(left);
-  const rightString = stringifyUnknownValue(right);
-  if (leftString === rightString) {
-    return 0;
-  }
-  return leftString < rightString ? -1 : 1;
-}
-
-function readRows<TRow extends QueryRow>(rows: ArrayRowSource<TRow>): TRow[] {
-  return typeof rows === "function" ? rows() : rows;
+  return compareNonNull(left, right);
 }

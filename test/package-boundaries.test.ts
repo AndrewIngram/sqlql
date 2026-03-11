@@ -27,6 +27,14 @@ const LAYER_RULES = {
     "@tupl/runtime",
   ]),
   "packages/schema/src": new Set<string>(["@tupl/schema-model", "@tupl/runtime", "@tupl/schema"]),
+  "packages/test-support/src": new Set<string>([
+    "@tupl/foundation",
+    "@tupl/provider-kit",
+    "@tupl/schema-model",
+    "@tupl/planner",
+    "@tupl/runtime",
+    "@tupl/test-support",
+  ]),
 } as const;
 
 const DISALLOWED_PUBLIC_REFS = [
@@ -45,6 +53,12 @@ const DIRECT_SUBPATH_EXPORTS = [
     name: "@tupl/provider-kit/shapes",
     subpath: "./shapes",
     target: "packages/provider-kit/src/provider/shapes/index.ts",
+    packageJson: "packages/provider-kit/package.json",
+  },
+  {
+    name: "@tupl/provider-kit/testing",
+    subpath: "./testing",
+    target: "packages/provider-kit/src/testing.ts",
     packageJson: "packages/provider-kit/package.json",
   },
   {
@@ -116,6 +130,12 @@ function isWrapperOnlyFile(contents: string): boolean {
 }
 
 describe("package boundaries", () => {
+  it("keeps the schema facade explicitly curated", () => {
+    const schemaIndex = readFileSync(join(REPO_ROOT, "packages/schema/src/index.ts"), "utf8");
+    expect(schemaIndex).not.toMatch(/export\s+\*\s+from\s+["']@tupl\/schema-model["']/);
+    expect(schemaIndex).not.toMatch(/export\s+\*\s+from\s+["']@tupl\/runtime["']/);
+  });
+
   it("keeps the semantic package graph acyclic and downward-only", () => {
     for (const [dir, allowedImports] of Object.entries(LAYER_RULES)) {
       for (const file of walkFiles(join(REPO_ROOT, dir))) {
@@ -191,6 +211,93 @@ describe("package boundaries", () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps package-local test support on the owning layer or below", () => {
+    for (const [dir, allowedImports] of Object.entries(LAYER_RULES)) {
+      const supportRoot = join(REPO_ROOT, dir);
+      for (const file of walkFiles(supportRoot)) {
+        if (!file.includes("/__tests__/support/") || !file.endsWith(".ts")) {
+          continue;
+        }
+
+        const imports = getWorkspaceImports(readFileSync(file, "utf8"));
+        const disallowed = imports.filter((pkg) => !allowedImports.has(pkg));
+        expect(
+          disallowed,
+          `${relative(REPO_ROOT, file)} imported disallowed packages: ${disallowed.join(", ")}`,
+        ).toEqual([]);
+      }
+    }
+  });
+
+  it("keeps long relative helper traversal out of the repo", () => {
+    const offenders: string[] = [];
+
+    for (const file of walkFiles(REPO_ROOT)) {
+      if (!file.endsWith(".ts") && !file.endsWith(".tsx")) {
+        continue;
+      }
+      if (relative(REPO_ROOT, file) === "test/package-boundaries.test.ts") {
+        continue;
+      }
+
+      const contents = readFileSync(file, "utf8");
+      if (contents.includes("/test/support/") || contents.includes("/__tests__/support/")) {
+        offenders.push(relative(REPO_ROOT, file));
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps private test-support imports out of product source", () => {
+    const offenders: string[] = [];
+
+    for (const pkgDir of readdirSync(join(REPO_ROOT, "packages"))) {
+      const srcDir = join(REPO_ROOT, "packages", pkgDir, "src");
+      if (!statSync(srcDir).isDirectory()) {
+        continue;
+      }
+
+      for (const file of walkFiles(srcDir)) {
+        if (!file.endsWith(".ts") || file.includes("/__tests__/")) {
+          continue;
+        }
+
+        const contents = readFileSync(file, "utf8");
+        if (contents.includes("@tupl/test-support")) {
+          offenders.push(relative(REPO_ROOT, file));
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps foundation free of testing surfaces", () => {
+    const offenders: string[] = [];
+
+    for (const file of walkFiles(join(REPO_ROOT, "packages/foundation/src"))) {
+      if (!file.endsWith(".ts")) {
+        continue;
+      }
+
+      const contents = readFileSync(file, "utf8");
+      if (
+        contents.includes("@tupl/test-support") ||
+        contents.includes("@tupl/provider-kit/testing")
+      ) {
+        offenders.push(relative(REPO_ROOT, file));
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps first-party adapter conformance on the public provider-kit/testing surface", () => {
+    const contents = readFileSync(join(REPO_ROOT, "test/providers/conformance.test.ts"), "utf8");
+    expect(contents).toContain("@tupl/provider-kit/testing");
   });
 
   it("keeps workspace tooling off deleted wrapper paths", () => {

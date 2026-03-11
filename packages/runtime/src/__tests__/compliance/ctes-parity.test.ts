@@ -1,5 +1,5 @@
-import { commerceRows, commerceSchema } from "../../../../../test/support/commerce-fixture";
-import { registerParityCases, type ComplianceCase } from "../../../../../test/support/case-runner";
+import { commerceRows, commerceSchema } from "@tupl/test-support/fixtures";
+import { registerParityCases, type ComplianceCase } from "@tupl/test-support/runtime";
 
 const cases: ComplianceCase[] = [
   {

@@ -1,9 +1,8 @@
-import { type ConstraintValidationOptions, validateTableConstraintRows } from "./constraints";
+import { validateTableConstraintRows } from "./constraints";
 import { Result, type Result as BetterResult } from "better-result";
 import {
   TuplDiagnosticError,
   TuplExecutionError,
-  TuplGuardrailError,
   TuplRuntimeError,
   TuplTimeoutError,
   type TuplError,
@@ -18,16 +17,46 @@ import {
   type ProviderCapabilityReport,
   type ProviderFragment,
   type ProvidersMap,
-  type QueryFallbackPolicy,
-  type TuplDiagnostic,
 } from "@tupl/provider-kit";
 import { countRelNodes, type RelExpr, type RelNode } from "@tupl/foundation";
+import {
+  buildCapabilityDiagnostics,
+  makeDiagnostic,
+  summarizeCapabilityReason,
+  tryQueryStep,
+  tryQueryStepAsync,
+  unwrapQueryResult,
+} from "./diagnostics";
 import { executeRelWithProvidersResult } from "./executor";
+import {
+  type ExecutableSchema,
+  type ExecutableSchemaRuntime,
+  type ExplainResult,
+  type QueryExecutionPlan,
+  type QueryExecutionPlanScope,
+  type QueryExecutionPlanStep,
+  type QueryGuardrails,
+  type QueryInput,
+  type QuerySession,
+  type QuerySessionInput,
+  type QueryStepEvent,
+  type QueryStepKind,
+  type QueryStepRoute,
+  type QueryStepState,
+  type TuplDiagnostic,
+} from "./contracts";
 import {
   buildProviderFragmentForRelResult,
   expandRelViewsResult,
   lowerSqlToRelResult,
 } from "@tupl/planner";
+import {
+  enforceExecutionRowLimitResult,
+  enforcePlannerNodeLimitResult,
+  isPromiseLike,
+  resolveFallbackPolicy,
+  resolveGuardrails,
+} from "./policy";
 import {
   finalizeSchemaDefinition,
   getNormalizedTableBinding,
@@ -40,313 +69,13 @@ import {
 } from "@tupl/schema-model";
 import type { QueryRow, SchemaBuilder, SchemaDefinition } from "@tupl/schema-model";
 
-export type { QueryFallbackPolicy, TuplDiagnostic } from "@tupl/provider-kit";
 export { TuplDiagnosticError } from "@tupl/foundation";
-
-export interface QueryGuardrails {
-  maxPlannerNodes: number;
-  maxExecutionRows: number;
-  maxLookupKeysPerBatch: number;
-  maxLookupBatches: number;
-  timeoutMs: number;
-}
-
-export const DEFAULT_QUERY_GUARDRAILS: QueryGuardrails = {
-  maxPlannerNodes: 50_000,
-  maxExecutionRows: 1_000_000,
-  maxLookupKeysPerBatch: 1000,
-  maxLookupBatches: 100,
-  timeoutMs: 30_000,
-};
-
-export const DEFAULT_QUERY_FALLBACK_POLICY: Required<QueryFallbackPolicy> = {
-  allowFallback: true,
-  warnOnFallback: true,
-  rejectOnMissingAtom: false,
-  rejectOnEstimatedCost: false,
-  maxLocalRows: Number.POSITIVE_INFINITY,
-  maxLookupFanout: Number.POSITIVE_INFINITY,
-  maxJoinExpansionRisk: Number.POSITIVE_INFINITY,
-};
-
-export interface QueryInput<TContext> {
-  schema: SchemaDefinition;
-  providers: ProvidersMap<TContext>;
-  context: TContext;
-  sql: string;
-  queryGuardrails?: Partial<QueryGuardrails>;
-  fallbackPolicy?: QueryFallbackPolicy;
-  constraintValidation?: ConstraintValidationOptions;
-}
-
-export type QueryStepKind =
-  | "cte"
-  | "set_op_branch"
-  | "scan"
-  | "filter"
-  | "join"
-  | "aggregate"
-  | "window"
-  | "distinct"
-  | "order"
-  | "limit_offset"
-  | "projection"
-  | "remote_fragment"
-  | "lookup_join";
-
-export type QueryStepPhase = "logical" | "fetch" | "transform" | "output";
-export type QuerySqlOrigin =
-  | "SELECT"
-  | "FROM"
-  | "WHERE"
-  | "GROUP BY"
-  | "HAVING"
-  | "ORDER BY"
-  | "WITH"
-  | "SET_OP";
-
-export type QueryStepRoute =
-  | "scan"
-  | "lookup"
-  | "aggregate"
-  | "local"
-  | "provider_fragment"
-  | "lookup_join";
-
-export interface QueryStepOperation {
-  name: string;
-  details?: Record<string, unknown>;
-}
-
-export type QueryPlanScopeKind = "root" | "cte" | "subquery" | "set_op_branch";
-
-export interface QueryExecutionPlanScope {
-  id: string;
-  kind: QueryPlanScopeKind;
-  label: string;
-  parentId?: string;
-}
-
-export interface QueryExecutionPlanStep {
-  id: string;
-  kind: QueryStepKind;
-  dependsOn: string[];
-  summary: string;
-  phase: QueryStepPhase;
-  operation: QueryStepOperation;
-  request?: Record<string, unknown>;
-  pushdown?: Record<string, unknown>;
-  outputs?: string[];
-  sqlOrigin?: QuerySqlOrigin;
-  scopeId?: string;
-  diagnostics?: TuplDiagnostic[];
-}
-
-export interface QueryExecutionPlan {
-  steps: QueryExecutionPlanStep[];
-  scopes?: QueryExecutionPlanScope[];
-  diagnostics?: TuplDiagnostic[];
-}
-
-export type QueryStepStatus = "ready" | "running" | "done" | "failed";
-
-export interface QueryStepState {
-  id: string;
-  kind: QueryStepKind;
-  status: QueryStepStatus;
-  summary: string;
-  dependsOn: string[];
-  executionIndex?: number;
-  startedAt?: number;
-  endedAt?: number;
-  durationMs?: number;
-  rowCount?: number;
-  inputRowCount?: number;
-  outputRowCount?: number;
-  rows?: QueryRow[];
-  routeUsed?: QueryStepRoute;
-  notes?: string[];
-  error?: string;
-  diagnostics?: TuplDiagnostic[];
-}
-
-export interface QueryStepEvent {
-  id: string;
-  kind: QueryStepKind;
-  status: "done" | "failed";
-  summary: string;
-  dependsOn: string[];
-  executionIndex: number;
-  startedAt: number;
-  endedAt: number;
-  durationMs: number;
-  rowCount?: number;
-  inputRowCount?: number;
-  outputRowCount?: number;
-  rows?: QueryRow[];
-  routeUsed?: QueryStepRoute;
-  notes?: string[];
-  error?: string;
-  diagnostics?: TuplDiagnostic[];
-}
-
-export interface QuerySessionOptions {
-  maxConcurrency?: number;
-  eventOrder?: "plan";
-  captureRows?: "full";
-  onEvent?: (event: QueryStepEvent) => void;
-}
-
-export interface QuerySessionInput<TContext> extends QueryInput<TContext> {
-  options?: QuerySessionOptions;
-}
-
-export interface ExecutableSchemaQueryInput<TContext> {
-  context: TContext;
-  sql: string;
-  queryGuardrails?: Partial<QueryGuardrails>;
-  fallbackPolicy?: QueryFallbackPolicy;
-  constraintValidation?: ConstraintValidationOptions;
-}
-
-export interface ExecutableSchemaSessionInput<
-  TContext,
-> extends ExecutableSchemaQueryInput<TContext> {
-  options?: QuerySessionOptions;
-}
-
-export interface QuerySession {
-  getPlan(): QueryExecutionPlan;
-  next(): Promise<QueryStepEvent | { done: true; result: QueryRow[] }>;
-  runToCompletion(): Promise<QueryRow[]>;
-  getResult(): QueryRow[] | null;
-  getStepState(stepId: string): QueryStepState | undefined;
-}
-
-export interface ExecutableSchema<TContext, TSchema extends SchemaDefinition = SchemaDefinition> {
-  schema: TSchema;
-  query(input: ExecutableSchemaQueryInput<TContext>): Promise<QueryRow[]>;
-  queryResult(input: ExecutableSchemaQueryInput<TContext>): Promise<TuplResult<QueryRow[]>>;
-  createSession(input: ExecutableSchemaSessionInput<TContext>): QuerySession;
-  createSessionResult(input: ExecutableSchemaSessionInput<TContext>): TuplResult<QuerySession>;
-  explain(input: ExecutableSchemaQueryInput<TContext>): ExplainResult;
-}
-
-interface ExecutableSchemaRuntime<TContext> {
-  schema: SchemaDefinition;
-  providers: ProvidersMap<TContext>;
-}
 
 interface QueryCapabilityResolution<TContext> {
   fragment: ProviderFragment | null;
   provider: ProviderAdapter<TContext> | null;
   report: ProviderCapabilityReport | null;
   diagnostics: TuplDiagnostic[];
-}
-
-function resolveGuardrails(overrides?: Partial<QueryGuardrails>): QueryGuardrails {
-  return {
-    maxPlannerNodes: overrides?.maxPlannerNodes ?? DEFAULT_QUERY_GUARDRAILS.maxPlannerNodes,
-    maxExecutionRows: overrides?.maxExecutionRows ?? DEFAULT_QUERY_GUARDRAILS.maxExecutionRows,
-    maxLookupKeysPerBatch:
-      overrides?.maxLookupKeysPerBatch ?? DEFAULT_QUERY_GUARDRAILS.maxLookupKeysPerBatch,
-    maxLookupBatches: overrides?.maxLookupBatches ?? DEFAULT_QUERY_GUARDRAILS.maxLookupBatches,
-    timeoutMs: overrides?.timeoutMs ?? DEFAULT_QUERY_GUARDRAILS.timeoutMs,
-  };
-}
-
-function resolveFallbackPolicy(
-  queryPolicy?: QueryFallbackPolicy,
-  providerPolicy?: QueryFallbackPolicy,
-): Required<QueryFallbackPolicy> {
-  return {
-    ...DEFAULT_QUERY_FALLBACK_POLICY,
-    ...providerPolicy,
-    ...queryPolicy,
-  };
-}
-
-function makeDiagnostic(
-  code: string,
-  severity: TuplDiagnostic["severity"],
-  message: string,
-  details?: Record<string, unknown>,
-  diagnosticClass: TuplDiagnostic["class"] = "0A000",
-): TuplDiagnostic {
-  return {
-    code,
-    class: diagnosticClass,
-    severity,
-    message,
-    ...(details ? { details } : {}),
-  };
-}
-
-function toTuplRuntimeError(error: unknown, operation: string) {
-  if (
-    TuplDiagnosticError.is(error) ||
-    TuplExecutionError.is(error) ||
-    TuplGuardrailError.is(error) ||
-    TuplTimeoutError.is(error) ||
-    TuplRuntimeError.is(error)
-  ) {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return new TuplRuntimeError({
-      operation,
-      message: error.message,
-      cause: error,
-    });
-  }
-
-  return new TuplRuntimeError({
-    operation,
-    message: String(error),
-    cause: error,
-  });
-}
-
-function unwrapQueryResult<T, E>(result: BetterResult<T, E>): T {
-  if (Result.isOk(result)) {
-    return result.value;
-  }
-
-  throw result.error;
-}
-
-function tryQueryStep<T>(operation: string, fn: () => T): BetterResult<T, TuplError> {
-  return Result.try({
-    try: () => fn() as Awaited<T>,
-    catch: (error) => toTuplRuntimeError(error, operation),
-  }) as BetterResult<T, TuplError>;
-}
-
-async function tryQueryStepAsync<T>(operation: string, fn: () => Promise<T>) {
-  return Result.tryPromise({
-    try: fn,
-    catch: (error) => toTuplRuntimeError(error, operation),
-  });
-}
-
-function enforceExecutionRowLimitResult(rows: QueryRow[], guardrails: QueryGuardrails) {
-  if (rows.length > guardrails.maxExecutionRows) {
-    return Result.err(
-      new TuplGuardrailError({
-        guardrail: "maxExecutionRows",
-        limit: guardrails.maxExecutionRows,
-        actual: rows.length,
-        message: `Query exceeded maxExecutionRows guardrail (${guardrails.maxExecutionRows}). Received ${rows.length} rows.`,
-      }),
-    );
-  }
-
-  return Result.ok(rows);
-}
-
-function isPromiseLike<T>(value: unknown): value is Promise<T> {
-  return !!value && typeof value === "object" && "then" in value;
 }
 
 async function withTimeoutResult<T>(
@@ -380,64 +109,6 @@ async function withTimeoutResult<T>(
       clearTimeout(timer);
     }
   }
-}
-
-function summarizeCapabilityReason(report: ProviderCapabilityReport | null): string {
-  if (!report) {
-    return "Provider pushdown is not available for this query shape.";
-  }
-  if (report.reason && report.reason.length > 0) {
-    return report.reason;
-  }
-  if (report.missingAtoms && report.missingAtoms.length > 0) {
-    return `Missing provider capability atoms: ${report.missingAtoms.join(", ")}.`;
-  }
-  return "Provider pushdown is not available for this query shape.";
-}
-
-function buildCapabilityDiagnostics<TContext>(
-  provider: ProviderAdapter<TContext> | null,
-  fragment: ProviderFragment | null,
-  report: ProviderCapabilityReport | null,
-  queryPolicy?: QueryFallbackPolicy,
-): TuplDiagnostic[] {
-  const diagnostics = [...(report?.diagnostics ?? [])];
-  if (!provider || !fragment || !report || report.supported) {
-    return diagnostics;
-  }
-
-  const policy = resolveFallbackPolicy(queryPolicy, provider.fallbackPolicy);
-  const details: Record<string, unknown> = {
-    provider: provider.name,
-    fragment: fragment.kind,
-  };
-  if (report.routeFamily) {
-    details.routeFamily = report.routeFamily;
-  }
-  if (report.requiredAtoms?.length) {
-    details.requiredAtoms = report.requiredAtoms;
-  }
-  if (report.missingAtoms?.length) {
-    details.missingAtoms = report.missingAtoms;
-  }
-  if (report.estimatedRows != null) {
-    details.estimatedRows = report.estimatedRows;
-  }
-  if (report.estimatedCost != null) {
-    details.estimatedCost = report.estimatedCost;
-  }
-
-  diagnostics.push(
-    makeDiagnostic(
-      policy.allowFallback ? "TUPL_WARN_FALLBACK" : "TUPL_ERR_FALLBACK",
-      policy.allowFallback ? "warning" : "error",
-      summarizeCapabilityReason(report),
-      details,
-      policy.allowFallback ? "0A000" : "42000",
-    ),
-  );
-
-  return diagnostics;
 }
 
 async function resolveProviderCapabilityForRel<TContext>(
@@ -681,21 +352,6 @@ async function maybeExecuteWholeQueryFragmentResult<TContext>(
   }
 
   return Result.ok(rows);
-}
-
-function enforcePlannerNodeLimitResult(plannerNodeCount: number, guardrails: QueryGuardrails) {
-  if (plannerNodeCount > guardrails.maxPlannerNodes) {
-    return Result.err(
-      new TuplGuardrailError({
-        guardrail: "maxPlannerNodes",
-        limit: guardrails.maxPlannerNodes,
-        actual: plannerNodeCount,
-        message: `Query exceeded maxPlannerNodes guardrail (${guardrails.maxPlannerNodes}). Planned ${plannerNodeCount} nodes.`,
-      }),
-    );
-  }
-
-  return Result.ok(plannerNodeCount);
 }
 
 function setFailedStepState(
@@ -993,8 +649,8 @@ function createRelExecutionSession<TContext>(
       return limitedRowsResult;
     }
 
-    result = limitedRowsResult.value;
-    const completedRows = result;
+    const completedRows = limitedRowsResult.value;
+    result = completedRows;
 
     const eventBuildResult = tryQueryStep("build session step events", (): QueryStepEvent[] => {
       const endedAt = Date.now();
@@ -1062,7 +718,7 @@ function createRelExecutionSession<TContext>(
     }
 
     emittedEvents = eventBuildResult.value;
-    return Result.ok(result);
+    return Result.ok(completedRows);
   };
 
   const run = async (): Promise<QueryRow[]> => {
@@ -1915,13 +1571,6 @@ async function queryInternalResult<TContext>(
 
 async function queryInternal<TContext>(input: QueryInput<TContext>): Promise<QueryRow[]> {
   return unwrapQueryResult(await queryInternalResult(input));
-}
-
-export interface ExplainResult {
-  rel: RelNode;
-  plannerNodeCount: number;
-  guardrails: QueryGuardrails;
-  diagnostics?: TuplDiagnostic[];
 }
 
 function explainInternal<TContext>(input: QueryInput<TContext>): ExplainResult {

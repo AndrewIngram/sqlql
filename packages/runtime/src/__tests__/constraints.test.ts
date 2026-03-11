@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { queryWithMethods } from "../../../../test/support/methods-provider";
+import { queryWithMethods } from "@tupl/test-support/runtime";
 
-import type { ConstraintViolation } from "@tupl/schema";
-import { defineTableMethods } from "@tupl/schema";
-import { buildEntitySchema } from "../../../../test/support/schema-builder";
+import type { ConstraintViolation } from "@tupl/runtime";
+import { defineTableMethods } from "@tupl/schema-model";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
 

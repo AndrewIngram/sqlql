@@ -17,11 +17,28 @@ Allowed dependency directions:
 - `runtime` -> `foundation`, `provider-kit`, `schema-model`, `planner`
 - `schema` -> `schema-model`, `runtime`
 
-Guidelines:
+Layer invariants:
+
+- `@tupl/foundation` owns the relational vocabulary, diagnostics, and value helpers. Callers may rely on its data model, but must not assume execution or schema-building behavior.
+- `@tupl/provider-kit` owns adapter contracts, entity handles, capability reporting, and provider-shape analysis. Callers may build adapters against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
+- `@tupl/schema-model` owns logical schema authoring and normalization. Callers may rely on schema DSL behavior and normalized bindings, but must not assume planner or executor internals.
+- `@tupl/planner` owns SQL lowering and physical planning. Callers may rely on relational planning output, but must not assume runtime guardrail policy or provider execution semantics.
+- `@tupl/runtime` owns executable-schema construction, guardrails, query orchestration, and sessions. Callers may rely on execution contracts, but must not depend on planner-internal shapes beyond the published explain surface.
+- `@tupl/schema` owns the application-facing facade. It should expose the documented schema/runtime workflow, not mirror the full lower-layer export surface.
+
+Cross-module rules:
 
 - Import from the narrowest package that owns the concept.
 - Do not import upward within the six-package graph.
-- Provider implementations should prefer `@tupl/provider-kit`, `@tupl/foundation`, and `@tupl/schema`.
-- Application docs and examples should prefer `@tupl/schema` and first-party provider packages.
-- Public subpaths should resolve directly to real modules, not to one-hop wrapper files.
 - Package roots may aggregate real concepts; internal alias layers should be deleted instead of documented.
+- Public subpaths should resolve directly to real modules, not to one-hop wrapper files.
+- Package-local tests and support helpers should import from their owning package or lower layers, not from `@tupl/schema`.
+- `@tupl/foundation` must remain product-only and must not absorb test fixtures, harnesses, or adapter conformance logic.
+- Internal cross-package test infrastructure lives in the private `@tupl/test-support` workspace package.
+- External adapter authors should use `@tupl/provider-kit/testing` instead of importing repo-only helpers.
+
+Consumer guidance:
+
+- Provider implementations should prefer `@tupl/provider-kit`, `@tupl/foundation`, and `@tupl/schema` only when they truly need app-facing schema types.
+- Adapter conformance belongs on `@tupl/provider-kit/testing`; internal test fixtures do not.
+- Application docs and examples should prefer `@tupl/schema` and first-party provider packages.

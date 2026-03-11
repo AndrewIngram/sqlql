@@ -11,8 +11,32 @@ const workspaceAliases = [
     replacement: resolve(rootDir, "packages/foundation/src/index.ts"),
   },
   {
+    find: /^@tupl\/test-support$/,
+    replacement: resolve(rootDir, "packages/test-support/src/index.ts"),
+  },
+  {
+    find: /^@tupl\/test-support\/schema$/,
+    replacement: resolve(rootDir, "packages/test-support/src/schema.ts"),
+  },
+  {
+    find: /^@tupl\/test-support\/methods$/,
+    replacement: resolve(rootDir, "packages/test-support/src/methods.ts"),
+  },
+  {
+    find: /^@tupl\/test-support\/runtime$/,
+    replacement: resolve(rootDir, "packages/test-support/src/runtime.ts"),
+  },
+  {
+    find: /^@tupl\/test-support\/fixtures$/,
+    replacement: resolve(rootDir, "packages/test-support/src/fixtures.ts"),
+  },
+  {
     find: /^@tupl\/schema$/,
     replacement: resolve(rootDir, "packages/schema/src/index.ts"),
+  },
+  {
+    find: /^@tupl\/provider-kit\/testing$/,
+    replacement: resolve(rootDir, "packages/provider-kit/src/testing.ts"),
   },
   {
     find: /^@tupl\/provider-kit\/shapes$/,

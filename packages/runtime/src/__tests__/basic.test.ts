@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { commerceRows, commerceSchema } from "../../../../test/support/commerce-fixture";
-import { withQueryHarness } from "../../../../test/support/query-harness";
-import { buildEntitySchema } from "../../../../test/support/schema-builder";
+import { commerceRows, commerceSchema } from "@tupl/test-support/fixtures";
+import { withQueryHarness } from "@tupl/test-support/runtime";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
 

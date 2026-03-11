@@ -5,8 +5,11 @@ import {
   type SchemaDefinition,
   type TableColumnDefinition,
   type TableConstraints,
-} from "@tupl/schema";
+} from "@tupl/schema-model";
 
+/**
+ * Schema fixtures own the simplest shared builders for test-only logical schemas.
+ */
 export function buildSchema<TContext = Record<string, never>>(
   register: (builder: SchemaBuilder<TContext>) => void,
 ): SchemaDefinition {

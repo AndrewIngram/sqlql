@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import { type RelNode } from "@tupl/foundation";
 import { type ProviderAdapter, type ProviderFragment } from "@tupl/provider-kit";
-import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/schema";
+import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/schema-model";
 import { executeRelWithProvidersResult } from "@tupl/runtime/executor";
-import { finalizeProviders } from "../../../../test/support/executable-schema";
-import { buildSchema, buildEntitySchema } from "../../../../test/support/schema-builder";
+import { finalizeProviders } from "@tupl/test-support/runtime";
+import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = rows.filter((row) => applyFilters(row, request.where ?? []));

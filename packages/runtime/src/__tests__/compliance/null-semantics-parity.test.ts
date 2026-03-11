@@ -1,6 +1,9 @@
-import { buildEntitySchema } from "../../../../../test/support/schema-builder";
-import type { RowsByTable } from "../../../../../test/support/query-harness";
-import { registerParityCases, type ComplianceCase } from "../../../../../test/support/case-runner";
+import { buildEntitySchema } from "@tupl/test-support/schema";
+import {
+  registerParityCases,
+  type ComplianceCase,
+  type RowsByTable,
+} from "@tupl/test-support/runtime";
 
 const schema = buildEntitySchema({
   items: {

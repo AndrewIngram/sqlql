@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { queryWithMethods } from "../../../../test/support/methods-provider";
+import { queryWithMethods } from "@tupl/test-support/runtime";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
   scanArrayRows,
-} from "../../../../test/support/array-methods";
+} from "@tupl/test-support/methods";
 
 import {
   defineTableMethods,
   type TableAggregateRequest,
   type TableLookupRequest,
   type TableScanRequest,
-} from "@tupl/schema";
-import { buildEntitySchema } from "../../../../test/support/schema-builder";
+} from "@tupl/schema-model";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
 

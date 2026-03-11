@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "vitest";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
-import { type FragmentProviderAdapter, type ProviderFragment } from "@tupl/provider-kit";
+import { type ProviderFragment } from "@tupl/provider-kit";
+import {
+  createProviderConformanceCases,
+  type ProviderConformanceCase,
+} from "@tupl/provider-kit/testing";
 import type { QueryRow } from "@tupl/schema";
 import {
   createDrizzleProvider,
@@ -390,67 +394,89 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
   } as KnexLike;
 }
 
-async function runRelFragment(
-  providerName: string,
-  provider: FragmentProviderAdapter<object>,
-): Promise<Array<Record<string, unknown>>> {
-  const rel = buildRel();
-  const fragment: ProviderFragment = {
-    kind: "rel",
+function buildScanFragment(providerName: string): Extract<ProviderFragment, { kind: "scan" }> {
+  return {
+    kind: "scan",
     provider: providerName,
-    rel,
+    table: "orders",
+    request: {
+      table: "orders",
+      select: ["id", "total_cents"],
+    },
   };
-
-  const canExecute = await provider.canExecute(fragment, {});
-  expect(typeof canExecute === "boolean" ? canExecute : canExecute.supported).toBe(true);
-
-  const compiled = (await provider.compile(fragment, {})).unwrap();
-  return (await provider.execute(compiled, {})).unwrap();
 }
 
-describe("provider conformance (rel fragments)", () => {
-  it("returns equivalent rows for drizzle, kysely and objection providers", async () => {
-    const expected = [
-      { id: "o2", email: "ada@example.com", total_cents: 3000 },
-      { id: "o1", email: "ada@example.com", total_cents: 1500 },
-      { id: "o3", email: "ben@example.com", total_cents: 700 },
-    ];
+function buildRelFragment(providerName: string): Extract<ProviderFragment, { kind: "rel" }> {
+  return {
+    kind: "rel",
+    provider: providerName,
+    rel: buildRel(),
+  };
+}
 
-    {
-      const usersTable = { name: "users" };
-      const ordersTable = { name: "orders" };
-      const db = createMockDrizzleDb(
-        new Map<object, QueryRow[]>([
-          [
-            usersTable,
-            [
-              { id: "u1", email: "ada@example.com" },
-              { id: "u2", email: "ben@example.com" },
-            ],
-          ],
-          [
-            ordersTable,
-            [
-              { id: "o1", user_id: "u1", total_cents: 1500 },
-              { id: "o2", user_id: "u1", total_cents: 3000 },
-              { id: "o3", user_id: "u2", total_cents: 700 },
-            ],
-          ],
-        ]),
-        new Map<string, QueryRow[]>([
-          [
-            "orders->users",
-            [
-              { id: "o2", user_id: "u1", total_cents: 3000, email: "ada@example.com" },
-              { id: "o1", user_id: "u1", total_cents: 1500, email: "ada@example.com" },
-              { id: "o3", user_id: "u2", total_cents: 700, email: "ben@example.com" },
-            ],
-          ],
-        ]),
-      );
+function registerConformanceSuite(title: string, cases: ProviderConformanceCase[]) {
+  describe(title, () => {
+    for (const testCase of cases) {
+      it(testCase.name, () => testCase.run());
+    }
+  });
+}
 
-      const drizzleProvider = createDrizzleProvider({
-        db,
+const expectedScanRows = [
+  { id: "o1", total_cents: 1500 },
+  { id: "o2", total_cents: 3000 },
+  { id: "o3", total_cents: 700 },
+];
+
+const qualifiedOrdersScanRows = [
+  { "orders.id": "o1", "orders.total_cents": 1500 },
+  { "orders.id": "o2", "orders.total_cents": 3000 },
+  { "orders.id": "o3", "orders.total_cents": 700 },
+];
+
+const expectedRelRows = [
+  { id: "o2", email: "ada@example.com", total_cents: 3000 },
+  { id: "o1", email: "ada@example.com", total_cents: 1500 },
+  { id: "o3", email: "ben@example.com", total_cents: 700 },
+];
+
+describe("provider conformance", () => {
+  const usersTable = { name: "users" };
+  const ordersTable = { name: "orders" };
+
+  registerConformanceSuite(
+    "drizzle provider",
+    createProviderConformanceCases({
+      provider: createDrizzleProvider({
+        db: createMockDrizzleDb(
+          new Map<object, QueryRow[]>([
+            [
+              usersTable,
+              [
+                { id: "u1", email: "ada@example.com" },
+                { id: "u2", email: "ben@example.com" },
+              ],
+            ],
+            [
+              ordersTable,
+              [
+                { id: "o1", user_id: "u1", total_cents: 1500 },
+                { id: "o2", user_id: "u1", total_cents: 3000 },
+                { id: "o3", user_id: "u2", total_cents: 700 },
+              ],
+            ],
+          ]),
+          new Map<string, QueryRow[]>([
+            [
+              "orders->users",
+              [
+                { id: "o2", user_id: "u1", total_cents: 3000, email: "ada@example.com" },
+                { id: "o1", user_id: "u1", total_cents: 1500, email: "ada@example.com" },
+                { id: "o3", user_id: "u2", total_cents: 700, email: "ben@example.com" },
+              ],
+            ],
+          ]),
+        ),
         tables: {
           users: {
             table: usersTable,
@@ -468,114 +494,147 @@ describe("provider conformance (rel fragments)", () => {
             },
           },
         },
-      });
+      }),
+      context: {},
+      scan: {
+        fragment: buildScanFragment("drizzle"),
+        expectedRows: expectedScanRows,
+      },
+      rel: {
+        fragment: buildRelFragment("drizzle"),
+        expectedRows: expectedRelRows,
+      },
+    }),
+  );
 
-      const rows = await runRelFragment("drizzle", drizzleProvider);
-      expect(rows).toEqual(expected);
-    }
-
-    {
-      const db = createMockKyselyDb(
-        new Map<string, QueryRow[]>([
-          [
-            "orders as o",
+  registerConformanceSuite(
+    "kysely provider",
+    createProviderConformanceCases({
+      provider: createKyselyProvider({
+        db: createMockKyselyDb(
+          new Map<string, QueryRow[]>([
+            ["orders as orders", qualifiedOrdersScanRows],
             [
-              { "o.id": "o1", "o.user_id": "u1", "o.total_cents": 1500 },
-              { "o.id": "o2", "o.user_id": "u1", "o.total_cents": 3000 },
-              { "o.id": "o3", "o.user_id": "u2", "o.total_cents": 700 },
+              "users as users",
+              [
+                { "users.id": "u1", "users.email": "ada@example.com" },
+                { "users.id": "u2", "users.email": "ben@example.com" },
+              ],
             ],
-          ],
-        ]),
-        new Map<string, QueryRow[]>([
-          [
-            "orders as o->users as u",
             [
-              {
-                "o.id": "o2",
-                "o.user_id": "u1",
-                "o.total_cents": 3000,
-                "u.id": "u1",
-                "u.email": "ada@example.com",
-              },
-              {
-                "o.id": "o1",
-                "o.user_id": "u1",
-                "o.total_cents": 1500,
-                "u.id": "u1",
-                "u.email": "ada@example.com",
-              },
-              {
-                "o.id": "o3",
-                "o.user_id": "u2",
-                "o.total_cents": 700,
-                "u.id": "u2",
-                "u.email": "ben@example.com",
-              },
+              "orders as o",
+              [
+                { "o.id": "o1", "o.user_id": "u1", "o.total_cents": 1500 },
+                { "o.id": "o2", "o.user_id": "u1", "o.total_cents": 3000 },
+                { "o.id": "o3", "o.user_id": "u2", "o.total_cents": 700 },
+              ],
             ],
-          ],
-        ]),
-      );
-
-      const kyselyProvider = createKyselyProvider({
-        db,
+          ]),
+          new Map<string, QueryRow[]>([
+            [
+              "orders as o->users as u",
+              [
+                {
+                  "o.id": "o2",
+                  "o.user_id": "u1",
+                  "o.total_cents": 3000,
+                  "u.id": "u1",
+                  "u.email": "ada@example.com",
+                },
+                {
+                  "o.id": "o1",
+                  "o.user_id": "u1",
+                  "o.total_cents": 1500,
+                  "u.id": "u1",
+                  "u.email": "ada@example.com",
+                },
+                {
+                  "o.id": "o3",
+                  "o.user_id": "u2",
+                  "o.total_cents": 700,
+                  "u.id": "u2",
+                  "u.email": "ben@example.com",
+                },
+              ],
+            ],
+          ]),
+        ),
         entities: {
           orders: { table: "orders" },
           users: { table: "users" },
         },
-      });
+      }),
+      context: {},
+      scan: {
+        fragment: buildScanFragment("kysely"),
+        expectedRows: expectedScanRows,
+      },
+      rel: {
+        fragment: buildRelFragment("kysely"),
+        expectedRows: expectedRelRows,
+      },
+    }),
+  );
 
-      const rows = await runRelFragment("kysely", kyselyProvider);
-      expect(rows).toEqual(expected);
-    }
-
-    {
-      const knex = createMockObjectionKnex(
-        new Map<string, QueryRow[]>([
-          [
-            "orders as o->users as u",
+  registerConformanceSuite(
+    "objection provider",
+    createProviderConformanceCases({
+      provider: (() => {
+        const knex = createMockObjectionKnex(
+          new Map<string, QueryRow[]>([
+            ["orders", qualifiedOrdersScanRows],
             [
-              {
-                "o.id": "o2",
-                "o.user_id": "u1",
-                "o.total_cents": 3000,
-                "u.id": "u1",
-                "u.email": "ada@example.com",
-              },
-              {
-                "o.id": "o1",
-                "o.user_id": "u1",
-                "o.total_cents": 1500,
-                "u.id": "u1",
-                "u.email": "ada@example.com",
-              },
-              {
-                "o.id": "o3",
-                "o.user_id": "u2",
-                "o.total_cents": 700,
-                "u.id": "u2",
-                "u.email": "ben@example.com",
-              },
+              "orders as o->users as u",
+              [
+                {
+                  "o.id": "o2",
+                  "o.user_id": "u1",
+                  "o.total_cents": 3000,
+                  "u.id": "u1",
+                  "u.email": "ada@example.com",
+                },
+                {
+                  "o.id": "o1",
+                  "o.user_id": "u1",
+                  "o.total_cents": 1500,
+                  "u.id": "u1",
+                  "u.email": "ada@example.com",
+                },
+                {
+                  "o.id": "o3",
+                  "o.user_id": "u2",
+                  "o.total_cents": 700,
+                  "u.id": "u2",
+                  "u.email": "ben@example.com",
+                },
+              ],
             ],
-          ],
-        ]),
-      );
+          ]),
+        );
 
-      const objectionProvider = createObjectionProvider({
-        knex,
-        entities: {
-          orders: {
-            table: "orders",
-            base: () => knex.table("orders"),
+        return createObjectionProvider({
+          knex,
+          entities: {
+            orders: {
+              table: "orders",
+              base: () => knex.table("orders"),
+            },
+            users: {
+              table: "users",
+              base: () => knex.table("users"),
+            },
           },
-          users: {
-            table: "users",
-            base: () => knex.table("users"),
-          },
-        },
-      });
-
-      const rows = await runRelFragment("objection", objectionProvider);
-      expect(rows).toEqual(expected);
-    }
-  });
+        });
+      })(),
+      context: {},
+      scan: {
+        fragment: buildScanFragment("objection"),
+        expectedRows: expectedScanRows,
+      },
+      rel: {
+        fragment: buildRelFragment("objection"),
+        expectedRows: expectedRelRows,
+      },
+    }),
+  );
 });

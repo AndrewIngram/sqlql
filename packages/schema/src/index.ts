@@ -2,7 +2,47 @@
  * Schema is the canonical application-facing surface for building and querying tupl facades.
  * It exposes logical schema APIs plus the stable runtime contracts needed by schema consumers.
  */
-export * from "@tupl/schema-model";
+export {
+  asIso8601Timestamp,
+  createSchemaBuilder,
+  defineTableMethods,
+  getNormalizedTableBinding,
+  isNormalizedSourceColumnBinding,
+  mapProviderRowsToLogical,
+  resolveSchemaLinkedEnums,
+  resolveTableColumnDefinition,
+  resolveTableProviderResult,
+  toSqlDDL,
+  validateProviderBindingsResult,
+} from "@tupl/schema-model";
+export type {
+  AggregateFunction,
+  AggregatePlanDecision,
+  LookupPlanDecision,
+  NormalizedColumnBinding,
+  PlannedAggregateRequest,
+  PlannedLookupRequest,
+  PlannedScanRequest,
+  QueryRow,
+  ScanFilterClause,
+  ScanOrderBy,
+  ScanPlanDecision,
+  SchemaBuilder,
+  SchemaColumnLensDefinition,
+  SchemaDefinition,
+  SqlScalarType,
+  TableAggregateMetric,
+  TableAggregateRequest,
+  TableColumnDefinition,
+  TableConstraints,
+  TableDefinition,
+  TableLookupRequest,
+  TableMethods,
+  TableMethodsForSchema,
+  TableMethodsMap,
+  TableName,
+  TableScanRequest,
+} from "@tupl/schema-model";
 export {
   DEFAULT_QUERY_FALLBACK_POLICY,
   DEFAULT_QUERY_GUARDRAILS,
@@ -32,6 +72,8 @@ export type {
   QuerySqlOrigin,
 } from "@tupl/runtime";
 export {
+  type TuplProviderBindingError,
+  type TuplResult,
   type ConstraintValidationMode,
   type ConstraintValidationOptions,
   type ConstraintViolation,

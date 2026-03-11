@@ -1,6 +1,10 @@
-import { buildEntitySchema } from "./schema-builder";
-import type { RowsByTable } from "./query-harness";
+import type { QueryRow } from "@tupl/schema-model";
 
+import { buildEntitySchema } from "./schema";
+
+/**
+ * Shared fixtures own canonical sample schemas and rows reused across package tests.
+ */
 export const commerceSchema = buildEntitySchema({
   orders: {
     columns: {
@@ -72,4 +76,4 @@ export const commerceRows = {
     { id: "team_enterprise", name: "Enterprise", tier: "enterprise" },
     { id: "team_smb", name: "SMB", tier: "smb" },
   ],
-} satisfies RowsByTable<typeof commerceSchema>;
+} satisfies Record<string, QueryRow[]>;

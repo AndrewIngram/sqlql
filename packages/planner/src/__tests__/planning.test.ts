@@ -9,8 +9,8 @@ import {
   planPhysicalQuery,
   planPhysicalQueryResult,
 } from "@tupl/planner";
-import { buildSchema, buildEntitySchema } from "../../../../test/support/schema-builder";
-import { finalizeProviders } from "../../../../test/support/executable-schema";
+import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
+import { finalizeProviders } from "@tupl/test-support/runtime";
 
 describe("query/planning", () => {
   it("lowers simple select/join into relational operators", () => {

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { stringifyUnknownValue } from "@tupl/foundation";
-import { createMethodsProvider } from "../../../../test/support/methods-provider";
-import { createArrayTableMethods, scanArrayRows } from "../../../../test/support/array-methods";
+import { createMethodsProvider, withQueryHarness } from "@tupl/test-support/runtime";
+import { createArrayTableMethods, scanArrayRows } from "@tupl/test-support/methods";
 
-import { defineTableMethods, type TableLookupRequest, type TableScanRequest } from "@tupl/schema";
-import { commerceRows, commerceSchema } from "../../../../test/support/commerce-fixture";
-import { withQueryHarness } from "../../../../test/support/query-harness";
-import { buildEntitySchema } from "../../../../test/support/schema-builder";
+import {
+  defineTableMethods,
+  type TableLookupRequest,
+  type TableScanRequest,
+} from "@tupl/schema-model";
+import { commerceRows, commerceSchema } from "@tupl/test-support/fixtures";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
 

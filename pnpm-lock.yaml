@@ -378,6 +378,30 @@ importers:
         specifier: ^2.7.0
         version: 2.7.0
 
+  packages/test-support:
+    dependencies:
+      '@tupl/foundation':
+        specifier: workspace:*
+        version: link:../foundation
+      '@tupl/provider-kit':
+        specifier: workspace:*
+        version: link:../provider-kit
+      '@tupl/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@tupl/schema-model':
+        specifier: workspace:*
+        version: link:../schema-model
+      better-result:
+        specifier: ^2.7.0
+        version: 2.7.0
+      better-sqlite3:
+        specifier: ^12.6.2
+        version: 12.6.2
+      vitest:
+        specifier: latest
+        version: 4.0.18(@types/node@24.10.13)(jiti@2.6.1)(jsdom@27.4.0)
+
 packages:
 
   '@acemir/cssom@0.9.31':

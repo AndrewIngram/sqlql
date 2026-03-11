@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { queryWithMethods } from "../../../../test/support/methods-provider";
+import { queryWithMethods } from "@tupl/test-support/runtime";
 import {
   aggregateArrayRows,
   createArrayTableMethods,
   lookupArrayRows,
   scanArrayRows,
-} from "../../../../test/support/array-methods";
+} from "@tupl/test-support/methods";
 
-import { defineTableMethods, type QueryRow } from "@tupl/schema";
-import { buildEntitySchema } from "../../../../test/support/schema-builder";
+import { defineTableMethods, type QueryRow } from "@tupl/schema-model";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 describe("array methods", () => {
   const orders: QueryRow[] = [

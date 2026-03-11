@@ -10,8 +10,8 @@ import {
   resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
   toSqlDDL,
-} from "@tupl/schema";
-import { buildSchema, buildEntitySchema } from "../../../../test/support/schema-builder";
+} from "@tupl/schema-model";
+import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
 describe("createSchemaBuilder", () => {
   it("supports source-neutral physical entity lens mappings", () => {

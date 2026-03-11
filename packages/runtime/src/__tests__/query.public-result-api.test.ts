@@ -1,15 +1,16 @@
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
-import { createExecutableSchemaResult, type QueryRow, type SchemaDefinition } from "@tupl/schema";
+import { createExecutableSchemaResult } from "@tupl/runtime";
+import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
 import {
   createDataEntityHandle,
   type ProviderAdapter,
   type ProviderFragment,
 } from "@tupl/provider-kit";
-import { createSchemaBuilder, resolveTableProviderResult } from "@tupl/schema";
-import { createExecutableSchemaFromProviders } from "../../../../test/support/executable-schema";
-import { buildEntitySchema, buildSchema } from "../../../../test/support/schema-builder";
+import { createSchemaBuilder, resolveTableProviderResult } from "@tupl/schema-model";
+import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
+import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";
 
 function createRowsProvider(rows: QueryRow[] = [{ id: "u1" }]): Omit<ProviderAdapter, "name"> {
   return {

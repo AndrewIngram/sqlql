@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as foundation from "@tupl/foundation";
 import * as providerKit from "@tupl/provider-kit";
 import * as providerKitShapes from "@tupl/provider-kit/shapes";
+import * as providerKitTesting from "@tupl/provider-kit/testing";
 import * as providerDrizzle from "@tupl/provider-drizzle";
 import * as providerIoredis from "@tupl/provider-ioredis";
 import * as providerKysely from "@tupl/provider-kysely";
@@ -24,6 +25,7 @@ describe("public package imports", () => {
   it("resolves canonical public subpaths directly", () => {
     expect(typeof providerKitShapes.buildScanUnsupportedReport).toBe("function");
     expect(typeof runtimeExecutor.executeRelWithProvidersResult).toBe("function");
+    expect(typeof providerKitTesting.createProviderConformanceCases).toBe("function");
   });
 
   it("resolves the Drizzle provider package", () => {
