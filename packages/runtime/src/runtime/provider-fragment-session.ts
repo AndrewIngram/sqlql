@@ -21,11 +21,11 @@ import { unwrapQueryResult } from "./diagnostics";
 import {
   buildProviderFragmentDoneEvent,
   runProviderFragmentOnceResult,
-} from "./provider-fragment-replay";
+} from "./provider/provider-fragment-replay";
 import {
   createInitialProviderFragmentState,
   createProviderFragmentPlan,
-} from "./provider-session-lifecycle";
+} from "./provider/provider-session-lifecycle";
 
 /**
  * Provider-fragment sessions own sync provider-fragment session creation and execution.

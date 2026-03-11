@@ -3,8 +3,8 @@ import type { RelExpr } from "@tupl/foundation";
 import type { Binding, InSubqueryFilter, LiteralFilter, ParsedWhereFilters } from "./planner-types";
 import type { SqlExprLoweringContext } from "./sql-expr-lowering";
 import { lowerSqlAstToRelExpr } from "./sql-expr-lowering";
-import { flattenConjunctiveWhere, parseLiteralFilter } from "./literal-filter-parser";
-import { literalFilterToRelExpr } from "./literal-filter-operators";
+import { flattenConjunctiveWhere, parseLiteralFilter } from "./expr/literal-filter-parser";
+import { literalFilterToRelExpr } from "./expr/literal-filter-operators";
 
 /**
  * Literal filter lowering owns pushdown-friendly predicate extraction and residual expr fallback.
@@ -79,4 +79,4 @@ export function parseWhereFilters(
       };
 }
 
-export { literalFilterToRelExpr } from "./literal-filter-operators";
+export { literalFilterToRelExpr } from "./expr/literal-filter-operators";

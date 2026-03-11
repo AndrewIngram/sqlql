@@ -7,7 +7,7 @@ import {
   isSchemaDataEntityHandle,
   isSchemaDslTableToken,
   isSchemaTypedColumnDefinition,
-} from "./builder";
+} from "./dsl-tokens";
 import { assertColumnCompatibility, resolveEntityColumnSource } from "./entity-bindings";
 import type {
   NormalizedColumnBinding,

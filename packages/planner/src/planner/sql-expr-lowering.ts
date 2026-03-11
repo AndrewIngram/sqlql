@@ -24,8 +24,8 @@ import {
   lowerBinaryExprToRelExpr,
   lowerColumnRefExpr,
   lowerFunctionExprToRelExpr,
-} from "./expr-function-lowering";
-import { lowerScalarSubqueryExpr } from "./expr-subquery-lowering";
+} from "./expr/expr-function-lowering";
+import { lowerScalarSubqueryExpr } from "./expr/expr-subquery-lowering";
 
 export interface SqlExprLoweringContext {
   schema: SchemaDefinition;

@@ -1,6 +1,8 @@
 import type { RelExpr } from "@tupl/foundation";
 
 import type {
+  DslTableDefinition,
+  DslViewDefinition,
   SchemaCalculatedColumnDefinition,
   SchemaColRefToken,
   SchemaColumnLensDefinition,
@@ -60,7 +62,7 @@ export function isRelExpr(value: unknown): value is RelExpr {
   return kind === "subquery";
 }
 
-export function isDslTableDefinition(value: unknown): boolean {
+export function isDslTableDefinition(value: unknown): value is DslTableDefinition {
   return (
     !!value &&
     typeof value === "object" &&
@@ -69,7 +71,9 @@ export function isDslTableDefinition(value: unknown): boolean {
   );
 }
 
-export function isDslViewDefinition(value: unknown): boolean {
+export function isDslViewDefinition(
+  value: unknown,
+): value is DslViewDefinition<any, string, string> {
   return (
     !!value &&
     typeof value === "object" &&

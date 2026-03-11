@@ -3,21 +3,21 @@ import { Result, type Result as BetterResult } from "better-result";
 import type { RelNode, TuplError } from "@tupl/foundation";
 
 import type { QueryInput } from "./contracts";
-import type { QueryCapabilityResolution } from "./provider-capability";
-import { maybeRejectFallbackResult } from "./provider-fallback";
-import { resolveSyncProviderCapabilityForRel } from "./provider-capability";
+import type { QueryCapabilityResolution } from "./provider/provider-capability";
+import { maybeRejectFallbackResult } from "./provider/provider-fallback";
+import { resolveSyncProviderCapabilityForRel } from "./provider/provider-capability";
 
 /**
  * Provider execution is the curated runtime surface for provider capability, fallback, timeout, and whole-query execution.
  */
-export type { QueryCapabilityResolution } from "./provider-capability";
+export type { QueryCapabilityResolution } from "./provider/provider-capability";
 export {
   resolveProviderCapabilityForRel,
   resolveSyncProviderCapabilityForRel,
-} from "./provider-capability";
-export { maybeRejectFallbackResult } from "./provider-fallback";
-export { withTimeoutResult } from "./provider-timeout";
-export { maybeExecuteWholeQueryFragmentResult } from "./provider-whole-query";
+} from "./provider/provider-capability";
+export { maybeRejectFallbackResult } from "./provider/provider-fallback";
+export { withTimeoutResult } from "./provider/provider-timeout";
+export { maybeExecuteWholeQueryFragmentResult } from "./provider/provider-whole-query";
 
 export function resolveSyncProviderCapabilityForRelResult<TContext>(
   input: QueryInput<TContext>,

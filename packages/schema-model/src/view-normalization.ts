@@ -1,6 +1,6 @@
 import type { RelExpr } from "@tupl/foundation";
 
-import { isSchemaDataEntityHandle } from "./builder";
+import { isSchemaDataEntityHandle } from "./dsl-tokens";
 import type {
   SchemaColRefToken,
   SchemaDataEntityHandle,

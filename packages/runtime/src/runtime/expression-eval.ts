@@ -2,9 +2,9 @@ import { Result, type Result as BetterResult } from "better-result";
 
 import { TuplExecutionError, type RelExpr } from "@tupl/foundation";
 
-import { evaluateScalarFunctionResult } from "./expression-scalar-functions";
+import { evaluateScalarFunctionResult } from "./execution/expression-scalar-functions";
 import { readRowValue, toColumnKey, type InternalRow } from "./row-ops";
-export { evaluateAggregateMetricResult } from "./aggregate-metric-eval";
+export { evaluateAggregateMetricResult } from "./execution/aggregate-metric-eval";
 
 /**
  * Expression eval owns recursive local relational expression execution and delegates scalar/aggregate semantics.

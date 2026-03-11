@@ -2,8 +2,8 @@ import type { RelExpr, RelNode } from "@tupl/foundation";
 
 import type { Binding } from "./planner-types";
 import { resolveColumnRef } from "./sql-expr-lowering";
-import { lowerHavingAggregateRef } from "./having-aggregate-refs";
-import { lowerHavingBinaryExpr, lowerHavingFunctionExpr } from "./having-function-exprs";
+import { lowerHavingAggregateRef } from "./aggregate/having-aggregate-refs";
+import { lowerHavingBinaryExpr, lowerHavingFunctionExpr } from "./aggregate/having-function-exprs";
 
 /**
  * Having lowering owns aggregate-aware expression lowering for HAVING clauses.

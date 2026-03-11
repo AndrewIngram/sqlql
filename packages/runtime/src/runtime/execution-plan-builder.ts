@@ -1,7 +1,7 @@
 import type { QueryExecutionPlan, QuerySessionInput, TuplDiagnostic } from "./contracts";
 import type { RelNode } from "@tupl/foundation";
-import { buildExecutionGraph } from "./execution-graph";
-import { createPlanBuildState, finalizeExecutionPlan } from "./explain-shaping";
+import { buildExecutionGraph } from "./execution/execution-graph";
+import { createPlanBuildState, finalizeExecutionPlan } from "./execution/explain-shaping";
 
 /**
  * Execution-plan builder owns session plan graph construction and visualization data.

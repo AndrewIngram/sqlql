@@ -7,21 +7,21 @@ export {
   parseLiteral,
   parsePositiveOrdinalLiteral,
   tryParseLiteralExpressionList,
-} from "./expr-literals";
+} from "./expr/expr-literals";
 export {
   collectRelExprRefs,
   collectTablesFromSelectAst,
   resolveColumnRef,
   toRawColumnRef,
-} from "./expr-column-refs";
+} from "./expr/expr-column-refs";
 export {
   isCorrelatedSubquery,
   parseNamedWindowSpecifications,
   parseSubqueryAst,
   parseWindowOver,
-} from "./expr-subqueries";
+} from "./expr/expr-subqueries";
 export {
   mapBinaryOperatorToRelFunction,
   readWindowFunctionName,
   supportsRankWindowArgs,
-} from "./expr-functions";
+} from "./expr/expr-functions";

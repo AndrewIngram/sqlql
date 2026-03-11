@@ -7,11 +7,11 @@ import {
   isNormalizedSourceColumnBinding,
   type SchemaDefinition,
 } from "@tupl/schema-model";
-import { expandCalculatedScan, hasCalculatedColumns } from "./calculated-scan-expansion";
+import { expandCalculatedScan, hasCalculatedColumns } from "./views/calculated-scan-expansion";
 import { compileViewRelForPlanner } from "./view-lowering";
 import { nextRelId } from "./planner-ids";
 import { toTuplPlanningError } from "./planner-errors";
-import { buildPlannerViewProjection, needsPlannerViewProjection } from "./view-projection";
+import { buildPlannerViewProjection, needsPlannerViewProjection } from "./views/view-projection";
 import type { ViewAliasColumnMap } from "./planner-types";
 import {
   mapRelExprRefs,
@@ -21,7 +21,7 @@ import {
   resolveMappedColumnRef,
   resolveViewSourceRef,
   rewriteColumnNameWithAliases,
-} from "./view-aliases";
+} from "./views/view-aliases";
 
 interface ViewExpansionResult {
   node: RelNode;

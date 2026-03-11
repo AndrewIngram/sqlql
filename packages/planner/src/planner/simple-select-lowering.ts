@@ -1,9 +1,9 @@
 import type { RelNode } from "@tupl/foundation";
 import type { SelectAst } from "./sqlite-parser/ast";
 import type { SchemaDefinition } from "@tupl/schema-model";
-import { buildSimpleSelectJoinTree } from "./select-join-tree";
-import { finalizeSimpleSelectRel } from "./select-project";
-import { prepareSimpleSelectLowering } from "./select-shape";
+import { buildSimpleSelectJoinTree } from "./select/select-join-tree";
+import { finalizeSimpleSelectRel } from "./select/select-project";
+import { prepareSimpleSelectLowering } from "./select/select-shape";
 
 /**
  * Simple-select lowering owns lowering a single SELECT core into relational nodes.

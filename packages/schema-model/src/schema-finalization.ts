@@ -1,5 +1,11 @@
-import type { SchemaBuilderState } from "./builder";
-import { buildSchemaDslViewRelHelpers, isDslTableDefinition, isDslViewDefinition } from "./builder";
+import { getDataEntityAdapter } from "@tupl/provider-kit";
+
+import { type SchemaBuilderState } from "./builder-state";
+import {
+  buildSchemaDslViewRelHelpers,
+  isDslTableDefinition,
+  isDslViewDefinition,
+} from "./builder-helpers";
 import { validateSchemaConstraints } from "./constraints";
 import {
   buildColumnSourceMapFromBindings,
@@ -12,10 +18,10 @@ import type {
   SchemaDataEntityHandle,
   SchemaDefinition,
   SchemaDslTableToken,
+  SchemaDslViewRelHelpers,
   TableColumns,
   TableDefinition,
 } from "./types";
-import { getDataEntityAdapter } from "@tupl/provider-kit";
 
 /**
  * Schema finalization owns schema assembly and the hidden normalized binding state.
@@ -81,7 +87,7 @@ export function buildRegisteredSchemaDefinition<TContext>(
     }
     return entity.entity;
   };
-  const viewRelHelpers = buildSchemaDslViewRelHelpers();
+  const viewRelHelpers = buildSchemaDslViewRelHelpers() as SchemaDslViewRelHelpers;
 
   for (const [tableName, rawTable] of entries) {
     if (isDslTableDefinition(rawTable)) {

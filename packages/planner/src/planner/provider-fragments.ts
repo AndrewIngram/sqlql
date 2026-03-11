@@ -3,11 +3,11 @@ import { Result } from "better-result";
 import { type RelNode } from "@tupl/foundation";
 import { type SchemaDefinition } from "@tupl/schema-model";
 import type { ProviderFragment } from "@tupl/provider-kit";
-import { buildAggregateProviderFragment } from "./aggregate-provider-fragment";
+import { buildAggregateProviderFragment } from "./aggregate/aggregate-provider-fragment";
 import { toTuplPlanningError } from "./planner-errors";
 import { resolveSingleProvider } from "./conventions";
-import { normalizeRelForProvider } from "./provider-rel-normalization";
-import { normalizeScanForProvider } from "./provider-scan-normalization";
+import { normalizeRelForProvider } from "./provider/provider-rel-normalization";
+import { normalizeScanForProvider } from "./provider/provider-scan-normalization";
 import { expandRelViewsResult } from "./view-expansion";
 
 /**

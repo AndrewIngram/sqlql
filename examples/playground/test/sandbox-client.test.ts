@@ -18,13 +18,14 @@ describe("playground sandbox client", () => {
       exports: [],
     });
 
-    vi.doMock("../src/playground-sandbox", async () => {
-      const actual = await vi.importActual<typeof import("../src/playground-sandbox")>(
-        "../src/playground-sandbox",
-      );
+    vi.doMock("../src/playground-sandbox", () => {
       return {
-        ...actual,
         validateSchemaInSandbox,
+        createSandboxSession: vi.fn(),
+        disposeSandboxSession: vi.fn(),
+        nextSandboxSessionEvent: vi.fn(),
+        replaySandboxSession: vi.fn(),
+        runSandboxSessionToCompletion: vi.fn(),
       };
     });
 
