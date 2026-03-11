@@ -403,24 +403,7 @@ export async function createSandboxSession(
 
   const runtime = await runSandboxPhase("RUNTIME_INIT", () => getOrCreateProviderRuntime(compiled));
   const runtimeContext = toRuntimeContext(context, runtime);
-  const { tuplModule, executableSchema, dbProvider, redisProvider } = runtime;
-
-  const providers = {
-    [dbProvider.name]: dbProvider,
-    [redisProvider.name]: redisProvider,
-  };
-  const lowered = await runSandboxPhase("LOWER_SQL", async () =>
-    tuplModule.lowerSqlToRel(compiled.sql, executableSchema.schema),
-  );
-  await runSandboxPhase("PLAN_QUERY", () =>
-    tuplModule.planPhysicalQuery(
-      lowered.rel,
-      executableSchema.schema,
-      providers,
-      runtimeContext,
-      compiled.sql,
-    ),
-  );
+  const { executableSchema } = runtime;
 
   const sessionResult = await runSandboxPhase("CREATE_SESSION", async () =>
     executableSchema.createSessionResult({

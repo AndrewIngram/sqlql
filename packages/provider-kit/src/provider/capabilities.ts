@@ -316,10 +316,12 @@ function addFilterAtom(atoms: Set<ProviderCapabilityAtom>, op: ScanFilterClause[
       return;
     case "is_distinct_from":
     case "is_not_distinct_from":
+      atoms.add("scan.filter.basic");
+      atoms.add("expr.null_distinct");
+      return;
     case "is_null":
     case "is_not_null":
       atoms.add("scan.filter.basic");
-      atoms.add("expr.null_distinct");
       return;
   }
 }

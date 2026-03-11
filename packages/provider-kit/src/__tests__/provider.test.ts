@@ -15,6 +15,8 @@ import { getNormalizedTableBinding, validateProviderBindingsResult } from "@tupl
 import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
 import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
+import { collectCapabilityAtomsForFragment } from "../provider/capabilities";
+
 type TestProvider = Omit<FragmentProviderAdapter, "name"> &
   Partial<Pick<LookupProviderAdapter, "lookupMany">>;
 
@@ -169,6 +171,45 @@ function matchesLike(value: string, pattern: string): boolean {
 }
 
 describe("query/provider runtime", () => {
+  it("does not require expr.null_distinct for is_null and is_not_null scan filters", () => {
+    const isNullAtoms = collectCapabilityAtomsForFragment({
+      kind: "scan",
+      provider: "warehouse",
+      table: "orders",
+      request: {
+        table: "orders",
+        select: ["id"],
+        where: [{ column: "org_id", op: "is_null" }],
+      },
+    });
+    const isNotNullAtoms = collectCapabilityAtomsForFragment({
+      kind: "scan",
+      provider: "warehouse",
+      table: "orders",
+      request: {
+        table: "orders",
+        select: ["id"],
+        where: [{ column: "org_id", op: "is_not_null" }],
+      },
+    });
+    const distinctAtoms = collectCapabilityAtomsForFragment({
+      kind: "scan",
+      provider: "warehouse",
+      table: "orders",
+      request: {
+        table: "orders",
+        select: ["id"],
+        where: [{ column: "org_id", op: "is_distinct_from", value: null }],
+      },
+    });
+
+    expect(isNullAtoms).toContain("scan.filter.basic");
+    expect(isNotNullAtoms).toContain("scan.filter.basic");
+    expect(isNullAtoms).not.toContain("expr.null_distinct");
+    expect(isNotNullAtoms).not.toContain("expr.null_distinct");
+    expect(distinctAtoms).toContain("expr.null_distinct");
+  });
+
   it("routes same-provider queries through scan fragments", async () => {
     const schema = buildEntitySchema({
       orders: {

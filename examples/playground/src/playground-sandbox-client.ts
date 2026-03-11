@@ -198,6 +198,7 @@ export function requestSandboxWorker<K extends keyof SandboxRpcRequestMap>(
       throw error;
     }
 
+    rejectPendingRequests(error);
     resetSandboxWorker();
     return requestSandboxInProcess(kind, payload);
   });
