@@ -1,12 +1,11 @@
 import { describe, it } from "vitest";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
-import { type ProviderFragment } from "@tupl/provider-kit";
+import { type ProviderFragment, type QueryRow } from "@tupl/provider-kit";
 import {
   createProviderConformanceCases,
   type ProviderConformanceCase,
 } from "@tupl/provider-kit/testing";
-import type { QueryRow } from "@tupl/schema-model";
 import {
   createDrizzleProvider,
   type DrizzleQueryExecutor,

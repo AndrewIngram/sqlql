@@ -13,6 +13,12 @@
 
 The facade stays relational (`SELECT` over tables/views), while providers can be relational or non-relational.
 
+Package guidance:
+
+- application authors should usually stay on `@tupl/schema`
+- adapter authors should usually stay on `@tupl/provider-kit`, `@tupl/provider-kit/shapes`, and `@tupl/provider-kit/testing`
+- planner/runtime packages are for advanced tooling, debugging, and lower-level integrations
+
 ## Why
 
 Typical reasons to use `tupl`:
@@ -209,6 +215,7 @@ Execution behavior notes:
 
 ## Guides
 
+- [Hosted playground](https://tupl-playground.andrewingram.workers.dev/)
 - [Building a schema (executable schema, Drizzle example)](./docs/building-a-schema.md)
 - [Creating a new adapter (progressive path)](./docs/creating-an-adapter.md)
 - [Building a non-relational adapter (Redis-style)](./docs/building-a-non-relational-adapter.md)

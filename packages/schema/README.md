@@ -1,8 +1,14 @@
 # `@tupl/schema`
 
-Schema-building APIs for tupl.
+Application-facing schema authoring and executable-schema APIs for tupl.
 
-Use this package when you only need to define schemas, build executable schemas, or work with schema types and helpers.
+Use this package when you need the canonical documented workflow:
+
+- `createSchemaBuilder(...)`
+- `createExecutableSchema(...)`
+- application-facing schema/query/runtime types
+
+Lower-level planner, runtime, and normalization modules intentionally live in other packages.
 
 ## Install
 

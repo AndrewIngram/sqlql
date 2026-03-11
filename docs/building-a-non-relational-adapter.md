@@ -19,8 +19,9 @@ import type {
   ProviderCompiledPlan,
   ProviderLookupManyRequest,
   ProviderCapabilityAtom,
+  QueryRow,
+  TableScanRequest,
 } from "@tupl/provider-kit";
-import type { QueryRow, TableScanRequest } from "@tupl/schema";
 
 type KvContext = {
   namespace: string;
@@ -139,6 +140,9 @@ function applyScanRequest(rows: QueryRow[], request: TableScanRequest): QueryRow
 ```
 
 That adapter already participates in cross-provider joins through `lookupMany`, even though it rejects `scan` and `rel` pushdown.
+
+For normal adapter work, `@tupl/provider-kit` is the extension facade. Keep `@tupl/schema-model`
+out of adapter code unless you are intentionally working on lower-level planner/schema internals.
 
 ## Route Family Progression
 

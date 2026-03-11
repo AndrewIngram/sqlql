@@ -185,6 +185,18 @@ export interface TableScanRequest<TTable extends string = string, TColumn extend
   offset?: number;
 }
 
+export interface TableLookupRequest<
+  TTable extends string = string,
+  TColumn extends string = string,
+> {
+  table: TTable;
+  alias?: string;
+  key: TColumn;
+  values: unknown[];
+  select: TColumn[];
+  where?: ScanFilterClause<TColumn>[];
+}
+
 export type AggregateFunction = "count" | "sum" | "avg" | "min" | "max";
 
 export interface TableAggregateMetric<TColumn extends string = string> {

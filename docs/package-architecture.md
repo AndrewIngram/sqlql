@@ -20,7 +20,7 @@ Allowed dependency directions:
 Layer invariants:
 
 - `@tupl/foundation` owns the relational vocabulary, diagnostics, and value helpers. Callers may rely on its data model, but must not assume execution or schema-building behavior.
-- `@tupl/provider-kit` owns adapter contracts, entity handles, capability reporting, and provider-shape analysis. Callers may build adapters against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
+- `@tupl/provider-kit` owns adapter contracts, entity handles, capability reporting, provider-shape analysis, and adapter testing helpers. Callers may build adapters against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
 - `@tupl/schema-model` owns logical schema authoring and normalization. Callers may rely on schema DSL behavior and normalized bindings, but must not assume planner or executor internals.
 - `@tupl/planner` owns SQL lowering and physical planning. Callers may rely on relational planning output, but must not assume runtime guardrail policy or provider execution semantics.
 - `@tupl/runtime` owns executable-schema construction, guardrails, query orchestration, and sessions. Callers may rely on execution contracts, but must not depend on planner-internal shapes beyond the published explain surface.
@@ -39,6 +39,8 @@ Cross-module rules:
 
 Consumer guidance:
 
-- Provider implementations should prefer `@tupl/provider-kit`, `@tupl/foundation`, and `@tupl/schema` only when they truly need app-facing schema types.
+- Provider implementations should prefer `@tupl/provider-kit`, `@tupl/provider-kit/shapes`, and `@tupl/provider-kit/testing` for ordinary adapter work.
+- `@tupl/foundation` remains available for primitive relational helpers, but it is not the primary extension boundary.
+- Provider implementations should not normally import `@tupl/schema-model`; that package owns schema internals, not the ordinary adapter-authoring surface.
 - Adapter conformance belongs on `@tupl/provider-kit/testing`; internal test fixtures do not.
 - Application docs and examples should prefer `@tupl/schema` and first-party provider packages.

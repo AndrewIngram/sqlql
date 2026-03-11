@@ -13,9 +13,14 @@ This audit tracks shallow wrapper layers that add interface surface without hidi
 
 ## Deferred
 
-- The temporary `core` package still contains wrapper entrypoints for its remaining subpath exports. Leave them in place only where they are still required by that package's build surface.
 - `packages/provider-kit/src/provider/shapes/index.ts` remains because it is the real semantic root for the shapes module; it aggregates multiple leaf modules and is not a one-hop alias.
 - Package-root barrels in `foundation`, `planner`, `provider-kit`, and `runtime` remain because they aggregate multiple real concepts at the package boundary.
+
+## Completed Since This Audit Started
+
+- The temporary `core` package was removed entirely.
+- Planner implementation is no longer concentrated behind one fake root file; `planning.ts` and `sql-lowering.ts` are now thin surfaces over real internal planner modules.
+- `@tupl/provider-kit` is now the normal adapter-authoring facade for first-party providers instead of requiring direct `@tupl/schema-model` imports for routine request and row contracts.
 
 ## Guardrails
 

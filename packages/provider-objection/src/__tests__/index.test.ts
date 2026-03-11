@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
-import { type ProviderFragment } from "@tupl/provider-kit";
-import type { QueryRow, TableScanRequest } from "@tupl/schema-model";
+import { type ProviderFragment, type QueryRow, type TableScanRequest } from "@tupl/provider-kit";
 import { createObjectionProvider, type KnexLike, type KnexLikeQueryBuilder } from "../index";
 
 interface ObjectionCalls {

@@ -3,7 +3,10 @@ import type {
   QueryRow,
   RelNode,
   ScanFilterClause,
+  ScanOrderBy,
+  TableAggregateMetric,
   TableAggregateRequest,
+  TableLookupRequest,
   TableScanRequest,
 } from "@tupl/foundation";
 
@@ -100,3 +103,13 @@ export type ProviderAdapter<TContext = unknown> =
 
 export type ProvidersMap<TContext = unknown> = Record<string, ProviderAdapter<TContext>>;
 export type DataSourceAdapter<TContext = unknown> = ProviderAdapter<TContext>;
+
+export type {
+  QueryRow,
+  ScanFilterClause,
+  ScanOrderBy,
+  TableAggregateMetric,
+  TableAggregateRequest,
+  TableLookupRequest,
+  TableScanRequest,
+};

@@ -37,10 +37,15 @@ import {
   type ProviderCompiledPlan,
   type ProviderFragment,
   type ProviderLookupManyRequest,
+  type QueryRow,
   type ProviderRuntimeBinding,
+  type ScanFilterClause,
+  type ScanOrderBy,
+  type TableScanRequest,
 } from "@tupl/provider-kit";
 import {
   isRelProjectColumnMapping,
+  type SqlScalarType,
   stringifyUnknownValue,
   type RelExpr,
   type RelNode,
@@ -62,13 +67,6 @@ import {
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
 } from "@tupl/provider-kit/shapes";
-import type {
-  QueryRow,
-  ScanFilterClause,
-  ScanOrderBy,
-  SqlScalarType,
-  TableScanRequest,
-} from "@tupl/schema-model";
 
 export type DrizzleColumnMap<TColumn extends string = string> = Record<TColumn, AnyColumn>;
 

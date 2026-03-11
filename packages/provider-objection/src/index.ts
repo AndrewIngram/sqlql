@@ -14,7 +14,10 @@ import {
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderFragment,
+  type QueryRow,
   type ProviderRuntimeBinding,
+  type ScanFilterClause,
+  type TableScanRequest,
 } from "@tupl/provider-kit";
 import { isRelProjectColumnMapping, stringifyUnknownValue, type RelNode } from "@tupl/foundation";
 import {
@@ -34,7 +37,6 @@ import {
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
 } from "@tupl/provider-kit/shapes";
-import type { QueryRow, ScanFilterClause, TableScanRequest } from "@tupl/schema-model";
 
 export type KnexLikeQueryBuilder = {
   clone?: (...args: any[]) => KnexLikeQueryBuilder;

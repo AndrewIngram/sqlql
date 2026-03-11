@@ -10,9 +10,9 @@ import {
   type MaybePromise,
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
+  type QueryRow,
   type ProviderRuntimeBinding,
 } from "@tupl/provider-kit";
-import type { QueryRow } from "@tupl/schema-model";
 import {
   buildLookupOnlyUnsupportedReport,
   filterLookupRows,

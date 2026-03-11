@@ -19,8 +19,9 @@ import type {
   ProviderCapabilityReport,
   ProviderCompiledPlan,
   ProviderFragment,
+  QueryRow,
+  TableScanRequest,
 } from "@tupl/provider-kit";
-import type { QueryRow, TableScanRequest } from "@tupl/schema";
 
 type DbContext = {
   tenantId: string;
@@ -170,6 +171,9 @@ async function runQuery(sql: string, params: unknown[], _context: DbContext): Pr
 ```
 
 That adapter is already usable because unsupported joins, aggregates, and computed expressions can fall back to local logical execution.
+
+For ordinary adapter authoring, stay on `@tupl/provider-kit` and `@tupl/provider-kit/shapes`.
+You should not need `@tupl/schema-model` unless you are working on unusually deep planner/schema integration.
 
 ## Wiring the Adapter Into a Facade Schema
 

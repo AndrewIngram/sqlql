@@ -78,6 +78,16 @@ const DISALLOWED_WRAPPER_TARGETS = [
 
 const STRUCTURAL_LINE_BUDGETS = {
   "packages/planner/src/planner/planning.ts": 200,
+  "packages/planner/src/planner/sql-lowering.ts": 250,
+  "packages/planner/src/planner/query-shape-validation.ts": 1200,
+  "packages/planner/src/planner/structured-select-lowering.ts": 1200,
+  "packages/planner/src/planner/where-lowering.ts": 1200,
+  "packages/planner/src/planner/sql-expr-lowering.ts": 1200,
+  "packages/planner/src/planner/aggregate-lowering.ts": 1200,
+  "packages/planner/src/planner/view-expansion.ts": 1200,
+  "packages/planner/src/planner/provider-fragments.ts": 1200,
+  "packages/planner/src/planner/conventions.ts": 1200,
+  "packages/planner/src/planner/physical-planning.ts": 1200,
   "packages/runtime/src/runtime/local-execution.ts": 300,
   "packages/runtime/src/runtime/remote-subtree.ts": 800,
   "packages/runtime/src/runtime/scan-execution.ts": 800,
@@ -356,6 +366,31 @@ describe("package boundaries", () => {
     expect(contents).toContain("@tupl/provider-kit/testing");
   });
 
+  it("keeps first-party providers on the provider-kit adapter facade", () => {
+    const offenders: string[] = [];
+    const providerRoots = [
+      "packages/provider-drizzle/src",
+      "packages/provider-ioredis/src",
+      "packages/provider-kysely/src",
+      "packages/provider-objection/src",
+    ];
+
+    for (const root of providerRoots) {
+      for (const file of walkFiles(join(REPO_ROOT, root))) {
+        if (!file.endsWith(".ts") && !file.endsWith(".tsx")) {
+          continue;
+        }
+
+        const contents = readFileSync(file, "utf8");
+        if (contents.includes("@tupl/schema-model")) {
+          offenders.push(relative(REPO_ROOT, file));
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
   it("removes the temporary internal core monoliths", () => {
     expect(() =>
       statSync(join(REPO_ROOT, "packages/schema-model/src/schema-model-core.ts")),
@@ -365,6 +400,9 @@ describe("package boundaries", () => {
     ).toThrow();
     expect(() =>
       statSync(join(REPO_ROOT, "packages/planner/src/planner/query-runner-core.ts")),
+    ).toThrow();
+    expect(() =>
+      statSync(join(REPO_ROOT, "packages/planner/src/planner/sql-lowering-core.ts")),
     ).toThrow();
   });
 
