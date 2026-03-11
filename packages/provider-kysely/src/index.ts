@@ -36,7 +36,7 @@ import {
   type RelationalSemiJoinStep,
   type RelationalSingleQueryPlan,
 } from "@tupl/provider-kit/shapes";
-import type { QueryRow, ScanFilterClause, TableScanRequest } from "@tupl/schema";
+import type { QueryRow, ScanFilterClause, TableScanRequest } from "@tupl/schema-model";
 
 export type KyselyQueryBuilderLike = {
   select: (...args: any[]) => KyselyQueryBuilderLike;

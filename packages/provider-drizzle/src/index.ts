@@ -68,7 +68,7 @@ import type {
   ScanOrderBy,
   SqlScalarType,
   TableScanRequest,
-} from "@tupl/schema";
+} from "@tupl/schema-model";
 
 export type DrizzleColumnMap<TColumn extends string = string> = Record<TColumn, AnyColumn>;
 

@@ -6,29 +6,14 @@ export {
   asIso8601Timestamp,
   createSchemaBuilder,
   defineTableMethods,
-  getNormalizedTableBinding,
-  isNormalizedSourceColumnBinding,
-  mapProviderRowsToLogical,
-  resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
-  resolveTableProviderResult,
   toSqlDDL,
-  validateProviderBindingsResult,
 } from "@tupl/schema-model";
 export type {
-  AggregateFunction,
-  AggregatePlanDecision,
-  LookupPlanDecision,
-  NormalizedColumnBinding,
-  PlannedAggregateRequest,
-  PlannedLookupRequest,
-  PlannedScanRequest,
   QueryRow,
   ScanFilterClause,
   ScanOrderBy,
-  ScanPlanDecision,
   SchemaBuilder,
-  SchemaColumnLensDefinition,
   SchemaDefinition,
   SqlScalarType,
   TableAggregateMetric,
@@ -40,7 +25,6 @@ export type {
   TableMethods,
   TableMethodsForSchema,
   TableMethodsMap,
-  TableName,
   TableScanRequest,
 } from "@tupl/schema-model";
 export {
@@ -72,7 +56,6 @@ export type {
   QuerySqlOrigin,
 } from "@tupl/runtime";
 export {
-  type TuplProviderBindingError,
   type TuplResult,
   type ConstraintValidationMode,
   type ConstraintValidationOptions,

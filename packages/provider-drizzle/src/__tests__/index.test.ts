@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
 import { type ProviderFragment } from "@tupl/provider-kit";
-import type { QueryRow } from "@tupl/schema";
+import type { QueryRow } from "@tupl/schema-model";
 import {
   createDrizzleProvider,
   impossibleCondition,

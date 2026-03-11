@@ -6,7 +6,7 @@ import {
 } from "./definition";
 import { validateSchemaConstraints } from "./constraints";
 import type { ResolvedColumnDefinition as ResolvedColumnDefinitionType } from "./definition";
-import type { SchemaDefinition, SqlScalarType, TableDefinition } from "./index";
+import type { SchemaDefinition, SqlScalarType, TableDefinition } from "./types";
 
 export interface SqlDdlOptions {
   ifNotExists?: boolean;

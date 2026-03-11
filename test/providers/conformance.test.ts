@@ -6,7 +6,7 @@ import {
   createProviderConformanceCases,
   type ProviderConformanceCase,
 } from "@tupl/provider-kit/testing";
-import type { QueryRow } from "@tupl/schema";
+import type { QueryRow } from "@tupl/schema-model";
 import {
   createDrizzleProvider,
   type DrizzleQueryExecutor,

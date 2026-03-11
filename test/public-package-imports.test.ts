@@ -15,6 +15,12 @@ describe("public package imports", () => {
   it("exposes the canonical schema surface", () => {
     expect(typeof schema.createSchemaBuilder).toBe("function");
     expect(typeof schema.createExecutableSchema).toBe("function");
+    expect("resolveTableProviderResult" in schema).toBe(false);
+    expect("getNormalizedTableBinding" in schema).toBe(false);
+    expect("isNormalizedSourceColumnBinding" in schema).toBe(false);
+    expect("mapProviderRowsToLogical" in schema).toBe(false);
+    expect("resolveSchemaLinkedEnums" in schema).toBe(false);
+    expect("validateProviderBindingsResult" in schema).toBe(false);
   });
 
   it("exposes adapter-authoring contracts from provider-kit", () => {

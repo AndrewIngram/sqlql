@@ -4,8 +4,7 @@
  */
 export * from "./runtime/constraints";
 export * from "./runtime/contracts";
-export * from "./runtime/executor";
-export * from "./runtime/query";
+export * from "./runtime/executable-schema";
 export {
   TuplDiagnosticError,
   TuplExecutionError,

@@ -1,7 +1,6 @@
 import type { RelNode } from "@tupl/foundation";
 import { defaultSqlAstParser, lowerSqlToRel } from "@tupl/planner";
 import {
-  resolveSchemaLinkedEnums,
   resolveTableColumnDefinition,
   type QueryExecutionPlan,
   type QuerySession,
@@ -9,6 +8,7 @@ import {
   type QueryStepState,
 } from "@tupl/schema";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema";
+import { resolveSchemaLinkedEnums } from "@tupl/schema-model";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import { requestSandboxWorker } from "./playground-sandbox-client";

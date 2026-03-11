@@ -5,15 +5,11 @@ import {
   type ExecutableSchema,
   type QuerySession,
   type TuplResult,
-  type TuplProviderBindingError,
 } from "@tupl/schema";
 import { AdapterResult, type ProviderOperationResult } from "@tupl/provider-kit";
-import {
-  createSchemaBuilder,
-  resolveTableProviderResult,
-  type QueryRow,
-  type SchemaDefinition,
-} from "@tupl/schema";
+import type { TuplProviderBindingError } from "@tupl/runtime";
+import { createSchemaBuilder, type QueryRow, type SchemaDefinition } from "@tupl/schema";
+import { resolveTableProviderResult } from "@tupl/schema-model";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;

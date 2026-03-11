@@ -9,7 +9,7 @@ import {
   resolveTableUniqueConstraints,
   type ResolvedColumnDefinition,
 } from "./definition";
-import type { SchemaDefinition } from "./index";
+import type { SchemaDefinition } from "./types";
 
 /**
  * Constraint validation owns schema invariants and relational-plan validation against a schema.

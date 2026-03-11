@@ -12,7 +12,7 @@ import {
   type ProviderCapabilityReport,
   type ProviderRuntimeBinding,
 } from "@tupl/provider-kit";
-import type { QueryRow } from "@tupl/schema";
+import type { QueryRow } from "@tupl/schema-model";
 import {
   buildLookupOnlyUnsupportedReport,
   filterLookupRows,

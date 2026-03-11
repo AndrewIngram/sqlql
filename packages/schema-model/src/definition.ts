@@ -1,4 +1,4 @@
-import type { PhysicalDialect, SchemaDefinition, SqlScalarType } from "./index";
+import type { PhysicalDialect, SchemaDefinition, SqlScalarType } from "./types";
 import type {
   ColumnDefinition,
   ColumnForeignKeyReference,
@@ -7,7 +7,7 @@ import type {
   TableColumnDefinition,
   TableDefinition,
   UniqueConstraint,
-} from "./index";
+} from "./types";
 
 /**
  * Schema definition helpers normalize and resolve table and column metadata without touching
