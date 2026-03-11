@@ -1,1 +1,1 @@
-export * from "../../../../provider-kit/src/shapes/index.ts";
+export * from "../../../../provider-kit/src/provider/shapes/index.ts";

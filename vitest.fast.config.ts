@@ -20,7 +20,7 @@ const workspaceAliases = [
   },
   {
     find: /^@tupl\/provider-kit\/shapes$/,
-    replacement: resolve(rootDir, "packages/provider-kit/src/shapes/index.ts"),
+    replacement: resolve(rootDir, "packages/provider-kit/src/provider/shapes/index.ts"),
   },
   {
     find: /^@tupl\/provider-kit$/,
@@ -36,7 +36,7 @@ const workspaceAliases = [
   },
   {
     find: /^@tupl\/runtime\/executor$/,
-    replacement: resolve(rootDir, "packages/runtime/src/executor.ts"),
+    replacement: resolve(rootDir, "packages/runtime/src/runtime/executor.ts"),
   },
   {
     find: /^@tupl\/runtime$/,

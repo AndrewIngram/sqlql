@@ -23,3 +23,5 @@ Guidelines:
 - Do not import upward within the six-package graph.
 - Provider implementations should prefer `@tupl/provider-kit`, `@tupl/foundation`, and `@tupl/schema`.
 - Application docs and examples should prefer `@tupl/schema` and first-party provider packages.
+- Public subpaths should resolve directly to real modules, not to one-hop wrapper files.
+- Package roots may aggregate real concepts; internal alias layers should be deleted instead of documented.

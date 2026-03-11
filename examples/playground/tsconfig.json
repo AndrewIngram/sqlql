@@ -12,11 +12,11 @@
       "@tupl/provider-kysely": ["../../packages/provider-kysely/src/index.ts"],
       "@tupl/foundation": ["../../packages/foundation/src/index.ts"],
       "@tupl/provider-kit": ["../../packages/provider-kit/src/index.ts"],
-      "@tupl/provider-kit/shapes": ["../../packages/provider-kit/src/shapes/index.ts"],
+      "@tupl/provider-kit/shapes": ["../../packages/provider-kit/src/provider/shapes/index.ts"],
       "@tupl/schema-model": ["../../packages/schema-model/src/index.ts"],
       "@tupl/planner": ["../../packages/planner/src/index.ts"],
       "@tupl/runtime": ["../../packages/runtime/src/index.ts"],
-      "@tupl/runtime/executor": ["../../packages/runtime/src/executor.ts"],
+      "@tupl/runtime/executor": ["../../packages/runtime/src/runtime/executor.ts"],
       "@tupl/example-shared": ["../_shared/src/index.ts"],
       "@/*": ["./src/*"]
     }

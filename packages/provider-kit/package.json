@@ -16,7 +16,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./shapes": "./src/shapes/index.ts"
+    "./shapes": "./src/provider/shapes/index.ts"
   },
   "publishConfig": {
     "access": "public"

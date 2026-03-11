@@ -3,13 +3,8 @@ import * as drizzlePgCoreModule from "drizzle-orm/pg-core";
 import * as drizzlePgliteModule from "drizzle-orm/pglite";
 import * as pgliteModule from "@electric-sql/pglite";
 import * as betterResultModule from "better-result";
-import type {
-  FragmentProviderAdapter,
-  ProviderAdapter,
-  ProviderFragment,
-} from "@tupl/provider-kit";
-import type { RelNode } from "@tupl/foundation";
-import { lowerSqlToRel, planPhysicalQuery, type PhysicalPlan } from "@tupl/planner";
+import type { FragmentProviderAdapter, ProviderAdapter } from "@tupl/provider-kit";
+import { lowerSqlToRel, planPhysicalQuery } from "@tupl/planner";
 import type {
   ExecutableSchema,
   QueryExecutionPlan,
@@ -57,19 +52,6 @@ export interface SandboxCompiledInput {
   modules?: Record<string, string>;
 }
 
-export interface TranslationFragment {
-  stepId: string;
-  provider: string;
-  fragment: ProviderFragment;
-}
-
-export interface PlaygroundTranslation {
-  userSql: string;
-  facadeRel: RelNode;
-  physicalPlan: PhysicalPlan;
-  providerFragments: TranslationFragment[];
-}
-
 export interface SandboxSessionSnapshot {
   sessionId: string;
   plan: QueryExecutionPlan;
@@ -83,7 +65,6 @@ export interface SandboxCreateSessionSuccess {
   ok: true;
   sessionId: string;
   plan: QueryExecutionPlan;
-  translation: PlaygroundTranslation;
 }
 
 export interface SandboxCreateSessionFailure {
@@ -155,6 +136,16 @@ function asErrorMessage(error: unknown): string {
     return error;
   }
   return "Sandbox execution failed.";
+}
+
+async function runSandboxPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    const message = `[SANDBOX_${phase}] ${asErrorMessage(error)}`;
+    console.error(message, error);
+    throw new Error(message);
+  }
 }
 
 function extractSchemaExport(
@@ -356,33 +347,6 @@ function normalizeSchemaError(message: string): SchemaParseResult {
   };
 }
 
-function buildTranslation(
-  userSql: string,
-  facadeRel: RelNode,
-  physicalPlan: PhysicalPlan,
-): PlaygroundTranslation {
-  const providerFragments: TranslationFragment[] = [];
-
-  for (const step of physicalPlan.steps) {
-    if (step.kind !== "remote_fragment" || !step.fragment) {
-      continue;
-    }
-
-    providerFragments.push({
-      stepId: step.id,
-      provider: step.provider,
-      fragment: step.fragment,
-    });
-  }
-
-  return {
-    userSql,
-    facadeRel,
-    physicalPlan,
-    providerFragments,
-  };
-}
-
 export async function validateSchemaInSandbox(
   schemaCode: string,
   options: PlaygroundSchemaProgramOptions = {},
@@ -439,11 +403,11 @@ export async function createSandboxSession(
 ): Promise<SandboxCreateSessionResult> {
   clearExecutedProviderOperations();
   if (options.reseed ?? true) {
-    await reseedDownstreamDatabase(compiled.downstreamRows);
+    await runSandboxPhase("RESEED", () => reseedDownstreamDatabase(compiled.downstreamRows));
   }
   clearExecutedProviderOperations();
 
-  const runtime = await getOrCreateProviderRuntime(compiled);
+  const runtime = await runSandboxPhase("RUNTIME_INIT", () => getOrCreateProviderRuntime(compiled));
   const runtimeContext = toRuntimeContext(context, runtime);
   const { tuplModule, executableSchema, dbProvider, redisProvider } = runtime;
 
@@ -451,23 +415,29 @@ export async function createSandboxSession(
     [dbProvider.name]: dbProvider,
     [redisProvider.name]: redisProvider,
   };
-  const lowered = tuplModule.lowerSqlToRel(compiled.sql, executableSchema.schema);
-  const physicalPlan = await tuplModule.planPhysicalQuery(
-    lowered.rel,
-    executableSchema.schema,
-    providers,
-    runtimeContext,
-    compiled.sql,
+  const lowered = await runSandboxPhase("LOWER_SQL", async () =>
+    tuplModule.lowerSqlToRel(compiled.sql, executableSchema.schema),
+  );
+  await runSandboxPhase("PLAN_QUERY", () =>
+    tuplModule.planPhysicalQuery(
+      lowered.rel,
+      executableSchema.schema,
+      providers,
+      runtimeContext,
+      compiled.sql,
+    ),
   );
 
-  const sessionResult = executableSchema.createSessionResult({
-    context: runtimeContext,
-    sql: compiled.sql,
-    options: {
-      maxConcurrency: 4,
-      captureRows: "full",
-    },
-  });
+  const sessionResult = await runSandboxPhase("CREATE_SESSION", async () =>
+    executableSchema.createSessionResult({
+      context: runtimeContext,
+      sql: compiled.sql,
+      options: {
+        maxConcurrency: 4,
+        captureRows: "full",
+      },
+    }),
+  );
   if (betterResultModule.Result.isError(sessionResult)) {
     return {
       ok: false,
@@ -489,7 +459,6 @@ export async function createSandboxSession(
     ok: true,
     sessionId,
     plan: session.getPlan(),
-    translation: buildTranslation(compiled.sql, lowered.rel, physicalPlan),
   };
 }
 

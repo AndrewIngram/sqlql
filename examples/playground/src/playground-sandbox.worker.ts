@@ -35,6 +35,79 @@ type SandboxRpcResponse =
 
 declare const self: DedicatedWorkerGlobalScope;
 
+function formatWorkerError(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string" &&
+    (error as { message: string }).message.length > 0
+  ) {
+    return (error as { message: string }).message;
+  }
+
+  if (typeof error === "string" && error.length > 0) {
+    return error;
+  }
+
+  return "Sandbox worker request failed.";
+}
+
+function createJsonSanitizer() {
+  const seen = new WeakSet<object>();
+
+  return (_key: string, value: unknown): unknown => {
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+
+    if (typeof value === "function") {
+      return `[Function ${value.name || "anonymous"}]`;
+    }
+
+    if (typeof value === "symbol") {
+      return String(value);
+    }
+
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: value.message,
+        ...(value.stack ? { stack: value.stack } : {}),
+      };
+    }
+
+    if (value instanceof Map) {
+      return Object.fromEntries(value.entries());
+    }
+
+    if (value instanceof Set) {
+      return [...value];
+    }
+
+    if (value && typeof value === "object") {
+      if (seen.has(value)) {
+        return "[Circular]";
+      }
+      seen.add(value);
+    }
+
+    return value;
+  };
+}
+
+function toCloneablePayload<T>(value: T): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value, createJsonSanitizer())) as T;
+  }
+}
+
 async function dispatch(request: SandboxRpcRequest): Promise<SandboxRpcPayload> {
   switch (request.kind) {
     case "validate_schema":
@@ -68,7 +141,7 @@ self.onmessage = (event: MessageEvent<SandboxRpcRequest>) => {
       const response: SandboxRpcResponse = {
         id: event.data.id,
         ok: true,
-        payload,
+        payload: toCloneablePayload(payload),
       };
       self.postMessage(response);
     })
@@ -76,7 +149,7 @@ self.onmessage = (event: MessageEvent<SandboxRpcRequest>) => {
       const response: SandboxRpcResponse = {
         id: event.data.id,
         ok: false,
-        error: error instanceof Error ? error.message : "Sandbox worker request failed.",
+        error: formatWorkerError(error),
       };
       self.postMessage(response);
     });

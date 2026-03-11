@@ -8,7 +8,7 @@ import {
   TuplTimeoutError,
   type TuplError,
   type TuplResult,
-} from "./errors";
+} from "@tupl/foundation";
 import {
   normalizeCapability,
   supportsFragmentExecution,
@@ -41,7 +41,7 @@ import {
 import type { QueryRow, SchemaBuilder, SchemaDefinition } from "@tupl/schema-model";
 
 export type { QueryFallbackPolicy, TuplDiagnostic } from "@tupl/provider-kit";
-export { TuplDiagnosticError } from "./errors";
+export { TuplDiagnosticError } from "@tupl/foundation";
 
 export interface QueryGuardrails {
   maxPlannerNodes: number;

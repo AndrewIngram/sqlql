@@ -250,6 +250,12 @@ export const playgroundIoredisRuntime = getPlaygroundIoredisRuntime();
 `.trim(),
 };
 
+const PUBLIC_SUBPATH_SOURCE_FILES: Record<string, string> = {
+  [`${NODE_MODULES_ROOT_PATH}/@tupl/provider-kit/shapes/index.ts`]:
+    'export * from "../provider/shapes";',
+  [`${NODE_MODULES_ROOT_PATH}/@tupl/runtime/executor.ts`]: 'export * from "./runtime/executor";',
+};
+
 const PGLITE_ROOT_DECLARATION_FILES: Record<string, string> = {
   [`${NODE_MODULES_ROOT_PATH}/@electric-sql/pglite/index.d.ts`]: 'export * from "./dist/index";',
 };
@@ -263,6 +269,7 @@ const STATIC_SOURCE_FILES = {
   ...SCHEMA_SOURCE_FILES,
   ...DRIZZLE_SOURCE_FILES,
   ...IOREDIS_SOURCE_FILES,
+  ...PUBLIC_SUBPATH_SOURCE_FILES,
   ...HOST_PACKAGE_SOURCE_FILES,
 };
 

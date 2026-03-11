@@ -33,9 +33,44 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+class SandboxWorkerTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxWorkerTransportError";
+  }
+}
+
 let sandboxWorker: Worker | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingRequest>();
+const SANDBOX_WORKER_ENABLED = true;
+
+function resetSandboxWorker(): void {
+  sandboxWorker?.terminate();
+  sandboxWorker = null;
+}
+
+function rejectPendingRequests(error: Error): void {
+  for (const request of pendingRequests.values()) {
+    request.reject(error);
+  }
+  pendingRequests.clear();
+}
+
+function formatSandboxWorkerError(event: ErrorEvent): string {
+  if (event.error instanceof Error && event.error.message.length > 0) {
+    return event.error.message;
+  }
+
+  const location =
+    typeof event.filename === "string" && event.filename.length > 0
+      ? `${event.filename}${event.lineno ? `:${event.lineno}` : ""}${
+          event.colno ? `:${event.colno}` : ""
+        }`
+      : null;
+  const baseMessage = event.message || "Sandbox worker crashed.";
+  return location ? `${baseMessage} (${location})` : baseMessage;
+}
 
 function getSandboxWorker(): Worker {
   sandboxWorker ??= new Worker(new URL("./playground-sandbox.worker.ts", import.meta.url), {
@@ -54,21 +89,58 @@ function getSandboxWorker(): Worker {
       return;
     }
 
+    console.error("[playground-sandbox] worker request failed", event.data.error);
     request.reject(new Error(event.data.error));
   };
 
   sandboxWorker.onerror = (event) => {
-    const error =
-      event.error instanceof Error
-        ? event.error
-        : new Error(event.message || "Sandbox worker crashed.");
-    for (const request of pendingRequests.values()) {
-      request.reject(error);
-    }
-    pendingRequests.clear();
+    rejectPendingRequests(new SandboxWorkerTransportError(formatSandboxWorkerError(event)));
+    resetSandboxWorker();
+  };
+
+  sandboxWorker.onmessageerror = () => {
+    rejectPendingRequests(
+      new SandboxWorkerTransportError(
+        "Sandbox worker returned a response that could not be transferred back to the app.",
+      ),
+    );
+    resetSandboxWorker();
   };
 
   return sandboxWorker;
+}
+
+async function requestSandboxViaWorker<K extends keyof SandboxRpcRequestMap>(
+  kind: K,
+  payload: SandboxRpcRequestMap[K],
+): Promise<SandboxRpcResponseMap[K]> {
+  const worker = getSandboxWorker();
+  const id = nextRequestId;
+  nextRequestId += 1;
+
+  const request = {
+    id,
+    kind,
+    payload,
+  } as SandboxRpcRequest;
+
+  return new Promise<SandboxRpcResponseMap[K]>((resolve, reject) => {
+    pendingRequests.set(id, {
+      resolve,
+      reject,
+    });
+
+    try {
+      worker.postMessage(request);
+    } catch (error) {
+      pendingRequests.delete(id);
+      reject(
+        new SandboxWorkerTransportError(
+          error instanceof Error ? error.message : "Sandbox worker request could not be sent.",
+        ),
+      );
+    }
+  });
 }
 
 async function requestSandboxInProcess<K extends keyof SandboxRpcRequestMap>(
@@ -117,25 +189,16 @@ export function requestSandboxWorker<K extends keyof SandboxRpcRequestMap>(
   kind: K,
   payload: SandboxRpcRequestMap[K],
 ): Promise<SandboxRpcResponseMap[K]> {
-  if (typeof Worker === "undefined") {
+  if (!SANDBOX_WORKER_ENABLED || typeof Worker === "undefined") {
     return requestSandboxInProcess(kind, payload);
   }
 
-  const worker = getSandboxWorker();
-  const id = nextRequestId;
-  nextRequestId += 1;
+  return requestSandboxViaWorker(kind, payload).catch(async (error: unknown) => {
+    if (!(error instanceof SandboxWorkerTransportError)) {
+      throw error;
+    }
 
-  const request = {
-    id,
-    kind,
-    payload,
-  } as SandboxRpcRequest;
-
-  return new Promise<SandboxRpcResponseMap[K]>((resolve, reject) => {
-    pendingRequests.set(id, {
-      resolve,
-      reject,
-    });
-    worker.postMessage(request);
+    resetSandboxWorker();
+    return requestSandboxInProcess(kind, payload);
   });
 }

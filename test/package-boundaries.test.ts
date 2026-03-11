@@ -40,6 +40,28 @@ const DISALLOWED_PUBLIC_REFS = [
   "packages/schema/README.md",
 ] as const;
 
+const DIRECT_SUBPATH_EXPORTS = [
+  {
+    name: "@tupl/provider-kit/shapes",
+    subpath: "./shapes",
+    target: "packages/provider-kit/src/provider/shapes/index.ts",
+    packageJson: "packages/provider-kit/package.json",
+  },
+  {
+    name: "@tupl/runtime/executor",
+    subpath: "./executor",
+    target: "packages/runtime/src/runtime/executor.ts",
+    packageJson: "packages/runtime/package.json",
+  },
+] as const;
+
+const DISALLOWED_WRAPPER_TARGETS = [
+  "packages/provider-kit/src/shapes/index.ts",
+  "packages/runtime/src/executor.ts",
+  "packages/runtime/src/runtime/errors.ts",
+  "packages/schema-model/src/schema/index.ts",
+] as const;
+
 function walkFiles(root: string): string[] {
   const entries = readdirSync(root);
   const out: string[] = [];
@@ -74,6 +96,25 @@ function rootPackageOf(specifier: string): string {
   return `${scope}/${name}`;
 }
 
+function isWrapperOnlyFile(contents: string): boolean {
+  const body = contents
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "")
+    .trim();
+
+  if (body.length === 0) {
+    return false;
+  }
+
+  const lines = body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return (
+    lines.length === 1 && /^export\s+(\*|\{[^}]+\})\s+from\s+["'][^"']+["'];?$/.test(lines[0] ?? "")
+  );
+}
+
 describe("package boundaries", () => {
   it("keeps the semantic package graph acyclic and downward-only", () => {
     for (const [dir, allowedImports] of Object.entries(LAYER_RULES)) {
@@ -106,6 +147,72 @@ describe("package boundaries", () => {
         const contents = readFileSync(file, "utf8");
         if (contents.includes("@tupl/core") || contents.includes("@tupl-internal/")) {
           offenders.push(relative(REPO_ROOT, file));
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps canonical public subpaths pointing at real modules", () => {
+    for (const entry of DIRECT_SUBPATH_EXPORTS) {
+      const pkg = JSON.parse(readFileSync(join(REPO_ROOT, entry.packageJson), "utf8")) as {
+        exports: Record<string, string>;
+      };
+      const packageDir = join(REPO_ROOT, entry.packageJson, "..");
+      const expectedTarget = `./${relative(packageDir, join(REPO_ROOT, entry.target)).replaceAll("\\", "/")}`;
+      expect(pkg.exports[entry.subpath], entry.name).toBe(expectedTarget);
+    }
+  });
+
+  it("avoids wrapper-only files outside the temporary core package", () => {
+    const offenders: string[] = [];
+
+    for (const pkgDir of readdirSync(join(REPO_ROOT, "packages"))) {
+      if (pkgDir === "core") {
+        continue;
+      }
+
+      const srcDir = join(REPO_ROOT, "packages", pkgDir, "src");
+      if (!statSync(srcDir).isDirectory()) {
+        continue;
+      }
+
+      for (const file of walkFiles(srcDir)) {
+        if (!file.endsWith(".ts") || file.endsWith(".d.ts")) {
+          continue;
+        }
+
+        const relFile = relative(REPO_ROOT, file);
+        if (relFile.endsWith("/index.ts") && relFile === `packages/${pkgDir}/src/index.ts`) {
+          continue;
+        }
+
+        if (isWrapperOnlyFile(readFileSync(file, "utf8"))) {
+          offenders.push(relFile);
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps workspace tooling off deleted wrapper paths", () => {
+    const offenders: string[] = [];
+    const files = [
+      "tsconfig.json",
+      "vitest.config.ts",
+      "vitest.fast.config.ts",
+      "vitest.playground-slow.config.ts",
+      "examples/playground/tsconfig.json",
+      "examples/playground/vite.config.ts",
+    ];
+
+    for (const file of files) {
+      const contents = readFileSync(join(REPO_ROOT, file), "utf8");
+      for (const target of DISALLOWED_WRAPPER_TARGETS) {
+        if (contents.includes(target)) {
+          offenders.push(`${file}: ${target}`);
         }
       }
     }

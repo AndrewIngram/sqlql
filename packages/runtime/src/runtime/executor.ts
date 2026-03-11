@@ -1,7 +1,6 @@
 import { Result, type Result as BetterResult } from "better-result";
 
 import { type ConstraintValidationOptions, validateTableConstraintRows } from "./constraints";
-import { TuplExecutionError, TuplGuardrailError, TuplPlanningError } from "./errors";
 import {
   getDataEntityAdapter,
   normalizeCapability,
@@ -15,6 +14,9 @@ import {
 import {
   isRelProjectColumnMapping,
   stringifyUnknownValue,
+  TuplExecutionError,
+  TuplGuardrailError,
+  TuplPlanningError,
   type RelExpr,
   type RelJoinNode,
   type RelNode,
