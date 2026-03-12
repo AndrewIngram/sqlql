@@ -5,7 +5,12 @@ import * as pgliteModule from "@electric-sql/pglite";
 import * as betterResultModule from "better-result";
 import type { FragmentProviderAdapter, ProviderAdapter } from "@tupl/provider-kit";
 import { lowerSqlToRel, planPhysicalQuery } from "@tupl/planner";
-import type { QueryExecutionPlan, QuerySession, QueryStepEvent } from "@tupl/runtime";
+import {
+  createExecutableSchemaSessionResult,
+  type QueryExecutionPlan,
+  type QuerySession,
+  type QueryStepEvent,
+} from "@tupl/runtime/session";
 import type { ExecutableSchema, QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { createVirtualModuleRuntime } from "./playground-module-runtime";
@@ -169,8 +174,7 @@ function extractSchemaExport(
     !executableSchema ||
     typeof executableSchema !== "object" ||
     !("schema" in executableSchema) ||
-    typeof executableSchema.query !== "function" ||
-    typeof executableSchema.createSession !== "function"
+    typeof executableSchema.query !== "function"
   ) {
     throw new Error(
       "[SCHEMA_EXPORT_INVALID] Schema module must export `executableSchema` created via createExecutableSchema(...).",
@@ -418,7 +422,7 @@ export async function createSandboxSession(
   const { executableSchema } = runtime;
 
   const sessionResult = await runSandboxPhase("CREATE_SESSION", async () =>
-    executableSchema.createSessionResult({
+    createExecutableSchemaSessionResult(executableSchema, {
       context: runtimeContext,
       sql: compiled.sql,
       options: {

@@ -2,7 +2,7 @@ import { supportsLookupMany } from "@tupl/provider-kit";
 import type { RelNode } from "@tupl/foundation";
 import { getNormalizedTableBinding, resolveTableProvider } from "@tupl/schema-model";
 
-import type { QuerySessionInput } from "../contracts";
+import type { QuerySessionInput } from "../session/contracts";
 import { isPromiseLike } from "../policy";
 
 /**

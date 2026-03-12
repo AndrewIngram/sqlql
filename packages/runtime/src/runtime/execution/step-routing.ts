@@ -1,4 +1,4 @@
-import type { QueryStepKind, QueryStepRoute } from "../contracts";
+import type { QueryStepKind, QueryStepRoute } from "../session/contracts";
 
 /**
  * Step routing owns the public-facing categorization of runtime plan steps.

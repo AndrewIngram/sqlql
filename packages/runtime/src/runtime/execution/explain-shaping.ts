@@ -1,11 +1,11 @@
 import type { RelExpr, RelNode } from "@tupl/foundation";
 
+import type { TuplDiagnostic } from "../contracts";
 import type {
   QueryExecutionPlan,
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
-  TuplDiagnostic,
-} from "../contracts";
+} from "../session/contracts";
 
 export interface PlanBuildState {
   stepCounter: number;

@@ -16,7 +16,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./executor": "./src/runtime/executor.ts"
+    "./executor": "./src/runtime/executor.ts",
+    "./session": "./src/runtime/session/index.ts"
   },
   "publishConfig": {
     "access": "public"

@@ -67,6 +67,12 @@ const DIRECT_SUBPATH_EXPORTS = [
     target: "packages/runtime/src/runtime/executor.ts",
     packageJson: "packages/runtime/package.json",
   },
+  {
+    name: "@tupl/runtime/session",
+    subpath: "./session",
+    target: "packages/runtime/src/runtime/session/index.ts",
+    packageJson: "packages/runtime/package.json",
+  },
 ] as const;
 
 const DISALLOWED_WRAPPER_TARGETS = [
@@ -347,6 +353,33 @@ describe("package boundaries", () => {
       const contents = readFileSync(file, "utf8");
       if (contents.includes(`from "@tupl/schema"`) || contents.includes(`from '@tupl/schema'`)) {
         offenders.push(relFile);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps sql-node detection owned by foundation", () => {
+    const offenders: string[] = [];
+
+    for (const root of ["packages", "examples", "test"] as const) {
+      const rootDir = join(REPO_ROOT, root);
+      for (const file of walkFiles(rootDir)) {
+        if (!file.endsWith(".ts") && !file.endsWith(".tsx")) {
+          continue;
+        }
+        const relFile = relative(REPO_ROOT, file);
+        if (
+          relFile.startsWith("packages/foundation/") ||
+          relFile === "test/package-boundaries.test.ts"
+        ) {
+          continue;
+        }
+
+        const contents = readFileSync(file, "utf8");
+        if (/export function hasSqlNode|function hasSqlNode/.test(contents)) {
+          offenders.push(relFile);
+        }
       }
     }
 

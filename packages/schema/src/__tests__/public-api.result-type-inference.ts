@@ -2,7 +2,8 @@ import type { Result as BetterResult } from "better-result";
 
 import { createExecutableSchemaResult, type ExecutableSchema, type TuplResult } from "@tupl/schema";
 import { AdapterResult, type ProviderOperationResult } from "@tupl/provider-kit";
-import type { QuerySession, TuplProviderBindingError } from "@tupl/runtime";
+import type { TuplProviderBindingError } from "@tupl/runtime";
+import { createExecutableSchemaSessionResult, type QuerySession } from "@tupl/runtime/session";
 import { createSchemaBuilder, type QueryRow, type SchemaDefinition } from "@tupl/schema";
 import { resolveTableProviderResult } from "@tupl/schema-model";
 
@@ -21,13 +22,22 @@ type _createExecutableSchemaResultStaysExplicit = Expect<
 >;
 
 declare const executableSchema: ExecutableSchema<Record<string, never>, SchemaDefinition>;
+declare const sessionInput: {
+  context: Record<string, never>;
+  sql: string;
+};
 
 type _queryResultStaysExplicit = Expect<
   Equal<ReturnType<typeof executableSchema.queryResult>, Promise<TuplResult<QueryRow[]>>>
 >;
 
+const createExecutableSchemaSessionResultValue = createExecutableSchemaSessionResult(
+  executableSchema,
+  sessionInput,
+);
+
 type _createSessionResultStaysExplicit = Expect<
-  Equal<ReturnType<typeof executableSchema.createSessionResult>, TuplResult<QuerySession>>
+  Equal<typeof createExecutableSchemaSessionResultValue, TuplResult<QuerySession>>
 >;
 
 declare const resolveTableProviderResultValue: ReturnType<typeof resolveTableProviderResult>;

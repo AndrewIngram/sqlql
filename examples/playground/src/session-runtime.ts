@@ -1,5 +1,5 @@
 import { defaultSqlAstParser, lowerSqlToRel } from "@tupl/planner";
-import type { QueryExecutionPlan, QuerySession, QueryStepEvent } from "@tupl/runtime";
+import type { QueryExecutionPlan, QuerySession, QueryStepEvent } from "@tupl/runtime/session";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema";
 import { resolveSchemaLinkedEnums, resolveTableColumnDefinition } from "@tupl/schema-model";
 

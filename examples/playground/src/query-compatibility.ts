@@ -1,4 +1,4 @@
-import { type RelNode } from "@tupl/foundation";
+import { relContainsSqlNode } from "@tupl/foundation";
 import { defaultSqlAstParser, lowerSqlToRel } from "@tupl/planner";
 import type { SchemaDefinition } from "@tupl/schema";
 
@@ -18,27 +18,6 @@ function normalizeSql(value: string): string {
 function asReason(error: unknown): string {
   const message = error instanceof Error ? error.message : "Unsupported query for this schema.";
   return message.replace(/\s+/gu, " ").trim();
-}
-
-function hasSqlNode(node: RelNode): boolean {
-  switch (node.kind) {
-    case "sql":
-      return true;
-    case "scan":
-      return false;
-    case "filter":
-    case "project":
-    case "aggregate":
-    case "window":
-    case "sort":
-    case "limit_offset":
-      return hasSqlNode(node.input);
-    case "join":
-    case "set_op":
-      return hasSqlNode(node.left) || hasSqlNode(node.right);
-    case "with":
-      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
-  }
 }
 
 function collectCteNames(ast: unknown, names: Set<string>): void {
@@ -143,7 +122,7 @@ export function checkQueryCompatibility(schema: SchemaDefinition, sql: string): 
     }
 
     const lowered = lowerSqlToRel(normalizedSql, schema);
-    if (hasSqlNode(lowered.rel)) {
+    if (relContainsSqlNode(lowered.rel)) {
       return {
         compatible: false,
         reason:

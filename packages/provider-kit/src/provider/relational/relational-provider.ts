@@ -10,6 +10,10 @@ import {
   resolveRelationalCapabilityContext,
 } from "./relational-capabilities";
 import { buildRelationalEntityHandles } from "./relational-entities";
+import {
+  DEFAULT_RELATIONAL_CAPABILITY_ATOMS,
+  type RelationalProviderCompileRelArgs,
+} from "./relational-adapter-types";
 import type {
   RelationalProviderAdapter,
   RelationalProviderAdapterOptions,
@@ -25,6 +29,9 @@ const DEFAULT_RELATIONAL_ROUTE_FAMILIES = [
   "rel-core",
   "rel-advanced",
 ] as const;
+const LOOKUP_CAPABILITY_ATOM = "lookup.bulk" as const;
+
+export { DEFAULT_RELATIONAL_CAPABILITY_ATOMS } from "./relational-adapter-types";
 
 export type {
   RelationalProviderAdapterOptions,
@@ -73,7 +80,12 @@ export function createRelationalProviderAdapter<
           ? [...DEFAULT_RELATIONAL_ROUTE_FAMILIES, "lookup"]
           : DEFAULT_RELATIONAL_ROUTE_FAMILIES)),
     ],
-    capabilityAtoms: [...options.declaredAtoms],
+    capabilityAtoms: [
+      ...new Set([
+        ...(options.declaredAtoms ?? DEFAULT_RELATIONAL_CAPABILITY_ATOMS),
+        ...(options.lookupMany ? [LOOKUP_CAPABILITY_ATOM] : []),
+      ]),
+    ],
     ...(options.fallbackPolicy ? { fallbackPolicy: options.fallbackPolicy } : {}),
     canExecute(fragment: ProviderFragment, context: TContext) {
       return canExecuteRelationalFragment(options, fragment, context);
@@ -121,13 +133,26 @@ export function createRelationalProviderAdapter<
             );
           }
 
-          return options.compileRelFragment({
+          const compileArgs = {
             context,
             entities: options.entities,
             fragment,
             name: options.name,
             strategy: capabilityContext.strategy,
-          });
+          } satisfies RelationalProviderCompileRelArgs<TContext, TEntities, TStrategy>;
+
+          if (options.compileRelFragment) {
+            return options.compileRelFragment(compileArgs);
+          }
+
+          return AdapterResult.ok({
+            provider: options.name,
+            kind: "rel",
+            payload: options.buildRelPlanPayload?.(compileArgs) ?? {
+              strategy: capabilityContext.strategy,
+              rel: fragment.rel,
+            },
+          } satisfies ProviderCompiledPlan);
         }
         default:
           return AdapterResult.err(

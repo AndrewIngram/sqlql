@@ -8,15 +8,14 @@ import {
 } from "@tupl/provider-kit";
 import { type QueryRow } from "@tupl/schema-model";
 
+import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
 import type {
   QueryExecutionPlan,
-  QueryGuardrails,
   QuerySession,
   QuerySessionInput,
   QueryStepEvent,
   QueryStepState,
-  TuplDiagnostic,
-} from "../contracts";
+} from "../session/contracts";
 import { unwrapQueryResult } from "../diagnostics";
 import {
   buildProviderFragmentDoneEvent,

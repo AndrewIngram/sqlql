@@ -1,4 +1,4 @@
-import type { QueryStepState } from "../contracts";
+import type { QueryStepState } from "../session/contracts";
 import { setFailedStepState } from "../session/session-state";
 
 /**

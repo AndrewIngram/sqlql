@@ -13,13 +13,8 @@ import {
   type QueryRow,
 } from "@tupl/schema-model";
 
-import type {
-  QueryGuardrails,
-  QuerySessionInput,
-  QueryStepEvent,
-  QueryStepState,
-  TuplDiagnostic,
-} from "../contracts";
+import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
+import type { QuerySessionInput, QueryStepEvent, QueryStepState } from "../session/contracts";
 import { tryQueryStep, tryQueryStepAsync } from "../diagnostics";
 import { failProviderFragmentState } from "./provider-fragment-errors";
 import { withTimeoutResult } from "./provider-execution";

@@ -2,14 +2,8 @@ import { Result } from "better-result";
 
 import type { RelNode } from "@tupl/foundation";
 
-import type {
-  QueryGuardrails,
-  QuerySession,
-  QuerySessionInput,
-  QueryStepEvent,
-  QueryStepState,
-  TuplDiagnostic,
-} from "../contracts";
+import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
+import type { QuerySession, QuerySessionInput, QueryStepEvent, QueryStepState } from "./contracts";
 import { tryQueryStep, unwrapQueryResult } from "../diagnostics";
 import { executeRelWithProvidersResult } from "../executor";
 import { buildRelExecutionPlan } from "../execution/execution-plan-builder";

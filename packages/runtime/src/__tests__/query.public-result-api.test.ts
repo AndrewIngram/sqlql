@@ -2,6 +2,7 @@ import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
 import { createExecutableSchemaResult } from "@tupl/runtime";
+import { createExecutableSchemaSessionResult } from "@tupl/runtime/session";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
 import {
   createDataEntityHandle,
@@ -186,7 +187,7 @@ describe("public result APIs", () => {
     });
   });
 
-  it("returns tagged setup errors from createSessionResult", () => {
+  it("returns tagged setup errors from createExecutableSchemaSessionResult", () => {
     const schema = buildEntitySchema({
       users: {
         provider: "warehouse",
@@ -200,7 +201,7 @@ describe("public result APIs", () => {
       warehouse: createRowsProvider(),
     });
 
-    const result = executableSchema.createSessionResult({
+    const result = createExecutableSchemaSessionResult(executableSchema, {
       context: {},
       sql: "INSERT INTO users VALUES ('u1')",
     });

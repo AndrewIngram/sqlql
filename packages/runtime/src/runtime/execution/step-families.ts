@@ -2,7 +2,7 @@ import { Result } from "better-result";
 
 import type { RelNode } from "@tupl/foundation";
 
-import type { QuerySessionInput } from "../contracts";
+import type { QuerySessionInput } from "../session/contracts";
 import type { PlanBuildState } from "./explain-shaping";
 import { nextPlanId } from "./explain-shaping";
 import { resolveSyncProviderCapabilityForRel } from "../provider/provider-execution";

@@ -1,4 +1,5 @@
-import type { QueryExecutionPlan, QuerySessionInput, TuplDiagnostic } from "../contracts";
+import type { TuplDiagnostic } from "../contracts";
+import type { QueryExecutionPlan, QuerySessionInput } from "../session/contracts";
 import type { RelNode } from "@tupl/foundation";
 import { buildExecutionGraph } from "./execution-graph";
 import { createPlanBuildState, finalizeExecutionPlan } from "./explain-shaping";

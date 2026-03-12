@@ -5,8 +5,6 @@ import {
   type LookupProviderAdapter,
 } from "@tupl/provider-kit";
 
-import { hasSqlNode } from "@tupl/provider-kit/shapes";
-
 import { executeCompiledPlan } from "./execution/plan-execution";
 import { executeLookupMany } from "./execution/lookup-execution";
 import {
@@ -48,51 +46,23 @@ export function createKyselyProvider<
   LookupProviderAdapter<TContext> & {
     entities: KyselyProviderEntities<TContext, TDatabase, TEntities>;
   } {
-  const declaredAtoms = [
-    "scan.project",
-    "scan.filter.basic",
-    "scan.filter.set_membership",
-    "scan.sort",
-    "scan.limit_offset",
-    "lookup.bulk",
-    "aggregate.group_by",
-    "join.inner",
-    "join.left",
-    "join.right_full",
-    "set_op.union_all",
-    "set_op.union_distinct",
-    "set_op.intersect",
-    "set_op.except",
-    "cte.non_recursive",
-    "window.rank_basic",
-  ] as const;
-
   const providerName = options.name ?? "kysely";
   const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
 
   return createRelationalProviderAdapter<TContext, TEntities, KyselyRelCompileStrategy>({
     name: providerName,
-    declaredAtoms,
     entities: entityOptions,
     unsupportedRelCompileMessage: "Unsupported relational fragment for Kysely provider.",
-    unsupportedRelReason({ fragment }) {
-      return hasSqlNode(fragment.rel)
-        ? "rel fragment must not contain sql nodes."
-        : "Rel fragment is not supported for single-query Kysely pushdown.";
-    },
+    unsupportedRelReasonMessage: "Rel fragment is not supported for single-query Kysely pushdown.",
     resolveRelCompileStrategy({ fragment }) {
       return resolveKyselyRelCompileStrategy(fragment.rel, entityConfigs);
     },
-    async compileRelFragment({ fragment, strategy }) {
-      return AdapterResult.ok({
-        provider: providerName,
-        kind: "rel",
-        payload: {
-          strategy,
-          rel: fragment.rel,
-        } satisfies KyselyRelCompiledPlan,
-      });
+    buildRelPlanPayload({ fragment, strategy }) {
+      return {
+        strategy,
+        rel: fragment.rel,
+      } satisfies KyselyRelCompiledPlan;
     },
     async executeCompiledPlan({ plan, context }) {
       const db = await resolveKyselyDb(options, context);

@@ -210,27 +210,6 @@ export function canCompileWithRel<TStrategy extends string>(
   return true;
 }
 
-export function hasSqlNode(node: RelNode): boolean {
-  switch (node.kind) {
-    case "sql":
-      return true;
-    case "scan":
-      return false;
-    case "filter":
-    case "project":
-    case "aggregate":
-    case "window":
-    case "sort":
-    case "limit_offset":
-      return hasSqlNode(node.input);
-    case "join":
-    case "set_op":
-      return hasSqlNode(node.left) || hasSqlNode(node.right);
-    case "with":
-      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
-  }
-}
-
 export function buildSingleQueryPlan<TBinding extends RelationalScanBindingBase>(
   rel: RelNode,
   createScanBinding: (scan: Extract<RelNode, { kind: "scan" }>) => TBinding,

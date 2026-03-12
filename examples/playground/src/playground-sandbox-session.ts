@@ -3,7 +3,7 @@ import type {
   QuerySession,
   QueryStepEvent,
   QueryStepState,
-} from "@tupl/runtime";
+} from "@tupl/runtime/session";
 import type { QueryRow } from "@tupl/schema";
 
 import { requestSandboxWorker } from "./playground-sandbox-client";

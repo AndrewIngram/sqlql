@@ -5,14 +5,13 @@ import type { ProviderFragment } from "@tupl/provider-kit";
 import { expandRelViewsResult, lowerSqlToRelResult } from "@tupl/planner";
 import { createProviderFragmentSession } from "./provider-fragment-session";
 
+import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
 import type {
   QueryExecutionPlan,
-  QueryGuardrails,
   QuerySession,
   QuerySessionInput,
   QueryStepState,
-  TuplDiagnostic,
-} from "../contracts";
+} from "../session/contracts";
 import {
   maybeRejectFallbackResult,
   resolveSyncProviderCapabilityForRel,

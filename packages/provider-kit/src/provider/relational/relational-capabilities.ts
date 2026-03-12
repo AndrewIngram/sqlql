@@ -1,3 +1,5 @@
+import { relContainsSqlNode } from "@tupl/foundation";
+
 import {
   collectCapabilityAtomsForFragment,
   inferRouteFamilyForFragment,
@@ -11,6 +13,7 @@ import type {
   RelationalProviderCapabilityContext,
   RelationalProviderEntityConfig,
 } from "./relational-adapter-types";
+import { DEFAULT_RELATIONAL_CAPABILITY_ATOMS } from "./relational-adapter-types";
 
 type RelationalOptions<
   TContext,
@@ -47,6 +50,14 @@ function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
   );
 }
 
+function getDeclaredAtoms<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TStrategy extends string,
+>(options: RelationalOptions<TContext, TEntities, TStrategy>) {
+  return options.declaredAtoms ?? DEFAULT_RELATIONAL_CAPABILITY_ATOMS;
+}
+
 export async function resolveRelationalCapabilityContext<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
@@ -57,7 +68,8 @@ export async function resolveRelationalCapabilityContext<
   context: TContext,
 ): Promise<RelationalProviderCapabilityContext<TContext, TEntities, TStrategy>> {
   const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
-  const missingAtoms = requiredAtoms.filter((atom) => !options.declaredAtoms.includes(atom));
+  const declaredAtoms = getDeclaredAtoms(options);
+  const missingAtoms = requiredAtoms.filter((atom) => !declaredAtoms.includes(atom));
   const routeFamily = inferRouteFamilyForFragment(fragment);
   const strategy = await options.resolveRelCompileStrategy({
     context,
@@ -87,7 +99,8 @@ function evaluateRelationalCapability<
   context: TContext,
 ): MaybePromise<boolean | ProviderCapabilityReport> {
   const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
-  const missingAtoms = requiredAtoms.filter((atom) => !options.declaredAtoms.includes(atom));
+  const declaredAtoms = getDeclaredAtoms(options);
+  const missingAtoms = requiredAtoms.filter((atom) => !declaredAtoms.includes(atom));
   const routeFamily = inferRouteFamilyForFragment(fragment);
   const strategy = options.resolveRelCompileStrategy({
     context,
@@ -135,7 +148,10 @@ function evaluateRelationalCapabilityWithContext<
       missingAtoms: capabilityContext.missingAtoms,
       reason:
         options.unsupportedRelReason?.(capabilityContext) ??
-        "Rel fragment is not supported for this provider.",
+        (relContainsSqlNode(capabilityContext.fragment.rel)
+          ? "rel fragment must not contain sql nodes."
+          : (options.unsupportedRelReasonMessage ??
+            "Rel fragment is not supported for this provider.")),
     };
   }
 

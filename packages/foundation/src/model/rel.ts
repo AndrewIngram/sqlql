@@ -256,6 +256,50 @@ export function createSqlRel(sql: string, tables: string[]): RelSqlNode {
   };
 }
 
+/**
+ * `relContainsSqlNode` detects whether a relational tree or any nested scalar subquery expression
+ * still depends on SQL-shaped execution semantics that only a provider can satisfy.
+ */
+export function relContainsSqlNode(node: RelNode): boolean {
+  const exprContainsSqlNode = (expr: RelExpr): boolean => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return false;
+      case "function":
+        return expr.args.some(exprContainsSqlNode);
+      case "subquery":
+        return relContainsSqlNode(expr.rel);
+    }
+  };
+
+  switch (node.kind) {
+    case "sql":
+      return true;
+    case "scan":
+      return false;
+    case "filter":
+      return relContainsSqlNode(node.input) || (node.expr ? exprContainsSqlNode(node.expr) : false);
+    case "project":
+      return (
+        relContainsSqlNode(node.input) ||
+        node.columns.some((column) => "expr" in column && exprContainsSqlNode(column.expr))
+      );
+    case "aggregate":
+    case "window":
+    case "sort":
+    case "limit_offset":
+      return relContainsSqlNode(node.input);
+    case "join":
+    case "set_op":
+      return relContainsSqlNode(node.left) || relContainsSqlNode(node.right);
+    case "with":
+      return (
+        node.ctes.some((cte) => relContainsSqlNode(cte.query)) || relContainsSqlNode(node.body)
+      );
+  }
+}
+
 /** `countRelNodes` measures the size of a relational tree for guardrails and diagnostics. */
 export function countRelNodes(node: RelNode): number {
   const countExpr = (expr: RelExpr): number => {
