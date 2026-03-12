@@ -53,6 +53,8 @@ export function createProviderFragmentSession<TContext>(
   let state: QueryStepState = createInitialProviderFragmentState(providerName, diagnostics);
 
   const runResult = async () => {
+    // Provider-fragment sessions intentionally collapse remote execution into one stable step:
+    // one compile/execute run updates one piece of session state and can be replayed idempotently.
     if (executed) {
       return Result.ok(result ?? []);
     }
@@ -86,6 +88,8 @@ export function createProviderFragmentSession<TContext>(
     getPlan: () => plan,
     next: async () => {
       await run();
+      // Sessions emit exactly one step event for the remote fragment, then switch to the terminal
+      // `{ done: true, result }` shape used by the general query-session interface.
       if (!eventDispatched) {
         eventDispatched = true;
         const event: QueryStepEvent = buildProviderFragmentDoneEvent({

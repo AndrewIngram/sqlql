@@ -82,6 +82,8 @@ export async function executeRelLocallyResult<TContext>(
   rel: RelNode,
   executionContext: RelExecutionContext<TContext>,
 ): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
+  // Scalar and EXISTS subqueries are prepared once up front so downstream node execution can treat
+  // them as memoized inputs instead of recursively re-running subtrees at each expression use site.
   const subqueryPrepResult = await prepareSubqueryResultsResult(rel, executionContext);
   if (Result.isError(subqueryPrepResult)) {
     return subqueryPrepResult;
@@ -111,6 +113,8 @@ export async function executeRelNodeResult<TContext>(
   node: RelNode,
   context: RelExecutionContext<TContext>,
 ): Promise<RelExecutionResult> {
+  // Each subtree gets a remote-execution chance first so provider pushdown can absorb work even
+  // after higher-level orchestration has decided the full query cannot stay remote end to end.
   const remoteRowsResult = await tryExecuteRemoteSubtreeResult(node, context);
   if (Result.isError(remoteRowsResult)) {
     return remoteRowsResult;

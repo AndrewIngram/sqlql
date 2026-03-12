@@ -1,30 +1,42 @@
 import type { DataEntityHandle } from "./data-entity";
 import type { AggregateFunction, ScanFilterClause, ScanOrderBy } from "./primitives";
 
+/**
+ * Relational contracts define the logical IR shared by planner, runtime, and provider normalization.
+ * They describe query shape and output semantics, not a backend-specific execution plan.
+ */
 export type RelConvention = `provider:${string}` | "local";
 
+/** Column refs identify one logical column, optionally qualified by table or alias. */
 export interface RelColumnRef {
   table?: string;
   alias?: string;
   column: string;
 }
 
+/** Literal expressions embed scalar constants directly into relational expressions. */
 export interface RelLiteralExpr {
   kind: "literal";
   value: string | number | boolean | null;
 }
 
+/** Column expressions read one logical column from the current relational input row. */
 export interface RelColumnExpr {
   kind: "column";
   ref: RelColumnRef;
 }
 
+/** Function expressions represent scalar computation over relational expressions. */
 export interface RelFunctionExpr {
   kind: "function";
   name: string;
   args: RelExpr[];
 }
 
+/**
+ * Subquery expressions reference a separately planned relational subtree.
+ * `outputColumn` is required only for scalar subqueries that project one value.
+ */
 export interface RelSubqueryExpr {
   kind: "subquery";
   id: string;
@@ -33,34 +45,44 @@ export interface RelSubqueryExpr {
   outputColumn?: string;
 }
 
+/** Relational expressions are the scalar expression vocabulary used inside relational nodes. */
 export type RelExpr = RelLiteralExpr | RelColumnExpr | RelFunctionExpr | RelSubqueryExpr;
 
+/** Project-column mappings forward one existing source column into a named output column. */
 export interface RelProjectColumnMapping {
   kind?: "column";
   source: RelColumnRef;
   output: string;
 }
 
+/** Project-expr mappings create one named output column from a computed expression. */
 export interface RelProjectExprMapping {
   kind: "expr";
   expr: RelExpr;
   output: string;
 }
 
+/** Project mappings are the full projection vocabulary for relational project nodes. */
 export type RelProjectMapping = RelProjectColumnMapping | RelProjectExprMapping;
 
+/** Output columns describe the logical row shape produced by a relational node. */
 export interface RelOutputColumn {
   name: string;
   type?: string;
   nullable?: boolean;
 }
 
+/**
+ * Every relational node carries a stable id, a convention, and its logical output shape.
+ * `output` describes post-node columns, not the provider's raw physical row representation.
+ */
 export interface RelNodeBase {
   id: string;
   convention: RelConvention;
   output: RelOutputColumn[];
 }
 
+/** Scan nodes read one table/entity and may carry pushdown-friendly filters, ordering, and pagination. */
 export interface RelScanNode extends RelNodeBase {
   kind: "scan";
   table: string;
@@ -73,6 +95,7 @@ export interface RelScanNode extends RelNodeBase {
   offset?: number;
 }
 
+/** Filter nodes preserve input shape while applying residual filters or computed expressions. */
 export interface RelFilterNode extends RelNodeBase {
   kind: "filter";
   input: RelNode;
@@ -80,18 +103,21 @@ export interface RelFilterNode extends RelNodeBase {
   expr?: RelExpr;
 }
 
+/** Project nodes reshape the row by forwarding or computing a new output column set. */
 export interface RelProjectNode extends RelNodeBase {
   kind: "project";
   input: RelNode;
   columns: RelProjectMapping[];
 }
 
+/** `isRelProjectColumnMapping` distinguishes forwarded columns from computed projection expressions. */
 export function isRelProjectColumnMapping(
   mapping: RelProjectMapping,
 ): mapping is RelProjectColumnMapping {
   return mapping.kind !== "expr";
 }
 
+/** Join nodes combine two relational inputs on one pair of join keys. */
 export interface RelJoinNode extends RelNodeBase {
   kind: "join";
   joinType: "inner" | "left" | "right" | "full" | "semi";
@@ -101,6 +127,7 @@ export interface RelJoinNode extends RelNodeBase {
   rightKey: RelColumnRef;
 }
 
+/** Rank window functions compute rank-style outputs over one partitioned and ordered input. */
 export interface RelRankWindowFunction {
   fn: "dense_rank" | "rank" | "row_number";
   as: string;
@@ -111,6 +138,7 @@ export interface RelRankWindowFunction {
   }>;
 }
 
+/** Aggregate window functions compute aggregate outputs over one partitioned and ordered input. */
 export interface RelAggregateWindowFunction {
   fn: "count" | "sum" | "avg" | "min" | "max";
   as: string;
@@ -123,14 +151,17 @@ export interface RelAggregateWindowFunction {
   }>;
 }
 
+/** Relational window functions are the supported local/provider-neutral window calculation forms. */
 export type RelWindowFunction = RelRankWindowFunction | RelAggregateWindowFunction;
 
+/** Window nodes append window-function outputs without changing the underlying input row count. */
 export interface RelWindowNode extends RelNodeBase {
   kind: "window";
   input: RelNode;
   functions: RelWindowFunction[];
 }
 
+/** Aggregate metrics define the named aggregate outputs produced by an aggregate node. */
 export interface RelAggregateMetric {
   fn: AggregateFunction;
   as: string;
@@ -138,6 +169,7 @@ export interface RelAggregateMetric {
   distinct?: boolean;
 }
 
+/** Aggregate nodes collapse input rows into grouped aggregate outputs. */
 export interface RelAggregateNode extends RelNodeBase {
   kind: "aggregate";
   input: RelNode;
@@ -145,6 +177,7 @@ export interface RelAggregateNode extends RelNodeBase {
   metrics: RelAggregateMetric[];
 }
 
+/** Sort nodes impose a logical output ordering over an input subtree. */
 export interface RelSortNode extends RelNodeBase {
   kind: "sort";
   input: RelNode;
@@ -154,6 +187,7 @@ export interface RelSortNode extends RelNodeBase {
   }>;
 }
 
+/** Limit/offset nodes apply pagination to an already ordered or otherwise stable input. */
 export interface RelLimitOffsetNode extends RelNodeBase {
   kind: "limit_offset";
   input: RelNode;
@@ -161,6 +195,7 @@ export interface RelLimitOffsetNode extends RelNodeBase {
   offset?: number;
 }
 
+/** Set-op nodes combine two aligned inputs using SQL set semantics. */
 export interface RelSetOpNode extends RelNodeBase {
   kind: "set_op";
   op: "union" | "union_all" | "intersect" | "except";
@@ -168,6 +203,7 @@ export interface RelSetOpNode extends RelNodeBase {
   right: RelNode;
 }
 
+/** With nodes bind named CTE subqueries for use by the body subtree. */
 export interface RelWithNode extends RelNodeBase {
   kind: "with";
   ctes: Array<{
@@ -177,12 +213,17 @@ export interface RelWithNode extends RelNodeBase {
   body: RelNode;
 }
 
+/**
+ * SQL nodes are escape hatches for query shapes not lowered into canonical relational operators.
+ * They require provider pushdown and are not executable by the local relational runtime.
+ */
 export interface RelSqlNode extends RelNodeBase {
   kind: "sql";
   sql: string;
   tables: string[];
 }
 
+/** Relational nodes are the full logical IR consumed by runtime and provider normalization. */
 export type RelNode =
   | RelScanNode
   | RelFilterNode
@@ -203,6 +244,7 @@ function nextRelId(prefix: string): string {
   return `${prefix}_${relIdCounter}`;
 }
 
+/** `createSqlRel` wraps an opaque SQL fallback shape as a local-convention relational node. */
 export function createSqlRel(sql: string, tables: string[]): RelSqlNode {
   return {
     id: nextRelId("sql"),
@@ -214,6 +256,7 @@ export function createSqlRel(sql: string, tables: string[]): RelSqlNode {
   };
 }
 
+/** `countRelNodes` measures the size of a relational tree for guardrails and diagnostics. */
 export function countRelNodes(node: RelNode): number {
   const countExpr = (expr: RelExpr): number => {
     switch (expr.kind) {
@@ -261,6 +304,7 @@ export function countRelNodes(node: RelNode): number {
   }
 }
 
+/** `collectRelTables` gathers the set of physical tables referenced anywhere in a relational tree. */
 export function collectRelTables(node: RelNode): string[] {
   const out = new Set<string>();
 

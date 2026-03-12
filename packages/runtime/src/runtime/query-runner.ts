@@ -120,6 +120,8 @@ export async function queryInternalResult<TContext>(
       resolvedInput.schema,
       resolvedInput.context,
     );
+    // Prefer a single whole-query provider fragment before local execution. This keeps fully
+    // pushdownable queries on the provider path and only falls back once that route is unavailable.
     const remoteRows = yield* Result.await(
       withTimeoutResult(
         "execute whole provider fragment",
@@ -133,6 +135,8 @@ export async function queryInternalResult<TContext>(
       return enforceExecutionRowLimitResult(remoteRows, guardrails);
     }
 
+    // Any remaining SQL-shaped node would require provider execution semantics the local runtime
+    // cannot reproduce, so fail fast before entering relational evaluation.
     const executableRel = yield* assertNoSqlNodesWithoutProviderFragmentResult(expandedRel);
     const rows = yield* Result.await(
       withTimeoutResult(

@@ -19,12 +19,20 @@ import type {
 } from "./capabilities";
 import type { AdapterResult, MaybePromise, ProviderRuntimeBinding } from "./operations";
 
+/**
+ * Provider compiled plans are provider-owned execution payloads produced from a fragment.
+ * Runtime treats `payload` as opaque and must not assume any backend-specific structure.
+ */
 export interface ProviderCompiledPlan {
   provider: string;
   kind: string;
   payload: unknown;
 }
 
+/**
+ * Provider lookup-many requests represent runtime-driven batched key lookups against one entity.
+ * They are a provider-facing optimization contract, not part of the public query API.
+ */
 export interface ProviderLookupManyRequest {
   table: string;
   alias?: string;
@@ -34,12 +42,14 @@ export interface ProviderLookupManyRequest {
   where?: ScanFilterClause[];
 }
 
+/** Rel fragments ask a provider to execute a provider-normalized relational subtree. */
 export interface RelProviderFragment {
   kind: "rel";
   provider: string;
   rel: RelNode;
 }
 
+/** Scan fragments ask a provider to execute a single physical scan request directly. */
 export interface ScanProviderFragment {
   kind: "scan";
   provider: string;
@@ -47,6 +57,7 @@ export interface ScanProviderFragment {
   request: TableScanRequest;
 }
 
+/** Aggregate fragments ask a provider to execute one grouped aggregate request directly. */
 export interface AggregateProviderFragment {
   kind: "aggregate";
   provider: string;
@@ -54,6 +65,10 @@ export interface AggregateProviderFragment {
   request: TableAggregateRequest;
 }
 
+/**
+ * Provider fragments are the only units of work the runtime asks a provider to reason about.
+ * Providers must not assume they can inspect planner internals beyond this fragment shape.
+ */
 export type ProviderFragment =
   | RelProviderFragment
   | ScanProviderFragment
@@ -62,15 +77,27 @@ export type ProviderFragment =
 export type ProviderOperationResult<T, E = Error> = AdapterResult<T, E>;
 export type { ProviderRuntimeBinding };
 
+/**
+ * Provider adapter base is the minimum contract every provider implements.
+ * Capability and estimate methods describe what can be run remotely; they do not execute work.
+ */
 export interface ProviderAdapterBase<TContext = unknown> {
   name: string;
+  /** Declared route families summarize the kinds of provider work this adapter is designed for. */
   routeFamilies?: ProviderRouteFamily[];
+  /** Capability atoms describe pushdown features supported by the adapter. */
   capabilityAtoms?: ProviderCapabilityAtom[];
+  /** Provider-local fallback policy is merged with per-query runtime overrides. */
   fallbackPolicy?: QueryFallbackPolicy;
+  /**
+   * `canExecute` answers whether the provider can run a fragment remotely.
+   * Returning a report is preferred when the adapter can explain unsupported atoms or cost.
+   */
   canExecute(
     fragment: ProviderFragment,
     context: TContext,
   ): MaybePromise<boolean | ProviderCapabilityReport>;
+  /** `estimate` is optional advisory metadata used when choosing remote vs local execution. */
   estimate?(fragment: ProviderFragment, context: TContext): MaybePromise<ProviderEstimate>;
   /**
    * Optional source-neutral physical entity handles owned by this adapter.
@@ -78,6 +105,10 @@ export interface ProviderAdapterBase<TContext = unknown> {
   entities?: Record<string, FoundationDataEntityHandle<string>>;
 }
 
+/**
+ * Fragment providers support full fragment compile/execute flows.
+ * `compile` must be pure with respect to runtime state; `execute` runs the compiled provider plan.
+ */
 export interface FragmentProviderAdapter<TContext = unknown> extends ProviderAdapterBase<TContext> {
   compile(
     fragment: ProviderFragment,
@@ -89,6 +120,10 @@ export interface FragmentProviderAdapter<TContext = unknown> extends ProviderAda
   ): MaybePromise<ProviderOperationResult<QueryRow[]>>;
 }
 
+/**
+ * Lookup providers support batched key lookups used by runtime lookup joins.
+ * They complement, rather than replace, fragment execution support.
+ */
 export interface LookupProviderAdapter<TContext = unknown> extends ProviderAdapterBase<TContext> {
   lookupMany(
     request: ProviderLookupManyRequest,
@@ -96,11 +131,16 @@ export interface LookupProviderAdapter<TContext = unknown> extends ProviderAdapt
   ): MaybePromise<ProviderOperationResult<QueryRow[]>>;
 }
 
+/**
+ * Provider adapters may support fragment execution, lookup execution, or both.
+ * Callers should feature-detect optional capabilities rather than assume one concrete shape.
+ */
 export type ProviderAdapter<TContext = unknown> =
   | FragmentProviderAdapter<TContext>
   | LookupProviderAdapter<TContext>
   | (FragmentProviderAdapter<TContext> & LookupProviderAdapter<TContext>);
 
+/** Providers maps are runtime lookup tables keyed by the provider name exposed on the adapter. */
 export type ProvidersMap<TContext = unknown> = Record<string, ProviderAdapter<TContext>>;
 export type DataSourceAdapter<TContext = unknown> = ProviderAdapter<TContext>;
 
