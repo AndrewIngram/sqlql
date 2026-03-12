@@ -15,7 +15,7 @@ import * as runtimeSession from "@tupl/runtime/session";
 import * as schema from "@tupl/schema";
 import type {
   QueryRow as ProviderQueryRow,
-  RelationalProviderAdapterOptions as ProviderRelationalProviderAdapterOptions,
+  RelationalProviderOptions as ProviderRelationalProviderOptions,
   RelationalProviderCapabilityContext as ProviderRelationalProviderCapabilityContext,
   RelationalProviderEntityConfig as ProviderRelationalProviderEntityConfig,
   RelationalProviderRelCompileStrategy as ProviderRelationalProviderRelCompileStrategy,
@@ -28,7 +28,7 @@ import type {
 } from "@tupl/provider-kit";
 
 declare const providerQueryRow: ProviderQueryRow;
-declare const providerRelationalProviderAdapterOptions: ProviderRelationalProviderAdapterOptions<
+declare const providerRelationalProviderOptions: ProviderRelationalProviderOptions<
   unknown,
   Record<string, ProviderRelationalProviderEntityConfig>,
   ProviderRelationalProviderRelCompileStrategy
@@ -46,7 +46,7 @@ declare const providerTableAggregateMetric: ProviderTableAggregateMetric;
 declare const providerTableAggregateRequest: ProviderTableAggregateRequest;
 
 void providerQueryRow;
-void providerRelationalProviderAdapterOptions;
+void providerRelationalProviderOptions;
 void providerRelationalProviderCapabilityContext;
 void providerScanFilter;
 void providerScanOrderBy;

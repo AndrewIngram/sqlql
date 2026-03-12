@@ -9,19 +9,38 @@ import {
 } from "./definition";
 import type { SchemaDefinition } from "./types";
 
+class SchemaConstraintValidationError extends Error {
+  readonly issues: readonly string[];
+
+  constructor(issues: readonly string[]) {
+    super(formatSchemaConstraintIssues(issues));
+    this.name = "SchemaConstraintValidationError";
+    this.issues = [...issues];
+  }
+}
+
 /**
  * Schema constraint validation owns logical schema invariants for tables, columns, and constraints.
  */
 export function validateSchemaConstraints(schema: SchemaDefinition): void {
+  const issues = collectSchemaConstraintIssues(schema);
+  if (issues.length > 0) {
+    throw new SchemaConstraintValidationError(issues);
+  }
+}
+
+function collectSchemaConstraintIssues(schema: SchemaDefinition) {
+  const issues: string[] = [];
+
   for (const [tableName, table] of Object.entries(schema.tables)) {
     for (const [columnName, columnDefinition] of Object.entries(table.columns)) {
       const resolved = resolveColumnDefinition(columnDefinition);
-      validateColumnDefinition(tableName, columnName, resolved);
+      validateColumnDefinition(tableName, columnName, resolved, issues);
     }
 
     const columnPrimaryKeyColumns = readColumnPrimaryKeyColumns(table);
     if (columnPrimaryKeyColumns.length > 1) {
-      throw new Error(
+      issues.push(
         `Invalid primary key on ${tableName}: multiple column-level primaryKey declarations found (${columnPrimaryKeyColumns.join(", ")}). Use table.constraints.primaryKey for composite keys.`,
       );
     }
@@ -33,7 +52,7 @@ export function validateSchemaConstraints(schema: SchemaDefinition): void {
         tablePrimaryKey.columns.length === 1 &&
         tablePrimaryKey.columns[0] === columnPrimaryKeyColumn;
       if (!tablePrimaryKeyIsSameSingleColumn) {
-        throw new Error(
+        issues.push(
           `Invalid primary key on ${tableName}: column-level primaryKey on "${columnPrimaryKeyColumn}" conflicts with table.constraints.primaryKey. Use one declaration style.`,
         );
       }
@@ -41,44 +60,52 @@ export function validateSchemaConstraints(schema: SchemaDefinition): void {
 
     const resolvedPrimaryKey = resolveTablePrimaryKeyConstraint(table);
     if (resolvedPrimaryKey) {
-      validateConstraintColumns(schema, tableName, "primary key", resolvedPrimaryKey.columns);
-      validateNoDuplicateColumns(tableName, "primary key", resolvedPrimaryKey.columns);
+      validateConstraintColumns(
+        schema,
+        tableName,
+        "primary key",
+        resolvedPrimaryKey.columns,
+        issues,
+      );
+      validateNoDuplicateColumns(tableName, "primary key", resolvedPrimaryKey.columns, issues);
     }
 
     resolveTableUniqueConstraints(table).forEach((uniqueConstraint, index) => {
       const label = uniqueConstraint.name ?? `unique constraint #${index + 1}`;
-      validateConstraintColumns(schema, tableName, label, uniqueConstraint.columns);
-      validateNoDuplicateColumns(tableName, label, uniqueConstraint.columns);
+      validateConstraintColumns(schema, tableName, label, uniqueConstraint.columns, issues);
+      validateNoDuplicateColumns(tableName, label, uniqueConstraint.columns, issues);
     });
 
     const foreignKeys = resolveTableForeignKeys(table);
     foreignKeys.forEach((foreignKey, index) => {
       const label = foreignKey.name ?? `foreign key #${index + 1}`;
-      validateConstraintColumns(schema, tableName, label, foreignKey.columns);
-      validateNoDuplicateColumns(tableName, label, foreignKey.columns);
+      validateConstraintColumns(schema, tableName, label, foreignKey.columns, issues);
+      validateNoDuplicateColumns(tableName, label, foreignKey.columns, issues);
 
       const referencedTable = schema.tables[foreignKey.references.table];
       if (!referencedTable) {
-        throw new Error(
+        issues.push(
           `Invalid ${label} on ${tableName}: referenced table "${foreignKey.references.table}" does not exist.`,
         );
       }
 
       if (foreignKey.columns.length !== foreignKey.references.columns.length) {
-        throw new Error(
+        issues.push(
           `Invalid ${label} on ${tableName}: local columns (${foreignKey.columns.length}) and referenced columns (${foreignKey.references.columns.length}) must have the same length.`,
         );
       }
 
       if (foreignKey.references.columns.length === 0) {
-        throw new Error(`Invalid ${label} on ${tableName}: referenced columns cannot be empty.`);
+        issues.push(`Invalid ${label} on ${tableName}: referenced columns cannot be empty.`);
       }
 
-      for (const referencedColumn of foreignKey.references.columns) {
-        if (!(referencedColumn in referencedTable.columns)) {
-          throw new Error(
-            `Invalid ${label} on ${tableName}: referenced column "${referencedColumn}" does not exist on table "${foreignKey.references.table}".`,
-          );
+      if (referencedTable) {
+        for (const referencedColumn of foreignKey.references.columns) {
+          if (!(referencedColumn in referencedTable.columns)) {
+            issues.push(
+              `Invalid ${label} on ${tableName}: referenced column "${referencedColumn}" does not exist on table "${foreignKey.references.table}".`,
+            );
+          }
         }
       }
 
@@ -86,15 +113,26 @@ export function validateSchemaConstraints(schema: SchemaDefinition): void {
         `${tableName} -> ${foreignKey.references.table}`,
         `${label} referenced columns`,
         foreignKey.references.columns,
+        issues,
       );
     });
 
     table.constraints?.checks?.forEach((checkConstraint, index) => {
       const label = checkConstraint.name ?? `check constraint #${index + 1}`;
       if (checkConstraint.kind === "in") {
-        validateConstraintColumns(schema, tableName, label, [checkConstraint.column]);
+        const hasValidColumn = validateConstraintColumns(
+          schema,
+          tableName,
+          label,
+          [checkConstraint.column],
+          issues,
+        );
         if (checkConstraint.values.length === 0) {
-          throw new Error(`Invalid ${label} on ${tableName}: values cannot be empty.`);
+          issues.push(`Invalid ${label} on ${tableName}: values cannot be empty.`);
+        }
+
+        if (!hasValidColumn) {
+          return;
         }
 
         const columnType = resolveTableColumnDefinition(
@@ -108,18 +146,8 @@ export function validateSchemaConstraints(schema: SchemaDefinition): void {
             .map((value) => typeof value),
         );
         for (const valueType of valueTypes) {
-          if (
-            ((columnType === "text" ||
-              columnType === "timestamp" ||
-              columnType === "date" ||
-              columnType === "datetime" ||
-              columnType === "json") &&
-              valueType !== "string") ||
-            ((columnType === "integer" || columnType === "real") && valueType !== "number") ||
-            (columnType === "boolean" && valueType !== "boolean") ||
-            columnType === "blob"
-          ) {
-            throw new Error(
+          if (!columnTypeAllowsValueType(columnType, valueType)) {
+            issues.push(
               `Invalid ${label} on ${tableName}: value type ${valueType} does not match column type ${columnType}.`,
             );
           }
@@ -127,6 +155,8 @@ export function validateSchemaConstraints(schema: SchemaDefinition): void {
       }
     });
   }
+
+  return issues;
 }
 
 function readColumnPrimaryKeyColumns(table: SchemaDefinition["tables"][string]): string[] {
@@ -146,64 +176,65 @@ function validateColumnDefinition(
   tableName: string,
   columnName: string,
   definition: ResolvedColumnDefinition,
-): void {
+  issues: string[],
+) {
   if (definition.primaryKey && definition.unique) {
-    throw new Error(
+    issues.push(
       `Invalid column ${tableName}.${columnName}: primaryKey and unique cannot both be true.`,
     );
   }
 
   if (definition.primaryKey && definition.nullable) {
-    throw new Error(
+    issues.push(
       `Invalid column ${tableName}.${columnName}: primaryKey columns must be nullable: false.`,
     );
   }
 
   if (definition.enum && definition.type !== "text") {
-    throw new Error(
+    issues.push(
       `Invalid column ${tableName}.${columnName}: enum is only supported on text columns.`,
     );
   }
 
   if (definition.enumFrom && definition.type !== "text") {
-    throw new Error(
+    issues.push(
       `Invalid column ${tableName}.${columnName}: enumFrom is only supported on text columns.`,
     );
   }
 
   if (definition.enumFrom && definition.enumFrom.trim().length === 0) {
-    throw new Error(`Invalid column ${tableName}.${columnName}: enumFrom cannot be empty.`);
+    issues.push(`Invalid column ${tableName}.${columnName}: enumFrom cannot be empty.`);
   }
 
   if (definition.enum) {
     if (definition.enum.length === 0) {
-      throw new Error(`Invalid column ${tableName}.${columnName}: enum cannot be empty.`);
+      issues.push(`Invalid column ${tableName}.${columnName}: enum cannot be empty.`);
     }
 
     const unique = new Set(definition.enum);
     if (unique.size !== definition.enum.length) {
-      throw new Error(`Invalid column ${tableName}.${columnName}: enum contains duplicate values.`);
+      issues.push(`Invalid column ${tableName}.${columnName}: enum contains duplicate values.`);
     }
   }
 
   if (definition.enumMap) {
     if (!definition.enumFrom) {
-      throw new Error(`Invalid column ${tableName}.${columnName}: enumMap requires enumFrom.`);
+      issues.push(`Invalid column ${tableName}.${columnName}: enumMap requires enumFrom.`);
     }
 
     for (const [sourceValue, mappedValue] of Object.entries(definition.enumMap)) {
       if (sourceValue.length === 0) {
-        throw new Error(
+        issues.push(
           `Invalid column ${tableName}.${columnName}: enumMap contains an empty source key.`,
         );
       }
       if (mappedValue.length === 0) {
-        throw new Error(
+        issues.push(
           `Invalid column ${tableName}.${columnName}: enumMap contains an empty mapped value.`,
         );
       }
       if (definition.enum && !definition.enum.includes(mappedValue)) {
-        throw new Error(
+        issues.push(
           `Invalid column ${tableName}.${columnName}: enumMap value "${mappedValue}" is not listed in enum.`,
         );
       }
@@ -212,14 +243,10 @@ function validateColumnDefinition(
 
   if (definition.foreignKey) {
     if (definition.foreignKey.table.trim().length === 0) {
-      throw new Error(
-        `Invalid column ${tableName}.${columnName}: foreignKey.table cannot be empty.`,
-      );
+      issues.push(`Invalid column ${tableName}.${columnName}: foreignKey.table cannot be empty.`);
     }
     if (definition.foreignKey.column.trim().length === 0) {
-      throw new Error(
-        `Invalid column ${tableName}.${columnName}: foreignKey.column cannot be empty.`,
-      );
+      issues.push(`Invalid column ${tableName}.${columnName}: foreignKey.column cannot be empty.`);
     }
   }
 }
@@ -229,29 +256,73 @@ function validateConstraintColumns(
   tableName: string,
   label: string,
   columns: string[],
-): void {
+  issues: string[],
+) {
+  let isValid = true;
   if (columns.length === 0) {
-    throw new Error(`Invalid ${label} on ${tableName}: columns cannot be empty.`);
+    issues.push(`Invalid ${label} on ${tableName}: columns cannot be empty.`);
+    return false;
   }
 
   const table = getTable(schema, tableName);
   for (const column of columns) {
     if (!(column in table.columns)) {
-      throw new Error(
+      isValid = false;
+      issues.push(
         `Invalid ${label} on ${tableName}: column "${column}" does not exist on table "${tableName}".`,
       );
     }
   }
+
+  return isValid;
 }
 
-function validateNoDuplicateColumns(tableName: string, label: string, columns: string[]): void {
+function validateNoDuplicateColumns(
+  tableName: string,
+  label: string,
+  columns: string[],
+  issues: string[],
+) {
   const seen = new Set<string>();
+  const duplicates = new Set<string>();
   for (const column of columns) {
     if (seen.has(column)) {
-      throw new Error(
-        `Invalid ${label} on ${tableName}: duplicate column "${column}" in constraint definition.`,
-      );
+      if (!duplicates.has(column)) {
+        issues.push(
+          `Invalid ${label} on ${tableName}: duplicate column "${column}" in constraint definition.`,
+        );
+        duplicates.add(column);
+      }
+      continue;
     }
     seen.add(column);
   }
+}
+
+function columnTypeAllowsValueType(
+  columnType: ResolvedColumnDefinition["type"],
+  valueType: string,
+) {
+  switch (columnType) {
+    case "text":
+    case "timestamp":
+    case "date":
+    case "datetime":
+    case "json":
+      return valueType === "string";
+    case "integer":
+    case "real":
+      return valueType === "number";
+    case "boolean":
+      return valueType === "boolean";
+    case "blob":
+      return false;
+  }
+}
+
+function formatSchemaConstraintIssues(issues: readonly string[]) {
+  const label = issues.length === 1 ? "issue" : "issues";
+  return `Schema constraint validation failed with ${issues.length} ${label}:\n${issues
+    .map((issue) => `- ${issue}`)
+    .join("\n")}`;
 }

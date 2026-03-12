@@ -16,11 +16,10 @@ import {
 } from "./relational-adapter-types";
 import type {
   RelationalProvider,
-  RelationalProviderAdapterOptions,
-  RelationalProviderAdapterOptionsWithLookup,
-  RelationalProviderWithLookup,
   RelationalProviderEntityConfig,
+  RelationalProviderOptions,
   RelationalProviderRelCompileStrategy,
+  RelationalProviderWithLookup,
 } from "./relational-adapter-types";
 
 const DEFAULT_RELATIONAL_ROUTE_FAMILIES = [
@@ -34,8 +33,6 @@ const LOOKUP_CAPABILITY_ATOM = "lookup.bulk" as const;
 export { DEFAULT_RELATIONAL_CAPABILITY_ATOMS } from "./relational-adapter-types";
 
 export type {
-  RelationalProviderAdapterOptions,
-  RelationalProviderAdapterOptionsWithLookup,
   RelationalProviderCapabilityContext,
   RelationalProviderCompileRelArgs,
   RelationalProviderCompileScanArgs,
@@ -43,32 +40,40 @@ export type {
   RelationalProviderEntityConfig,
   RelationalProviderExecuteArgs,
   RelationalProviderLookupArgs,
+  RelationalProviderOptions,
   RelationalProviderRelCompileStrategy,
-  RelationalProviderSupportArgs,
 } from "./relational-adapter-types";
+
+type RelationalProviderOptionsWithLookup<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TStrategy extends RelationalProviderRelCompileStrategy,
+> = RelationalProviderOptions<TContext, TEntities, TStrategy> & {
+  lookupMany: NonNullable<RelationalProviderOptions<TContext, TEntities, TStrategy>["lookupMany"]>;
+};
 
 export function createRelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
 >(
-  options: RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>,
-): RelationalProvider<TContext, TEntities>;
-export function createRelationalProviderAdapter<
-  TContext,
-  TEntities extends Record<string, RelationalProviderEntityConfig>,
-  TStrategy extends RelationalProviderRelCompileStrategy,
->(
-  options: RelationalProviderAdapterOptionsWithLookup<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptionsWithLookup<TContext, TEntities, TStrategy>,
 ): RelationalProviderWithLookup<TContext, TEntities>;
 export function createRelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
 >(
-  options:
-    | RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>
-    | RelationalProviderAdapterOptionsWithLookup<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy> & {
+    lookupMany?: undefined;
+  },
+): RelationalProvider<TContext, TEntities>;
+export function createRelationalProviderAdapter<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TStrategy extends RelationalProviderRelCompileStrategy,
+>(
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
 ): RelationalProvider<TContext, TEntities> | RelationalProviderWithLookup<TContext, TEntities> {
   const adapter = {
     name: options.name,
@@ -169,13 +174,14 @@ export function createRelationalProviderAdapter<
   };
 
   const entities = buildRelationalEntityHandles(adapter, options);
+  const lookupMany = options.lookupMany;
   const boundAdapter = {
     ...adapter,
     entities,
-    ...(options.lookupMany
+    ...(lookupMany
       ? {
           async lookupMany(request: ProviderLookupManyRequest, context: TContext) {
-            return options.lookupMany({
+            return lookupMany({
               context,
               entities: options.entities,
               name: options.name,

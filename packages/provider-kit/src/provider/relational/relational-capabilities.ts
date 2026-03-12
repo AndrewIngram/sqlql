@@ -8,27 +8,18 @@ import {
 import type { ProviderFragment } from "../contracts";
 import type { MaybePromise } from "../operations";
 import type {
-  RelationalProviderAdapterOptions,
-  RelationalProviderAdapterOptionsWithLookup,
   RelationalProviderCapabilityContext,
   RelationalProviderEntityConfig,
+  RelationalProviderOptions,
 } from "./relational-adapter-types";
 import { DEFAULT_RELATIONAL_CAPABILITY_ATOMS } from "./relational-adapter-types";
-
-type RelationalOptions<
-  TContext,
-  TEntities extends Record<string, RelationalProviderEntityConfig>,
-  TStrategy extends string,
-> =
-  | RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>
-  | RelationalProviderAdapterOptionsWithLookup<TContext, TEntities, TStrategy>;
 
 export function canExecuteRelationalFragment<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
 >(
-  options: RelationalOptions<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
   fragment: ProviderFragment,
   context: TContext,
 ): MaybePromise<boolean | ProviderCapabilityReport> {
@@ -54,7 +45,7 @@ function getDeclaredAtoms<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
->(options: RelationalOptions<TContext, TEntities, TStrategy>) {
+>(options: RelationalProviderOptions<TContext, TEntities, TStrategy>) {
   return options.declaredAtoms ?? DEFAULT_RELATIONAL_CAPABILITY_ATOMS;
 }
 
@@ -63,7 +54,7 @@ export async function resolveRelationalCapabilityContext<
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
 >(
-  options: RelationalOptions<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
   fragment: Extract<ProviderFragment, { kind: "rel" }>,
   context: TContext,
 ): Promise<RelationalProviderCapabilityContext<TContext, TEntities, TStrategy>> {
@@ -94,7 +85,7 @@ function evaluateRelationalCapability<
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
 >(
-  options: RelationalOptions<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
   fragment: Extract<ProviderFragment, { kind: "rel" }>,
   context: TContext,
 ): MaybePromise<boolean | ProviderCapabilityReport> {
@@ -137,7 +128,7 @@ function evaluateRelationalCapabilityWithContext<
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
 >(
-  options: RelationalOptions<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
   capabilityContext: RelationalProviderCapabilityContext<TContext, TEntities, TStrategy>,
 ): MaybePromise<boolean | ProviderCapabilityReport> {
   if (!capabilityContext.strategy) {

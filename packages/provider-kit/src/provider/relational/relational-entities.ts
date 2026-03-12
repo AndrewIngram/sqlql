@@ -5,19 +5,10 @@ import {
 } from "../entity-handles";
 import type { Provider } from "../contracts";
 import type {
-  RelationalProviderAdapterOptions,
-  RelationalProviderAdapterOptionsWithLookup,
   RelationalProviderEntityConfig,
   RelationalProviderHandles,
+  RelationalProviderOptions,
 } from "./relational-adapter-types";
-
-type RelationalOptions<
-  TContext,
-  TEntities extends Record<string, RelationalProviderEntityConfig>,
-  TStrategy extends string,
-> =
-  | RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>
-  | RelationalProviderAdapterOptionsWithLookup<TContext, TEntities, TStrategy>;
 
 export function buildRelationalEntityHandles<
   TContext,
@@ -25,7 +16,7 @@ export function buildRelationalEntityHandles<
   TStrategy extends string,
 >(
   provider: Provider<TContext>,
-  options: RelationalOptions<TContext, TEntities, TStrategy>,
+  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
 ): RelationalProviderHandles<TEntities> {
   const handles = {} as RelationalProviderHandles<TEntities>;
 

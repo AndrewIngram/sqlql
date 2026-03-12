@@ -759,6 +759,41 @@ describe("createSchemaBuilder", () => {
     ).toThrow("primaryKey columns must be nullable: false");
   });
 
+  it("reports multiple schema constraint violations together", () => {
+    try {
+      buildEntitySchema({
+        users: {
+          columns: {
+            id: { type: "text", primaryKey: true, unique: true } as any,
+          },
+        },
+        invoices: {
+          columns: {
+            amount_due: "integer",
+          },
+          constraints: {
+            checks: [
+              {
+                kind: "in",
+                column: "amount_due",
+                values: ["not_a_number"],
+              },
+            ],
+          },
+        },
+      });
+      throw new Error("Expected schema validation to fail.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+
+      const message = error instanceof Error ? error.message : "";
+      expect(message).toContain("Schema constraint validation failed with 3 issues");
+      expect(message).toContain("primaryKey and unique cannot both be true");
+      expect(message).toContain("primaryKey columns must be nullable: false");
+      expect(message).toContain("does not match column type integer");
+    }
+  });
+
   it("rejects multiple column-level primary keys; uses table-level for composite keys", () => {
     expect(() =>
       buildEntitySchema({
