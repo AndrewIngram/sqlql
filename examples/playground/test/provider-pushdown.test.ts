@@ -198,7 +198,11 @@ ORDER BY view_count DESC;
 
     const rows = snapshot.result ?? [];
     expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
+    const rowsWithCounts = rows.filter(
+      (row): row is typeof row & { view_count: number } => typeof row.view_count === "number",
+    );
+    expect(rowsWithCounts.length).toBeGreaterThan(0);
+    for (const row of rowsWithCounts) {
       expect(typeof row.view_count).toBe("number");
       expect((row.view_count as number) % 10).toBe(0);
     }

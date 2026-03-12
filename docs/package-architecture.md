@@ -40,7 +40,9 @@ Cross-module rules:
 Consumer guidance:
 
 - Provider implementations should prefer `@tupl/provider-kit`, `@tupl/provider-kit/shapes`, and `@tupl/provider-kit/testing` for ordinary adapter work.
+- Ordinary SQL-like adapters should start with `createSqlRelationalProviderAdapter(...)`; lower-level `createRelationalProviderAdapter(...)` remains for unusual adapters that do not fit that shape.
 - `@tupl/foundation` remains available for primitive relational helpers, but it is not the primary extension boundary.
 - Provider implementations should not normally import `@tupl/schema-model`; that package owns schema internals, not the ordinary adapter-authoring surface.
 - Adapter conformance belongs on `@tupl/provider-kit/testing`; internal test fixtures do not.
 - Application docs and examples should prefer `@tupl/schema` and first-party provider packages.
+- Maintainers should use [`maintainer-bug-map.md`](./maintainer-bug-map.md) as the starting point for bug triage across provider, planner, and runtime layers.

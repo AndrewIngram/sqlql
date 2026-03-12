@@ -45,6 +45,12 @@ export interface CreateDrizzleProviderOptions<
   tables: TTables;
 }
 
+export interface ResolvedEntityConfig<TContext> {
+  entity: string;
+  table: string;
+  config: DrizzleProviderTableConfig<TContext>;
+}
+
 export type InferDrizzleEntityRow<TConfig> =
   TConfig extends DrizzleProviderTableConfig<any, infer TTable, any>
     ? TTable extends Table

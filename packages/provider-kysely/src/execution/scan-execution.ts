@@ -37,7 +37,7 @@ export async function executeScan<TContext>(
           ...(request.where ? { where: request.where } : {}),
           output: [],
         },
-        config: binding.config,
+        resolved: binding,
       },
     ],
   ]);

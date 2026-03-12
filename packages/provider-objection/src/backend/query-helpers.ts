@@ -54,11 +54,11 @@ export function createJoinSource<TContext>(
   binding: ScanBinding<TContext>,
   context: TContext,
 ): unknown {
-  if (!binding.config.base) {
+  if (!binding.resolved.config.base) {
     return { [binding.alias]: binding.table };
   }
 
-  const base = resolveBaseQueryBuilder(binding.config.base, context);
+  const base = resolveBaseQueryBuilder(binding.resolved.config.base, context);
   const cloned = base.clone?.() ?? base;
   return (cloned.as?.(binding.alias) ?? cloned) as unknown;
 }

@@ -20,6 +20,9 @@ export function buildSimpleSelectJoinTree(
   schema: SchemaDefinition,
   tryLowerSelect: (ast: import("../sqlite-parser/ast").SelectAst) => RelNode | null,
 ): RelNode | null {
+  // Push only literal predicates that attach cleanly to one scan alias. Everything else stays as
+  // a residual rel expression so later provider/runtime layers can make one explicit fallback
+  // decision instead of each lowering step inventing its own partial rule.
   const pushableWhereAliases = getPushableWhereAliases(shape.rootBinding.alias, shape.joins);
   const pushableLiteralFilters = shape.whereFilters.literals.filter((filter) =>
     pushableWhereAliases.has(filter.alias),
@@ -69,6 +72,9 @@ export function buildSimpleSelectJoinTree(
   }
 
   for (const inFilter of shape.whereFilters.inSubqueries) {
+    // IN-subqueries become semi-joins only when the subquery is uncorrelated and shape-compatible.
+    // Returning null here intentionally punts the whole select back to the broader lowering path
+    // rather than producing a half-lowered tree with hidden execution constraints.
     const outerAliases = new Set(shape.bindings.map((binding) => binding.alias));
     if (isCorrelatedSubquery(inFilter.subquery, outerAliases)) {
       return null;
@@ -218,6 +224,8 @@ function collectRequiredColumns(
     if (!columns || columns.size > 0) {
       continue;
     }
+    // Scan nodes must still expose at least one column so later phases have a stable row shape.
+    // Falling back to the first schema column keeps that invariant local to join-tree lowering.
     if (schema.tables[binding.table]) {
       const schemaColumns = Object.keys(schema.tables[binding.table]?.columns ?? {});
       const first = schemaColumns[0];

@@ -1,4 +1,5 @@
 import { isRelProjectColumnMapping, type RelExpr, type RelNode } from "@tupl/foundation";
+import type { SqlRelationalScanBinding } from "@tupl/provider-kit";
 import {
   UnsupportedRelationalPlanError,
   canCompileBasicRel,
@@ -16,7 +17,7 @@ import {
 import { sql, type AnyColumn, type SQL } from "drizzle-orm";
 
 import { resolveColumns } from "../backend/table-columns";
-import type { DrizzleColumnMap, DrizzleProviderTableConfig } from "../types";
+import type { DrizzleColumnMap, ResolvedEntityConfig } from "../types";
 
 export interface DrizzleRelCompiledPlan {
   strategy: DrizzleRelCompileStrategy;
@@ -27,15 +28,16 @@ export type DrizzleRelCompileStrategy = "basic" | "set_op" | "with";
 
 export class UnsupportedSingleQueryPlanError extends UnsupportedRelationalPlanError {}
 
-export interface ScanBinding<TContext> extends RelationalScanBindingBase {
+export interface ScanBinding<TContext>
+  extends RelationalScanBindingBase, SqlRelationalScanBinding<ResolvedEntityConfig<TContext>> {
   alias: string;
   scan: Extract<RelNode, { kind: "scan" }>;
   tableName: string;
-  table: object;
+  sourceTable: object;
   scanColumns: DrizzleColumnMap<string>;
   columns: Record<string, AnyColumn | SQL>;
   outputColumns: string[];
-  tableConfig: DrizzleProviderTableConfig<TContext>;
+  tableConfig: ResolvedEntityConfig<TContext>["config"];
 }
 
 export type SemiJoinStep = RelationalSemiJoinStep;
@@ -62,36 +64,37 @@ export function requireColumnProjectMapping(
 
 export function resolveDrizzleRelCompileStrategy(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<any>>,
+  entityConfigs: Record<string, ResolvedEntityConfig<any>>,
 ): DrizzleRelCompileStrategy | null {
   return resolveRelationalStrategy(node, {
     basicStrategy: "basic",
     setOpStrategy: "set_op",
     withStrategy: "with",
-    canCompileBasic: (current) => canCompileBasicRel(current, (table) => !!tableConfigs[table]),
+    canCompileBasic: (current) => canCompileBasicRel(current, (table) => !!entityConfigs[table]),
     validateBasic: (current) =>
       isSupportedRelationalPlan(() => {
-        buildSingleQueryPlan(current, tableConfigs);
+        buildSingleQueryPlan(current, entityConfigs);
       }),
     canCompileSetOp: (current) =>
       canCompileSetOpRel(
         current,
-        (branch) => (canCompileBasicRel(branch, (table) => !!tableConfigs[table]) ? "basic" : null),
+        (branch) =>
+          canCompileBasicRel(branch, (table) => !!entityConfigs[table]) ? "basic" : null,
         requireColumnProjectMapping,
       ),
     canCompileWith: (current) =>
       canCompileWithRel(current, (branch) =>
-        resolveDrizzleRelCompileStrategy(branch, tableConfigs),
+        resolveDrizzleRelCompileStrategy(branch, entityConfigs),
       ),
   });
 }
 
 export function buildSingleQueryPlan<TContext>(
   rel: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
 ): SingleQueryPlan<TContext> {
   const pipeline = extractRelPipeline(rel);
-  const joinPlan = buildJoinPlan(pipeline.base, tableConfigs);
+  const joinPlan = buildJoinPlan(pipeline.base, entityConfigs);
 
   return {
     joinPlan,
@@ -101,10 +104,10 @@ export function buildSingleQueryPlan<TContext>(
 
 function buildJoinPlan<TContext>(
   node: RelNode,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
 ): JoinPlan<TContext> {
   if (node.kind === "scan") {
-    const root = createScanBinding(node, tableConfigs);
+    const root = createScanBinding(node, entityConfigs);
     return {
       root,
       joins: [],
@@ -113,7 +116,7 @@ function buildJoinPlan<TContext>(
   }
 
   if (node.kind === "project") {
-    const root = createProjectedScanBinding(node, tableConfigs);
+    const root = createProjectedScanBinding(node, entityConfigs);
     return {
       root,
       joins: [],
@@ -127,7 +130,7 @@ function buildJoinPlan<TContext>(
     );
   }
 
-  const left = buildJoinPlan(node.left, tableConfigs);
+  const left = buildJoinPlan(node.left, entityConfigs);
   if (node.joinType === "semi") {
     const leftRef = qualifyJoinColumnRef(node.leftKey, left.aliases);
     const rightAlias = node.rightKey.alias ?? node.rightKey.table;
@@ -153,7 +156,7 @@ function buildJoinPlan<TContext>(
     };
   }
 
-  const right = buildJoinPlan(node.right, tableConfigs);
+  const right = buildJoinPlan(node.right, entityConfigs);
   if (
     right.joins.length > 0 &&
     (node.joinType !== "inner" || right.joins.some((join) => join.joinType !== "inner"))
@@ -204,20 +207,24 @@ function buildJoinPlan<TContext>(
   };
 }
 
-function createScanBinding<TContext>(
+export function createScanBinding<TContext>(
   scan: Extract<RelNode, { kind: "scan" }>,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
 ): ScanBinding<TContext> {
-  const tableConfig = tableConfigs[scan.table];
-  if (!tableConfig) {
+  const resolved = entityConfigs[scan.table];
+  if (!resolved) {
     throw new UnsupportedSingleQueryPlanError(`Missing drizzle table config for "${scan.table}".`);
   }
+  const tableConfig = resolved.config;
 
   return {
     alias: scan.alias ?? scan.table,
+    entity: resolved.entity,
     scan,
     tableName: scan.table,
-    table: tableConfig.table,
+    table: resolved.table,
+    sourceTable: tableConfig.table,
+    resolved,
     scanColumns: resolveColumns(tableConfig, scan.table),
     columns: resolveColumns(tableConfig, scan.table),
     outputColumns: scan.select,
@@ -264,7 +271,7 @@ function qualifyJoinColumnRef<TContext>(
 
 function createProjectedScanBinding<TContext>(
   project: Extract<RelNode, { kind: "project" }>,
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
 ): ScanBinding<TContext> {
   if (project.input.kind !== "scan") {
     throw new UnsupportedSingleQueryPlanError(
@@ -272,7 +279,7 @@ function createProjectedScanBinding<TContext>(
     );
   }
 
-  const base = createScanBinding(project.input, tableConfigs);
+  const base = createScanBinding(project.input, entityConfigs);
   const aliases = new Map([[base.alias, base]]);
   const columns: Record<string, AnyColumn | SQL> = {};
 

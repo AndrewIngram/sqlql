@@ -218,6 +218,7 @@ Execution behavior notes:
 - [Hosted playground](https://tupl-playground.andrewingram.workers.dev/)
 - [Building a schema (executable schema, Drizzle example)](./docs/building-a-schema.md)
 - [Creating a new adapter (progressive path)](./docs/creating-an-adapter.md)
+- [Maintainer bug map (where to fix what)](./docs/maintainer-bug-map.md)
 
 ## Verification
 

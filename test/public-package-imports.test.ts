@@ -85,6 +85,7 @@ describe("public package imports", () => {
   it("exposes adapter-authoring contracts from provider-kit", () => {
     expect(typeof providerKit.createDataEntityHandle).toBe("function");
     expect(typeof providerKit.createRelationalProviderAdapter).toBe("function");
+    expect(typeof providerKit.createSqlRelationalProviderAdapter).toBe("function");
     expect(typeof providerKit.AdapterResult.ok).toBe("function");
   });
 

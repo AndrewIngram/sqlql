@@ -1,17 +1,13 @@
 import {
   AdapterResult,
-  createRelationalProviderAdapter,
+  createSqlRelationalProviderAdapter,
   type FragmentProviderAdapter,
   type LookupProviderAdapter,
 } from "@tupl/provider-kit";
 
-import { executeCompiledPlan } from "./execution/plan-execution";
 import { executeLookupMany } from "./execution/lookup-execution";
-import {
-  resolveObjectionRelCompileStrategy,
-  type ObjectionRelCompiledPlan,
-  type ObjectionRelCompileStrategy,
-} from "./planning/rel-strategy";
+import { executeScan } from "./execution/scan-execution";
+import { objectionSqlRelationalBackend } from "./planning/rel-builder";
 import type {
   CreateObjectionProviderOptions,
   KnexLike,
@@ -48,29 +44,21 @@ export function createObjectionProvider<
   const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
 
-  return createRelationalProviderAdapter<TContext, TEntities, ObjectionRelCompileStrategy>({
+  return createSqlRelationalProviderAdapter({
     name: providerName,
     entities: entityOptions,
-    unsupportedRelCompileMessage: "Unsupported relational fragment for Objection provider.",
+    resolvedEntities: entityConfigs,
+    backend: objectionSqlRelationalBackend,
+    resolveRuntime: (context: TContext) => resolveKnex(options, context),
+    unsupportedRelCompileMessage: "Unsupported SQL-relational fragment for Objection provider.",
     unsupportedRelReasonMessage:
       "Rel fragment is not supported for single-query Objection pushdown.",
-    resolveRelCompileStrategy({ fragment }) {
-      return resolveObjectionRelCompileStrategy(fragment.rel, entityConfigs);
+    async executeScan({ runtime, request, context }) {
+      return executeScan(runtime, entityConfigs, request, context);
     },
-    buildRelPlanPayload({ fragment, strategy }) {
-      return {
-        strategy,
-        rel: fragment.rel,
-      } satisfies ObjectionRelCompiledPlan;
-    },
-    async executeCompiledPlan({ plan, context }) {
-      const knex = await resolveKnex(options, context);
-      return executeCompiledPlan(knex, entityConfigs, plan, context);
-    },
-    async lookupMany({ request, context }) {
-      const knex = await resolveKnex(options, context);
+    async lookupMany({ request, runtime, context }) {
       return AdapterResult.tryPromise({
-        try: () => executeLookupMany(knex, entityConfigs, request, context),
+        try: () => executeLookupMany(runtime, entityConfigs, request, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },

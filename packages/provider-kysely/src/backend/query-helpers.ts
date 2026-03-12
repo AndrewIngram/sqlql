@@ -5,13 +5,19 @@ import type {
   KyselyDatabaseLike,
   KyselyProviderEntityConfig,
   KyselyQueryBuilderLike,
+  ResolvedEntityConfig,
 } from "../types";
 import type { ScanBinding } from "../planning/rel-strategy";
 
-interface BaseBinding<TContext> {
-  entity: string;
-  config: KyselyProviderEntityConfig<TContext>;
-}
+type BaseBinding<TContext> =
+  | {
+      entity: string;
+      config: KyselyProviderEntityConfig<TContext>;
+    }
+  | {
+      entity: string;
+      resolved: ResolvedEntityConfig<TContext>;
+    };
 
 export function toRef(
   alias: string | undefined,
@@ -30,11 +36,12 @@ export async function applyBase<TContext>(
   context: TContext,
   alias: string,
 ): Promise<KyselyQueryBuilderLike> {
-  if (!binding.config.base) {
+  const config = "resolved" in binding ? binding.resolved.config : binding.config;
+  if (!config.base) {
     return query;
   }
 
-  return binding.config.base({
+  return config.base({
     db,
     query,
     context,

@@ -1,5 +1,9 @@
+import type {
+  SqlRelationalBackend,
+  SqlRelationalOrderTerm,
+  SqlRelationalWithSelection,
+} from "@tupl/provider-kit";
 import type { RelNode } from "@tupl/foundation";
-import { unwrapSetOpRel, unwrapWithBodyRel } from "@tupl/provider-kit/shapes";
 
 import {
   applyWhereClause,
@@ -11,58 +15,33 @@ import {
 } from "../backend/query-helpers";
 import type { KnexLike, KnexLikeQueryBuilder, ResolvedEntityConfig } from "../types";
 import {
-  buildSingleQueryPlan,
-  requireColumnProjectMapping,
-  resolveObjectionRelCompileStrategy,
-  type ObjectionRelCompileStrategy,
+  createScanBinding,
   type ScanBinding,
-  type SemiJoinStep,
-  type SingleQueryPlan,
   UnsupportedSingleQueryPlanError,
 } from "./rel-strategy";
 
-export async function buildObjectionRelBuilderForStrategy<TContext>(
-  knex: KnexLike,
-  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
-  rel: RelNode,
-  strategy: ObjectionRelCompileStrategy,
-  context: TContext,
-): Promise<KnexLikeQueryBuilder> {
-  switch (strategy) {
-    case "basic":
-      return buildObjectionBasicRelSingleQueryBuilder(knex, entityConfigs, rel, context);
-    case "set_op":
-      return buildObjectionSetOpRelSingleQueryBuilder(knex, entityConfigs, rel, context);
-    case "with":
-      return buildObjectionWithRelSingleQueryBuilder(knex, entityConfigs, rel, context);
-  }
-}
-
-export async function buildObjectionBasicRelSingleQueryBuilder<TContext>(
-  knex: KnexLike,
-  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
-  rel: RelNode,
-  context: TContext,
-): Promise<KnexLikeQueryBuilder> {
-  const plan = buildSingleQueryPlan(rel, entityConfigs);
-
-  const rootSource = createJoinSource(plan.joinPlan.root, context);
-  let query = knex.queryBuilder().from(rootSource);
-
-  for (const joinStep of plan.joinPlan.joins) {
-    if (joinStep.joinType === "semi") {
-      const leftRef = `${joinStep.leftKey.alias}.${joinStep.leftKey.column}`;
-      const subquery = await buildObjectionSemiJoinSubquery(knex, entityConfigs, joinStep, context);
-      query = query.whereIn(leftRef, subquery);
-      continue;
-    }
-
+/**
+ * Objection backend hooks only translate shared rel semantics into knex query-builder calls.
+ */
+export const objectionSqlRelationalBackend: SqlRelationalBackend<
+  any,
+  ResolvedEntityConfig<any>,
+  ScanBinding<any>,
+  KnexLike,
+  KnexLikeQueryBuilder
+> = {
+  createScanBinding,
+  createRootQuery({ runtime, root, context }) {
+    const source = createJoinSource(root, context);
+    return runtime.queryBuilder().from(source);
+  },
+  applyRegularJoin({ query, join, context }) {
     const joinMethod =
-      joinStep.joinType === "inner"
+      join.joinType === "inner"
         ? "innerJoin"
-        : joinStep.joinType === "left"
+        : join.joinType === "left"
           ? "leftJoin"
-          : joinStep.joinType === "right"
+          : join.joinType === "right"
             ? "rightJoin"
             : "fullJoin";
 
@@ -73,366 +52,161 @@ export async function buildObjectionBasicRelSingleQueryBuilder<TContext>(
       );
     }
 
-    const rightSource = createJoinSource(joinStep.right, context);
-    query = (fn as (...args: unknown[]) => KnexLikeQueryBuilder).call(
+    const rightSource = createJoinSource(join.right, context);
+    return (fn as (...args: unknown[]) => KnexLikeQueryBuilder).call(
       query,
       rightSource,
-      `${joinStep.leftKey.alias}.${joinStep.leftKey.column}`,
-      `${joinStep.rightKey.alias}.${joinStep.rightKey.column}`,
+      `${join.leftKey.alias}.${join.leftKey.column}`,
+      `${join.rightKey.alias}.${join.rightKey.column}`,
     );
-  }
+  },
+  applySemiJoin({ query, leftKey, subquery }) {
+    return query.whereIn(`${leftKey.alias}.${leftKey.column}`, subquery);
+  },
+  applyWhereClause({ query, clause, aliases }) {
+    return applyWhereClause(query, clause, aliases);
+  },
+  applySelection({ query, selection, aliases }) {
+    const cleared = query.clearSelect?.() ?? query;
+    for (const entry of selection) {
+      if (entry.kind === "metric") {
+        applyMetricSelection(cleared, aliases, entry.metric, entry.output);
+        continue;
+      }
+      if (entry.kind === "expr") {
+        throw new UnsupportedSingleQueryPlanError(
+          "Computed projections are not supported in Objection single-query pushdown.",
+        );
+      }
 
-  for (const binding of plan.joinPlan.aliases.values()) {
-    for (const clause of binding.scan.where ?? []) {
-      query = applyWhereClause(query, clause, plan.joinPlan.aliases);
+      const source = resolveQualifiedColumnRef(aliases, {
+        ...toRef(entry.source.alias ?? entry.source.table, entry.source.column),
+      });
+      cleared.select({ [entry.output]: source });
     }
-  }
-  for (const filter of plan.pipeline.filters) {
-    for (const clause of filter.where ?? []) {
-      query = applyWhereClause(query, clause, plan.joinPlan.aliases);
-    }
-  }
-
-  query = query.clearSelect?.() ?? query;
-  applySelection(query, plan);
-
-  if (plan.pipeline.aggregate && plan.pipeline.aggregate.groupBy.length > 0) {
-    query = query.groupBy(
-      ...plan.pipeline.aggregate.groupBy.map((ref) =>
-        resolveQualifiedColumnRef(plan.joinPlan.aliases, {
+    return cleared;
+  },
+  applyGroupBy({ query, groupBy, aliases }) {
+    return query.groupBy(
+      ...groupBy.map((ref) =>
+        resolveQualifiedColumnRef(aliases, {
           ...toRef(ref.alias ?? ref.table, ref.column),
         }),
       ),
     );
-  }
-
-  if (plan.pipeline.sort) {
-    for (const term of plan.pipeline.sort.orderBy) {
-      query = query.orderBy(resolveSortRef(plan, term), term.direction);
+  },
+  applyOrderBy({ query, orderBy, aliases }) {
+    let out = query;
+    for (const term of orderBy) {
+      out = out.orderBy(resolveOrderTerm(term, aliases), term.direction);
     }
-  }
+    return out;
+  },
+  applyLimit({ query, limit }) {
+    return query.limit(limit);
+  },
+  applyOffset({ query, offset }) {
+    return query.offset(offset);
+  },
+  applySetOp({ left, right, wrapper }) {
+    const methodName =
+      wrapper.setOp.op === "union_all"
+        ? "unionAll"
+        : wrapper.setOp.op === "union"
+          ? "union"
+          : wrapper.setOp.op === "intersect"
+            ? "intersect"
+            : "except";
 
-  if (plan.pipeline.limitOffset?.limit != null) {
-    query = query.limit(plan.pipeline.limitOffset.limit);
-  }
-  if (plan.pipeline.limitOffset?.offset != null) {
-    query = query.offset(plan.pipeline.limitOffset.offset);
-  }
-
-  return query;
-}
-
-export async function buildObjectionSetOpRelSingleQueryBuilder<TContext>(
-  knex: KnexLike,
-  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
-  rel: RelNode,
-  context: TContext,
-): Promise<KnexLikeQueryBuilder> {
-  const wrapper = unwrapSetOpRel(rel);
-  if (!wrapper) {
-    throw new UnsupportedSingleQueryPlanError("Expected set-op relational shape.");
-  }
-
-  const leftStrategy = resolveObjectionRelCompileStrategy(wrapper.setOp.left, entityConfigs);
-  const rightStrategy = resolveObjectionRelCompileStrategy(wrapper.setOp.right, entityConfigs);
-  if (!leftStrategy || !rightStrategy) {
-    throw new UnsupportedSingleQueryPlanError(
-      "Set-op branches are not supported for single-query pushdown.",
-    );
-  }
-
-  const left = await buildObjectionRelBuilderForStrategy(
-    knex,
-    entityConfigs,
-    wrapper.setOp.left,
-    leftStrategy,
-    context,
-  );
-  const right = await buildObjectionRelBuilderForStrategy(
-    knex,
-    entityConfigs,
-    wrapper.setOp.right,
-    rightStrategy,
-    context,
-  );
-
-  const methodName =
-    wrapper.setOp.op === "union_all"
-      ? "unionAll"
-      : wrapper.setOp.op === "union"
-        ? "union"
-        : wrapper.setOp.op === "intersect"
-          ? "intersect"
-          : "except";
-
-  const applySetOp = (left as unknown as Record<string, unknown>)[methodName];
-  if (typeof applySetOp !== "function") {
-    throw new UnsupportedSingleQueryPlanError(
-      `Knex query builder does not support ${methodName} for single-query pushdown.`,
-    );
-  }
-
-  let query = applySetOp.call(left, [right]) as KnexLikeQueryBuilder;
-
-  if (wrapper.project) {
-    for (const rawMapping of wrapper.project.columns) {
-      const mapping = requireColumnProjectMapping(rawMapping);
-      if (
-        (mapping.source.alias || mapping.source.table) &&
-        mapping.source.column !== mapping.output
-      ) {
-        throw new UnsupportedSingleQueryPlanError(
-          "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
-        );
-      }
-    }
-  }
-
-  if (wrapper.sort) {
-    for (const term of wrapper.sort.orderBy) {
-      if (term.source.alias || term.source.table) {
-        throw new UnsupportedSingleQueryPlanError(
-          "Set-op ORDER BY columns must be unqualified output columns.",
-        );
-      }
-      query = query.orderBy(term.source.column, term.direction);
-    }
-  }
-
-  if (wrapper.limitOffset?.limit != null) {
-    query = query.limit(wrapper.limitOffset.limit);
-  }
-  if (wrapper.limitOffset?.offset != null) {
-    query = query.offset(wrapper.limitOffset.offset);
-  }
-
-  return query;
-}
-
-export async function buildObjectionWithRelSingleQueryBuilder<TContext>(
-  knex: KnexLike,
-  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
-  rel: RelNode,
-  context: TContext,
-): Promise<KnexLikeQueryBuilder> {
-  if (rel.kind !== "with") {
-    throw new UnsupportedSingleQueryPlanError(`Expected with node, received "${rel.kind}".`);
-  }
-
-  let query = knex.queryBuilder();
-
-  for (const cte of rel.ctes) {
-    const strategy = resolveObjectionRelCompileStrategy(cte.query, entityConfigs);
-    if (!strategy) {
+    const applySetOp = (left as unknown as Record<string, unknown>)[methodName];
+    if (typeof applySetOp !== "function") {
       throw new UnsupportedSingleQueryPlanError(
-        `CTE "${cte.name}" is not supported for single-query pushdown.`,
+        `Knex query builder does not support ${methodName} for single-query pushdown.`,
       );
     }
 
-    const cteQuery = await buildObjectionRelBuilderForStrategy(
-      knex,
-      entityConfigs,
-      cte.query,
-      strategy,
-      context,
-    );
+    return applySetOp.call(left, [right]) as KnexLikeQueryBuilder;
+  },
+  buildWithQuery({ body, ctes, projection, orderBy, runtime }) {
+    let query = runtime.queryBuilder();
 
-    const withFn = (query as { with?: unknown }).with;
-    if (typeof withFn !== "function") {
-      throw new UnsupportedSingleQueryPlanError(
-        "Knex query builder does not support CTE builders required for WITH pushdown.",
-      );
+    for (const cte of ctes) {
+      const withFn = (query as { with?: unknown }).with;
+      if (typeof withFn !== "function") {
+        throw new UnsupportedSingleQueryPlanError(
+          "Knex query builder does not support CTE builders required for WITH pushdown.",
+        );
+      }
+
+      query = withFn.call(query, cte.name, cte.query) as KnexLikeQueryBuilder;
     }
 
-    query = withFn.call(query, cte.name, cteQuery) as KnexLikeQueryBuilder;
-  }
+    const scanAlias = body.cteScan.alias ?? body.cteScan.table;
+    const fromSource = body.cteScan.alias
+      ? ({ [body.cteScan.alias]: body.cteScan.table } as Record<string, string>)
+      : body.cteScan.table;
+    query = query.from(fromSource);
 
-  const body = unwrapWithBodyRel(rel.body);
-  if (!body) {
-    throw new UnsupportedSingleQueryPlanError(
-      "Unsupported WITH body shape for single-query pushdown.",
-    );
-  }
+    const aliases = new Map<string, ScanBinding<any>>([
+      [
+        scanAlias,
+        {
+          alias: scanAlias,
+          entity: body.cteScan.table,
+          table: body.cteScan.table,
+          scan: body.cteScan,
+          resolved: {
+            entity: body.cteScan.table,
+            table: body.cteScan.table,
+            config: {},
+          },
+        },
+      ],
+    ]);
 
-  const scanAlias = body.cteScan.alias ?? body.cteScan.table;
-  const fromSource = body.cteScan.alias
-    ? ({ [body.cteScan.alias]: body.cteScan.table } as Record<string, string>)
-    : body.cteScan.table;
-  query = query.from(fromSource);
-
-  const aliases = new Map<string, ScanBinding<TContext>>([
-    [
-      scanAlias,
-      {
-        alias: scanAlias,
-        entity: body.cteScan.table,
-        table: body.cteScan.table,
-        scan: body.cteScan,
-        config: {},
-      },
-    ],
-  ]);
-
-  for (const clause of body.cteScan.where ?? []) {
-    query = applyWhereClause(query, clause, aliases);
-  }
-  for (const filter of body.filters) {
-    for (const clause of filter.where ?? []) {
+    for (const clause of body.cteScan.where ?? []) {
       query = applyWhereClause(query, clause, aliases);
     }
-  }
-
-  for (const fn of body.window?.functions ?? []) {
-    query = applyWindowFunction(query, fn, scanAlias);
-  }
-
-  query = query.clearSelect?.() ?? query;
-
-  const windowAliases = new Set((body.window?.functions ?? []).map((fn) => fn.as));
-  const projection: Array<{
-    source: { alias?: string; table?: string; column: string };
-    output: string;
-  }> = body.project?.columns.map((mapping) => requireColumnProjectMapping(mapping)) ?? [
-    ...body.cteScan.select.map((column) => ({
-      source: { column },
-      output: column,
-    })),
-    ...[...windowAliases].map((column) => ({
-      source: { column },
-      output: column,
-    })),
-  ];
-
-  for (const mapping of projection) {
-    if (
-      !mapping.source.alias &&
-      !mapping.source.table &&
-      windowAliases.has(mapping.source.column)
-    ) {
-      query = query.select({ [mapping.output]: mapping.source.column });
-      continue;
+    for (const filter of body.filters) {
+      for (const clause of filter.where ?? []) {
+        query = applyWhereClause(query, clause, aliases);
+      }
     }
 
-    const source = resolveWithBodyColumnRef(mapping.source, scanAlias);
-    query = query.select({ [mapping.output]: source });
-  }
-
-  if (body.sort) {
-    for (const term of body.sort.orderBy) {
-      const source =
-        !term.source.alias && !term.source.table && windowAliases.has(term.source.column)
-          ? term.source.column
-          : resolveWithBodyColumnRef(term.source, scanAlias);
-      query = query.orderBy(source, term.direction);
+    for (const fn of body.window?.functions ?? []) {
+      query = applyWindowFunction(query, fn, scanAlias);
     }
-  }
 
-  if (body.limitOffset?.limit != null) {
-    query = query.limit(body.limitOffset.limit);
-  }
-  if (body.limitOffset?.offset != null) {
-    query = query.offset(body.limitOffset.offset);
-  }
+    query = query.clearSelect?.() ?? query;
+    applyWithSelection(query, projection, scanAlias);
 
-  return query;
-}
+    for (const term of orderBy) {
+      query = query.orderBy(resolveWithOrderTerm(term, scanAlias), term.direction);
+    }
 
-async function buildObjectionSemiJoinSubquery<TContext>(
-  knex: KnexLike,
-  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
-  joinStep: SemiJoinStep,
-  context: TContext,
-): Promise<KnexLikeQueryBuilder> {
-  if (joinStep.right.output.length !== 1) {
-    throw new UnsupportedSingleQueryPlanError(
-      "SEMI join subquery must project exactly one output column.",
-    );
-  }
+    return query;
+  },
+  async executeQuery({ query }) {
+    if (typeof query.execute === "function") {
+      return (await query.execute()) ?? [];
+    }
+    return (await (query as unknown as Promise<import("@tupl/provider-kit").QueryRow[]>)) ?? [];
+  },
+};
 
-  const strategy = resolveObjectionRelCompileStrategy(joinStep.right, entityConfigs);
-  if (!strategy) {
-    throw new UnsupportedSingleQueryPlanError(
-      "SEMI join right-hand rel fragment is not supported for single-query pushdown.",
-    );
-  }
-
-  return buildObjectionRelBuilderForStrategy(
-    knex,
-    entityConfigs,
-    joinStep.right,
-    strategy,
-    context,
-  );
-}
-
-function applySelection<TContext>(
+function applyWithSelection(
   query: KnexLikeQueryBuilder,
-  plan: SingleQueryPlan<TContext>,
+  projection: SqlRelationalWithSelection[],
+  scanAlias: string,
 ): void {
-  if (!plan.pipeline.aggregate) {
-    const project = plan.pipeline.project;
-    if (!project) {
-      throw new UnsupportedSingleQueryPlanError(
-        "Non-aggregate rel fragment requires a project node.",
-      );
-    }
-
-    for (const rawMapping of project.columns) {
-      const mapping = requireColumnProjectMapping(rawMapping);
-      const source = resolveQualifiedColumnRef(plan.joinPlan.aliases, {
-        ...toRef(mapping.source.alias ?? mapping.source.table, mapping.source.column),
-      });
-      query.select({ [mapping.output]: source });
-    }
-    return;
-  }
-
-  const metricByAs = new Map(plan.pipeline.aggregate.metrics.map((metric) => [metric.as, metric]));
-  const groupByByColumn = new Map<string, (typeof plan.pipeline.aggregate.groupBy)[number]>();
-  plan.pipeline.aggregate.groupBy.forEach((groupBy, index) => {
-    groupByByColumn.set(groupBy.column, groupBy);
-    const outputName = plan.pipeline.aggregate!.output[index]?.name ?? groupBy.column;
-    groupByByColumn.set(outputName, groupBy);
-  });
-
-  const projection = plan.pipeline.project?.columns ?? [
-    ...plan.pipeline.aggregate.groupBy.map((groupBy, index) => ({
-      source: {
-        column: plan.pipeline.aggregate!.output[index]?.name ?? groupBy.column,
-      },
-      output: plan.pipeline.aggregate!.output[index]?.name ?? groupBy.column,
-    })),
-    ...plan.pipeline.aggregate.metrics.map((metric, index) => ({
-      source: {
-        column:
-          plan.pipeline.aggregate!.output[plan.pipeline.aggregate!.groupBy.length + index]?.name ??
-          metric.as,
-      },
-      output:
-        plan.pipeline.aggregate!.output[plan.pipeline.aggregate!.groupBy.length + index]?.name ??
-        metric.as,
-    })),
-  ];
-
-  for (const rawMapping of projection) {
-    const mapping = requireColumnProjectMapping(rawMapping);
-    const metric = metricByAs.get(mapping.source.column);
-    if (metric) {
-      applyMetricSelection(query, plan.joinPlan.aliases, metric, mapping.output);
+  for (const entry of projection) {
+    if (entry.kind === "window") {
+      query = query.select({ [entry.output]: entry.window.as });
       continue;
     }
 
-    const groupBy = groupByByColumn.get(mapping.source.column);
-    if (!groupBy) {
-      throw new UnsupportedSingleQueryPlanError(
-        `Unknown aggregate projection source "${mapping.source.column}".`,
-      );
-    }
-
-    const source = resolveQualifiedColumnRef(plan.joinPlan.aliases, {
-      ...toRef(groupBy.alias ?? groupBy.table, groupBy.column),
-    });
-    query.select({ [mapping.output]: source });
+    const source = resolveWithBodyColumnRef(entry.source, scanAlias);
+    query = query.select({ [entry.output]: source });
   }
 }
 
@@ -491,27 +265,23 @@ function applyMetricSelection<TContext>(
   }
 }
 
-function resolveSortRef<TContext>(
-  plan: SingleQueryPlan<TContext>,
-  term: Extract<RelNode, { kind: "sort" }>["orderBy"][number],
+function resolveOrderTerm<TContext>(
+  term: SqlRelationalOrderTerm,
+  aliases: Map<string, ScanBinding<TContext>>,
 ): string {
-  if (term.source.alias || term.source.table) {
-    return resolveQualifiedColumnRef(plan.joinPlan.aliases, {
-      ...toRef(term.source.alias ?? term.source.table, term.source.column),
-    });
+  if (term.kind === "output") {
+    return term.column;
   }
 
-  if (plan.pipeline.aggregate) {
-    const groupBy = plan.pipeline.aggregate.groupBy.find((entry, index) => {
-      const outputName = plan.pipeline.aggregate!.output[index]?.name ?? entry.column;
-      return outputName === term.source.column || entry.column === term.source.column;
-    });
-    if (groupBy) {
-      return resolveQualifiedColumnRef(plan.joinPlan.aliases, {
-        ...toRef(groupBy.alias ?? groupBy.table, groupBy.column),
-      });
-    }
+  return resolveQualifiedColumnRef(aliases, {
+    ...toRef(term.source.alias ?? term.source.table, term.source.column),
+  });
+}
+
+function resolveWithOrderTerm(term: SqlRelationalOrderTerm, scanAlias: string): string {
+  if (term.kind === "output") {
+    return term.column;
   }
 
-  return term.source.column;
+  return resolveWithBodyColumnRef(term.source, scanAlias);
 }

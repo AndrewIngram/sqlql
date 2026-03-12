@@ -1,12 +1,12 @@
 import {
   AdapterResult,
-  createRelationalProviderAdapter,
+  createSqlRelationalProviderAdapter,
   type FragmentProviderAdapter,
   type LookupProviderAdapter,
 } from "@tupl/provider-kit";
 
-import { executeCompiledPlan } from "./execution/plan-execution";
 import { executeLookupMany } from "./execution/lookup-execution";
+import { executeScan } from "./execution/scan-execution";
 import {
   inferDrizzleDialect,
   isPromiseLike,
@@ -16,16 +16,13 @@ import {
 } from "./backend/runtime-checks";
 import { deriveEntityColumnsFromTable } from "./backend/table-columns";
 import { impossibleCondition, runDrizzleScan } from "./backend/query-helpers";
-import {
-  resolveDrizzleRelCompileStrategy,
-  type DrizzleRelCompiledPlan,
-  type DrizzleRelCompileStrategy,
-} from "./planning/rel-strategy";
+import { drizzleSqlRelationalBackend } from "./planning/rel-builder";
 import type {
   CreateDrizzleProviderOptions,
   DrizzleProviderEntities,
   DrizzleProviderTableConfig,
   DrizzleQueryExecutor,
+  ResolvedEntityConfig,
 } from "./types";
 
 export type {
@@ -57,19 +54,20 @@ export function createDrizzleProvider<
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
   void dialect;
+  const entityConfigs = resolveEntityConfigs(tableConfigs);
 
-  return createRelationalProviderAdapter<TContext, TTables, DrizzleRelCompileStrategy>({
+  return createSqlRelationalProviderAdapter({
     name: providerName,
-    entities: options.tables,
+    entities: options.tables as TTables,
+    resolvedEntities: entityConfigs,
+    backend: drizzleSqlRelationalBackend,
+    resolveRuntime: (context: TContext) => resolveDrizzleDbMaybeSync(options, context),
     unsupportedRelCompileMessage: "Unsupported relational fragment for drizzle provider.",
     unsupportedRelReasonMessage: "Rel fragment is not supported for single-query drizzle pushdown.",
     resolveEntityColumns({ config }) {
       return deriveEntityColumnsFromTable(config.table);
     },
-    resolveRelCompileStrategy({ fragment }) {
-      return resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
-    },
-    isRelStrategySupported({ context, strategy }) {
+    isStrategySupported({ context, strategy }) {
       if (strategy == null) {
         return "Rel fragment is not supported for single-query drizzle pushdown.";
       }
@@ -85,17 +83,8 @@ export function createDrizzleProvider<
       const db = resolveDrizzleDbMaybeSync(options, context);
       return isPromiseLike(db) ? db.then(evaluateWithDb) : evaluateWithDb(db);
     },
-    buildRelPlanPayload({ fragment, strategy }) {
-      return {
-        strategy,
-        rel: fragment.rel,
-      } satisfies DrizzleRelCompiledPlan;
-    },
-    async executeCompiledPlan({ plan, context }) {
-      return AdapterResult.tryPromise({
-        try: () => executeCompiledPlan(plan, options, context),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
+    async executeScan({ runtime, request, context }) {
+      return executeScan(runtime, options, request, context);
     },
     async lookupMany({ request, context }) {
       return AdapterResult.tryPromise({
@@ -107,4 +96,20 @@ export function createDrizzleProvider<
     LookupProviderAdapter<TContext> & {
       entities: DrizzleProviderEntities<TTables>;
     };
+}
+
+function resolveEntityConfigs<TContext>(
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+): Record<string, ResolvedEntityConfig<TContext>> {
+  const out: Record<string, ResolvedEntityConfig<TContext>> = {};
+
+  for (const [entity, config] of Object.entries(tableConfigs)) {
+    out[entity] = {
+      entity,
+      table: entity,
+      config,
+    };
+  }
+
+  return out;
 }
