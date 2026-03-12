@@ -2,6 +2,12 @@
 
 This guide is the practical path for shipping an adapter without implementing a full relational engine up front.
 
+Terminology in this guide:
+
+- `provider`: the runtime object registered under a name and used by planning/runtime
+- `adapter`: the authoring layer or helper that builds that provider
+- `backend`: the wrapped system, driver, or query builder
+
 The core model now has three layers:
 
 - route families: coarse maturity stages for docs and onboarding
@@ -216,7 +222,13 @@ export function createExampleRelationalProvider(options: CreateExampleProviderOp
     name: "example-sql",
     declaredAtoms,
     entities: options.entities ?? {},
-    resolvedEntities: entityConfigs,
+    resolveEntity({ entity, config }) {
+      return {
+        entity,
+        table: config.table ?? entity,
+        config,
+      };
+    },
     backend: exampleSqlBackend,
     resolveRuntime(context) {
       return resolveDb(options, context);
@@ -237,6 +249,10 @@ export function createExampleRelationalProvider(options: CreateExampleProviderOp
 Reach for `createRelationalProviderAdapter(...)` only when an adapter is unusual enough that it
 cannot fit the ordinary SQL-like path cleanly, for example when the backend needs provider-specific
 expression lowering instead of the shared rel compiler.
+
+The key design point is that the public factory takes one entity description and one
+`resolveEntity(...)` callback. The internal resolved-entity map is provider-kit’s job, not adapter
+author boilerplate.
 
 ## Wiring the Adapter Into a Facade Schema
 

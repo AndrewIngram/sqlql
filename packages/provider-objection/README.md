@@ -1,8 +1,8 @@
 # `@tupl/provider-objection`
 
-Objection/Knex provider adapter for tupl.
+Objection/Knex-backed provider builders for tupl.
 
-Use this package to expose Knex or Objection-backed tables as tupl providers.
+Use this package to build a tupl provider over Knex or Objection-backed tables.
 
 ## Install
 
@@ -13,7 +13,7 @@ pnpm add @tupl/provider-objection knex objection
 ## Docs
 
 - Repository: <https://github.com/AndrewIngram/tupl>
-- Adapter contracts: [`@tupl/provider-kit`](https://github.com/AndrewIngram/tupl/tree/main/packages/provider-kit)
+- Provider contracts and adapter-authoring helpers: [`@tupl/provider-kit`](https://github.com/AndrewIngram/tupl/tree/main/packages/provider-kit)
 - Schema APIs: [`@tupl/schema`](https://github.com/AndrewIngram/tupl/tree/main/packages/schema)
 
 ## Design Notes

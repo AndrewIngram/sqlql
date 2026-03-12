@@ -150,13 +150,12 @@ function createFakeProvider() {
   return createSqlRelationalProviderAdapter({
     name: "warehouse",
     entities,
-    resolvedEntities: {
-      orders: { entity: "orders", table: "orders", config: entities.orders },
-      archived_orders: {
-        entity: "archived_orders",
-        table: "archived_orders",
-        config: entities.archived_orders,
-      },
+    resolveEntity({ entity, config }) {
+      return {
+        entity,
+        table: entity,
+        config,
+      };
     },
     backend: fakeBackend,
     resolveRuntime() {
@@ -168,7 +167,7 @@ function createFakeProvider() {
   });
 }
 
-describe("sql relational provider adapter", () => {
+describe("sql relational provider factory", () => {
   it("executes shared basic single-query pushdown through the public factory", async () => {
     const provider = createFakeProvider();
     const compiled = unwrapProviderOperationResult(

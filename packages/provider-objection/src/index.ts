@@ -47,7 +47,13 @@ export function createObjectionProvider<
   return createSqlRelationalProviderAdapter({
     name: providerName,
     entities: entityOptions,
-    resolvedEntities: entityConfigs,
+    resolveEntity({ entity, config }) {
+      return {
+        entity,
+        table: config.table ?? entity,
+        config,
+      };
+    },
     backend: objectionSqlRelationalBackend,
     resolveRuntime: (context: TContext) => resolveKnex(options, context),
     unsupportedRelCompileMessage: "Unsupported SQL-relational fragment for Objection provider.",

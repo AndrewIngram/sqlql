@@ -22,7 +22,6 @@ import type {
   DrizzleProviderEntities,
   DrizzleProviderTableConfig,
   DrizzleQueryExecutor,
-  ResolvedEntityConfig,
 } from "./types";
 
 export type {
@@ -54,12 +53,17 @@ export function createDrizzleProvider<
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
   void dialect;
-  const entityConfigs = resolveEntityConfigs(tableConfigs);
 
   return createSqlRelationalProviderAdapter({
     name: providerName,
     entities: options.tables as TTables,
-    resolvedEntities: entityConfigs,
+    resolveEntity({ entity, config }) {
+      return {
+        entity,
+        table: entity,
+        config,
+      };
+    },
     backend: drizzleSqlRelationalBackend,
     resolveRuntime: (context: TContext) => resolveDrizzleDbMaybeSync(options, context),
     unsupportedRelCompileMessage: "Unsupported relational fragment for drizzle provider.",
@@ -96,20 +100,4 @@ export function createDrizzleProvider<
     LookupProviderAdapter<TContext> & {
       entities: DrizzleProviderEntities<TTables>;
     };
-}
-
-function resolveEntityConfigs<TContext>(
-  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
-): Record<string, ResolvedEntityConfig<TContext>> {
-  const out: Record<string, ResolvedEntityConfig<TContext>> = {};
-
-  for (const [entity, config] of Object.entries(tableConfigs)) {
-    out[entity] = {
-      entity,
-      table: entity,
-      config,
-    };
-  }
-
-  return out;
 }

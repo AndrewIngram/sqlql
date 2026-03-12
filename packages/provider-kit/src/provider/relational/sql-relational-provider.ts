@@ -259,6 +259,15 @@ export interface SqlRelationalLookupArgs<
   runtime: TRuntime;
 }
 
+export interface SqlRelationalEntityArgs<
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TEntityName extends Extract<keyof TEntities, string>,
+> {
+  config: TEntities[TEntityName];
+  entity: TEntityName;
+  name: string;
+}
+
 interface SqlRelationalProviderOptionsBase<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
@@ -269,9 +278,11 @@ interface SqlRelationalProviderOptionsBase<
 > {
   name: string;
   entities: TEntities;
-  resolvedEntities: Record<string, TResolvedEntity>;
   backend: SqlRelationalBackend<TContext, TResolvedEntity, TBinding, TRuntime, TQuery>;
   resolveRuntime(context: TContext): MaybePromise<TRuntime>;
+  resolveEntity<TEntityName extends Extract<keyof TEntities, string>>(
+    args: SqlRelationalEntityArgs<TEntities, TEntityName>,
+  ): TResolvedEntity;
   compileOptions?: {
     requireColumnProjectMappings?: boolean;
   };
@@ -349,6 +360,31 @@ function isPromiseLikeValue<T>(value: MaybePromise<T>): value is PromiseLike<T> 
   );
 }
 
+function resolveSqlRelationalEntities<
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TResolvedEntity extends SqlRelationalResolvedEntity,
+>(
+  name: string,
+  entities: TEntities,
+  resolveEntity: <TEntityName extends Extract<keyof TEntities, string>>(
+    args: SqlRelationalEntityArgs<TEntities, TEntityName>,
+  ) => TResolvedEntity,
+): Record<string, TResolvedEntity> {
+  const out: Record<string, TResolvedEntity> = {};
+
+  for (const [entity, config] of Object.entries(entities) as Array<
+    [Extract<keyof TEntities, string>, TEntities[Extract<keyof TEntities, string>]]
+  >) {
+    out[entity] = resolveEntity({
+      config,
+      entity,
+      name,
+    });
+  }
+
+  return out;
+}
+
 /**
  * SQL-relational helpers own the ordinary adapter-authoring path for SQL-like backends.
  * They centralize recursive rel compilation so adapters mostly describe backend differences.
@@ -415,12 +451,20 @@ export function createSqlRelationalProviderAdapter<
 ):
   | RelationalProviderAdapter<TContext, TEntities>
   | RelationalProviderAdapterWithLookup<TContext, TEntities> {
+  const resolveEntity = <TEntityName extends Extract<keyof TEntities, string>>(
+    args: SqlRelationalEntityArgs<TEntities, TEntityName>,
+  ) => options.resolveEntity(args);
+  const resolvedEntities = resolveSqlRelationalEntities(
+    options.name,
+    options.entities,
+    resolveEntity,
+  );
   const createScanBinding = (
     scan: Extract<RelNode, { kind: "scan" }>,
     resolvedEntities: Record<string, TResolvedEntity>,
   ) => options.backend.createScanBinding(scan, resolvedEntities);
   const compileHelpers = createSqlRelationalCompileHelpers(
-    options.resolvedEntities,
+    resolvedEntities,
     createScanBinding,
     options.backend,
     options.compileOptions,
@@ -472,7 +516,7 @@ export function createSqlRelationalProviderAdapter<
                 options.isStrategySupported!({
                   context: args.context,
                   entities: options.entities,
-                  resolvedEntities: options.resolvedEntities,
+                  resolvedEntities,
                   fragment: args.fragment,
                   routeFamily: args.routeFamily,
                   requiredAtoms: args.requiredAtoms,
@@ -486,7 +530,7 @@ export function createSqlRelationalProviderAdapter<
             return options.isStrategySupported!({
               context: args.context,
               entities: options.entities,
-              resolvedEntities: options.resolvedEntities,
+              resolvedEntities,
               fragment: args.fragment,
               routeFamily: args.routeFamily,
               requiredAtoms: args.requiredAtoms,
@@ -530,7 +574,7 @@ export function createSqlRelationalProviderAdapter<
               return options.executeScan({
                 context,
                 entities: options.entities,
-                resolvedEntities: options.resolvedEntities,
+                resolvedEntities,
                 name: options.name,
                 request: (plan.payload as Extract<ProviderFragment, { kind: "scan" }>).request,
                 runtime,
@@ -540,7 +584,7 @@ export function createSqlRelationalProviderAdapter<
               const query = await buildSqlRelationalQueryForStrategyWithHelpers(
                 compiled.rel,
                 compiled.strategy,
-                options.resolvedEntities,
+                resolvedEntities,
                 options.backend,
                 runtime,
                 context,
@@ -566,7 +610,7 @@ export function createSqlRelationalProviderAdapter<
         return options.lookupMany({
           context,
           entities: options.entities,
-          resolvedEntities: options.resolvedEntities,
+          resolvedEntities,
           name: options.name,
           request,
           runtime,

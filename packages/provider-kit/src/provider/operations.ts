@@ -8,7 +8,7 @@ import type {
 } from "./contracts";
 
 /**
- * Provider operations centralize Result handling and capability predicates for adapter contracts.
+ * Provider operations centralize Result handling and capability predicates for provider contracts.
  */
 export const AdapterResult = Result;
 export type AdapterResult<T, E = Error> = BetterResult<T, E>;

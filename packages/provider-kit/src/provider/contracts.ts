@@ -78,7 +78,9 @@ export type ProviderOperationResult<T, E = Error> = AdapterResult<T, E>;
 export type { ProviderRuntimeBinding };
 
 /**
- * Provider adapter base is the minimum contract every provider implements.
+ * ProviderAdapterBase is the runtime provider contract.
+ * The type keeps the historical "Adapter" name because it is the public API, but conceptually this
+ * is the provider object registered with the runtime.
  * Capability and estimate methods describe what can be run remotely; they do not execute work.
  */
 export interface ProviderAdapterBase<TContext = unknown> {
@@ -132,7 +134,7 @@ export interface LookupProviderAdapter<TContext = unknown> extends ProviderAdapt
 }
 
 /**
- * Provider adapters may support fragment execution, lookup execution, or both.
+ * Providers may support fragment execution, lookup execution, or both.
  * Callers should feature-detect optional capabilities rather than assume one concrete shape.
  */
 export type ProviderAdapter<TContext = unknown> =
@@ -140,7 +142,7 @@ export type ProviderAdapter<TContext = unknown> =
   | LookupProviderAdapter<TContext>
   | (FragmentProviderAdapter<TContext> & LookupProviderAdapter<TContext>);
 
-/** Providers maps are runtime lookup tables keyed by the provider name exposed on the adapter. */
+/** Provider maps are runtime lookup tables keyed by the provider name exposed on the provider. */
 export type ProvidersMap<TContext = unknown> = Record<string, ProviderAdapter<TContext>>;
 export type DataSourceAdapter<TContext = unknown> = ProviderAdapter<TContext>;
 

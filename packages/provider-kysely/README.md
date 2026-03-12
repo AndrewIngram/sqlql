@@ -1,8 +1,8 @@
 # `@tupl/provider-kysely`
 
-Kysely provider adapter for tupl.
+Kysely-backed provider builders for tupl.
 
-Use this package to expose Kysely-backed tables as tupl providers.
+Use this package to build a tupl provider over Kysely-backed tables.
 
 ## Install
 
@@ -13,7 +13,7 @@ pnpm add @tupl/provider-kysely kysely
 ## Docs
 
 - Repository: <https://github.com/AndrewIngram/tupl>
-- Adapter contracts: [`@tupl/provider-kit`](https://github.com/AndrewIngram/tupl/tree/main/packages/provider-kit)
+- Provider contracts and adapter-authoring helpers: [`@tupl/provider-kit`](https://github.com/AndrewIngram/tupl/tree/main/packages/provider-kit)
 - Schema APIs: [`@tupl/schema`](https://github.com/AndrewIngram/tupl/tree/main/packages/schema)
 
 ## Design Notes
