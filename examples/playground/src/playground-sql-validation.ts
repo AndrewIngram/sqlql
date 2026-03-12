@@ -1,4 +1,3 @@
-import type { RelNode } from "@tupl/foundation";
 import type { SchemaDefinition } from "@tupl/schema";
 
 interface SqlBindingInfo {
@@ -330,23 +329,4 @@ export function validateSelectReferences(
   return null;
 }
 
-export function hasSqlNode(node: RelNode): boolean {
-  switch (node.kind) {
-    case "sql":
-      return true;
-    case "scan":
-      return false;
-    case "filter":
-    case "project":
-    case "aggregate":
-    case "window":
-    case "sort":
-    case "limit_offset":
-      return hasSqlNode(node.input);
-    case "join":
-    case "set_op":
-      return hasSqlNode(node.left) || hasSqlNode(node.right);
-    case "with":
-      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
-  }
-}
+export { relContainsSqlNode as hasSqlNode } from "@tupl/foundation";

@@ -2,8 +2,8 @@ import { Result, type Result as BetterResult } from "better-result";
 
 import {
   countRelNodes,
+  relContainsSqlNode,
   TuplRuntimeError,
-  type RelExpr,
   type RelNode,
   type TuplError,
 } from "@tupl/foundation";
@@ -31,44 +31,6 @@ import {
 /**
  * Query runner owns SQL-to-execution orchestration and explain/query entrypoints for the runtime.
  */
-function hasSqlNode(node: RelNode): boolean {
-  const exprHasSqlNode = (expr: RelExpr): boolean => {
-    switch (expr.kind) {
-      case "literal":
-      case "column":
-        return false;
-      case "function":
-        return expr.args.some(exprHasSqlNode);
-      case "subquery":
-        return hasSqlNode(expr.rel);
-    }
-  };
-
-  switch (node.kind) {
-    case "sql":
-      return true;
-    case "scan":
-      return false;
-    case "filter":
-      return hasSqlNode(node.input) || (node.expr ? exprHasSqlNode(node.expr) : false);
-    case "project":
-      return (
-        hasSqlNode(node.input) ||
-        node.columns.some((column) => "expr" in column && exprHasSqlNode(column.expr))
-      );
-    case "aggregate":
-    case "window":
-    case "sort":
-    case "limit_offset":
-      return hasSqlNode(node.input);
-    case "join":
-    case "set_op":
-      return hasSqlNode(node.left) || hasSqlNode(node.right);
-    case "with":
-      return node.ctes.some((cte) => hasSqlNode(cte.query)) || hasSqlNode(node.body);
-  }
-}
-
 function normalizeRuntimeSchema<TContext>(input: QueryInput<TContext>): QueryInput<TContext> {
   const schema = resolveSchemaLinkedEnums(input.schema);
   return {
@@ -92,7 +54,7 @@ export function normalizeRuntimeSchemaResult<TContext>(
 export function assertNoSqlNodesWithoutProviderFragmentResult(
   rel: RelNode,
 ): BetterResult<RelNode, TuplRuntimeError> {
-  if (hasSqlNode(rel)) {
+  if (relContainsSqlNode(rel)) {
     return Result.err(
       new TuplRuntimeError({
         operation: "validate provider fragment execution shape",

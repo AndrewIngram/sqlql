@@ -10,7 +10,7 @@ import type {
   QuerySession,
   QueryStepEvent,
   QueryStepState,
-} from "@tupl/runtime";
+} from "@tupl/runtime/session";
 import { toSqlDDL, type QueryRow, type SchemaDefinition, type SqlScalarType } from "@tupl/schema";
 
 import { DataGrid } from "@/data-grid";

@@ -4,7 +4,6 @@ import {
   type FragmentProviderAdapter,
   type LookupProviderAdapter,
 } from "@tupl/provider-kit";
-import { hasSqlNode } from "@tupl/provider-kit/shapes";
 
 import { executeCompiledPlan } from "./execution/plan-execution";
 import { executeLookupMany } from "./execution/lookup-execution";
@@ -45,51 +44,24 @@ export function createObjectionProvider<
   LookupProviderAdapter<TContext> & {
     entities: ObjectionProviderEntities<TEntities>;
   } {
-  const declaredAtoms = [
-    "scan.project",
-    "scan.filter.basic",
-    "scan.filter.set_membership",
-    "scan.sort",
-    "scan.limit_offset",
-    "lookup.bulk",
-    "aggregate.group_by",
-    "join.inner",
-    "join.left",
-    "join.right_full",
-    "set_op.union_all",
-    "set_op.union_distinct",
-    "set_op.intersect",
-    "set_op.except",
-    "cte.non_recursive",
-    "window.rank_basic",
-  ] as const;
-
   const providerName = options.name ?? "objection";
   const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
 
   return createRelationalProviderAdapter<TContext, TEntities, ObjectionRelCompileStrategy>({
     name: providerName,
-    declaredAtoms,
     entities: entityOptions,
     unsupportedRelCompileMessage: "Unsupported relational fragment for Objection provider.",
-    unsupportedRelReason({ fragment }) {
-      return hasSqlNode(fragment.rel)
-        ? "rel fragment must not contain sql nodes."
-        : "Rel fragment is not supported for single-query Objection pushdown.";
-    },
+    unsupportedRelReasonMessage:
+      "Rel fragment is not supported for single-query Objection pushdown.",
     resolveRelCompileStrategy({ fragment }) {
       return resolveObjectionRelCompileStrategy(fragment.rel, entityConfigs);
     },
-    async compileRelFragment({ fragment, strategy }) {
-      return AdapterResult.ok({
-        provider: providerName,
-        kind: "rel",
-        payload: {
-          strategy,
-          rel: fragment.rel,
-        } satisfies ObjectionRelCompiledPlan,
-      });
+    buildRelPlanPayload({ fragment, strategy }) {
+      return {
+        strategy,
+        rel: fragment.rel,
+      } satisfies ObjectionRelCompiledPlan;
     },
     async executeCompiledPlan({ plan, context }) {
       const knex = await resolveKnex(options, context);

@@ -4,7 +4,6 @@ import {
   type FragmentProviderAdapter,
   type LookupProviderAdapter,
 } from "@tupl/provider-kit";
-import { hasSqlNode } from "@tupl/provider-kit/shapes";
 
 import { executeCompiledPlan } from "./execution/plan-execution";
 import { executeLookupMany } from "./execution/lookup-execution";
@@ -54,25 +53,6 @@ export function createDrizzleProvider<
   LookupProviderAdapter<TContext> & {
     entities: DrizzleProviderEntities<TTables>;
   } {
-  const declaredAtoms = [
-    "scan.project",
-    "scan.filter.basic",
-    "scan.filter.set_membership",
-    "scan.sort",
-    "scan.limit_offset",
-    "lookup.bulk",
-    "aggregate.group_by",
-    "join.inner",
-    "join.left",
-    "join.right_full",
-    "set_op.union_all",
-    "set_op.union_distinct",
-    "set_op.intersect",
-    "set_op.except",
-    "cte.non_recursive",
-    "window.rank_basic",
-  ] as const;
-
   const providerName = options.name ?? "drizzle";
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
@@ -80,16 +60,11 @@ export function createDrizzleProvider<
 
   return createRelationalProviderAdapter<TContext, TTables, DrizzleRelCompileStrategy>({
     name: providerName,
-    declaredAtoms,
     entities: options.tables,
     unsupportedRelCompileMessage: "Unsupported relational fragment for drizzle provider.",
+    unsupportedRelReasonMessage: "Rel fragment is not supported for single-query drizzle pushdown.",
     resolveEntityColumns({ config }) {
       return deriveEntityColumnsFromTable(config.table);
-    },
-    unsupportedRelReason({ fragment }) {
-      return hasSqlNode(fragment.rel)
-        ? "rel fragment must not contain sql nodes."
-        : "Rel fragment is not supported for single-query drizzle pushdown.";
     },
     resolveRelCompileStrategy({ fragment }) {
       return resolveDrizzleRelCompileStrategy(fragment.rel, tableConfigs);
@@ -110,15 +85,11 @@ export function createDrizzleProvider<
       const db = resolveDrizzleDbMaybeSync(options, context);
       return isPromiseLike(db) ? db.then(evaluateWithDb) : evaluateWithDb(db);
     },
-    async compileRelFragment({ fragment, strategy }) {
-      return AdapterResult.ok({
-        provider: providerName,
-        kind: "rel",
-        payload: {
-          strategy,
-          rel: fragment.rel,
-        } satisfies DrizzleRelCompiledPlan,
-      });
+    buildRelPlanPayload({ fragment, strategy }) {
+      return {
+        strategy,
+        rel: fragment.rel,
+      } satisfies DrizzleRelCompiledPlan;
     },
     async executeCompiledPlan({ plan, context }) {
       return AdapterResult.tryPromise({

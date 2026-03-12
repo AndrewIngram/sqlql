@@ -36,7 +36,6 @@ export {
 export type {
   ExecutableSchema,
   ExecutableSchemaQueryInput,
-  ExecutableSchemaSessionInput,
   ExplainResult,
   QueryFallbackPolicy,
   QueryGuardrails,

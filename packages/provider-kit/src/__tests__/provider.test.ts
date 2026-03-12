@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDataEntityHandle,
   createRelationalProviderAdapter,
+  DEFAULT_RELATIONAL_CAPABILITY_ATOMS,
   type FragmentProviderAdapter,
   getDataEntityAdapter,
   type LookupProviderAdapter,
@@ -15,7 +16,10 @@ import {
   type TableScanRequest,
 } from "@tupl/provider-kit";
 import { getNormalizedTableBinding, validateProviderBindingsResult } from "@tupl/schema-model";
-import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
+import {
+  createExecutableSchemaFromProviders,
+  createSessionFromExecutableSchema,
+} from "@tupl/test-support/runtime";
 import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
 import { collectCapabilityAtomsForFragment } from "../provider/capabilities";
@@ -2047,7 +2051,7 @@ describe("query/provider runtime", () => {
     expect(kvLookupCalls).toBe(1);
     expect(kvScanExecutions).toBe(0);
 
-    const session = executableSchema.createSession({
+    const session = createSessionFromExecutableSchema(executableSchema, {
       context: {},
       sql: `
         SELECT p.name, v.view_count
@@ -2094,7 +2098,7 @@ describe("query/provider runtime", () => {
       } satisfies TestProvider,
     });
 
-    const session = executableSchema.createSession({
+    const session = createSessionFromExecutableSchema(executableSchema, {
       context: {},
       sql: "SELECT id FROM orders",
     });
@@ -2168,6 +2172,116 @@ describe("query/provider runtime", () => {
         }),
       ]),
     );
+  });
+
+  it("defaults relational provider capability atoms for common SQL-like adapters", () => {
+    const adapter = createRelationalProviderAdapter({
+      name: "warehouse",
+      entities: {
+        orders: {},
+      },
+      resolveRelCompileStrategy() {
+        return null;
+      },
+      async executeCompiledPlan() {
+        return Result.ok([]);
+      },
+    });
+
+    expect(adapter.capabilityAtoms).toEqual([...DEFAULT_RELATIONAL_CAPABILITY_ATOMS]);
+  });
+
+  it("builds the default relational compiled-plan payload when no custom compiler is provided", async () => {
+    const relFragment: ProviderFragment = {
+      kind: "rel",
+      provider: "warehouse",
+      rel: {
+        id: "scan_orders",
+        kind: "scan",
+        convention: "local",
+        table: "orders",
+        select: ["id"],
+        output: [{ name: "id" }],
+      },
+    };
+    const adapter = createRelationalProviderAdapter({
+      name: "warehouse",
+      entities: {
+        orders: {},
+      },
+      resolveRelCompileStrategy() {
+        return "basic";
+      },
+      async executeCompiledPlan() {
+        return Result.ok([]);
+      },
+    });
+
+    const compileResult = await adapter.compile(relFragment, {});
+    expect(Result.isOk(compileResult)).toBe(true);
+    if (Result.isError(compileResult)) {
+      throw compileResult.error;
+    }
+
+    expect(compileResult.value).toEqual({
+      provider: "warehouse",
+      kind: "rel",
+      payload: {
+        strategy: "basic",
+        rel: relFragment.rel,
+      },
+    });
+  });
+
+  it("uses the provider-specific unsupported reason for non-sql unsupported shapes", async () => {
+    const adapter = createRelationalProviderAdapter({
+      name: "warehouse",
+      entities: {
+        orders: {},
+      },
+      resolveRelCompileStrategy() {
+        return null;
+      },
+      unsupportedRelReasonMessage: "Rel fragment needs a provider-specific compilation path.",
+      async executeCompiledPlan() {
+        return Result.ok([]);
+      },
+    });
+
+    const capability = await adapter.canExecute(
+      {
+        kind: "rel",
+        provider: "warehouse",
+        rel: {
+          id: "window_1",
+          kind: "window",
+          convention: "local",
+          input: {
+            id: "scan_orders",
+            kind: "scan",
+            convention: "local",
+            table: "orders",
+            select: ["id"],
+            output: [{ name: "id" }],
+          },
+          functions: [
+            {
+              fn: "count",
+              as: "row_count",
+              partitionBy: [],
+              orderBy: [],
+            },
+          ],
+          output: [{ name: "id" }, { name: "row_count" }],
+        },
+      },
+      {},
+    );
+
+    expect(capability).toMatchObject({
+      supported: false,
+      reason: "Rel fragment needs a provider-specific compilation path.",
+    });
   });
 
   it("rejects fallback when query policy forbids missing capability atoms", async () => {

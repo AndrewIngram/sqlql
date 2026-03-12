@@ -2,7 +2,7 @@ import { Result, type Result as BetterResult } from "better-result";
 
 import type { TuplError } from "@tupl/foundation";
 
-import type { QuerySession, QuerySessionInput } from "../contracts";
+import type { QuerySession, QuerySessionInput } from "./contracts";
 import { tryQueryStep, unwrapQueryResult } from "../diagnostics";
 import { createRelExecutionSession } from "./rel-execution-session";
 import {

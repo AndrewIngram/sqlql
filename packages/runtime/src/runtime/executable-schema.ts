@@ -10,10 +10,11 @@ import {
   type SchemaDefinition,
 } from "@tupl/schema-model";
 
-import type { ExecutableSchema, ExecutableSchemaRuntime } from "./contracts";
+import type { ExecutableSchema } from "./contracts";
 import { unwrapQueryResult, tryQueryStep } from "./diagnostics";
+import { bindExecutableSchemaSessionAccess } from "./executable-schema-runtime";
 import { explainInternal, queryInternal, queryInternalResult } from "./query-runner";
-import { createQuerySessionInternal, createQuerySessionResult } from "./session/session";
+import { createQuerySessionResult } from "./session/query-session-factory";
 
 /**
  * Executable schema owns schema-to-runtime binding and the public executable facade constructors.
@@ -78,12 +79,12 @@ function createExecutableSchemaResultInternal<TContext, TSchema extends SchemaDe
   }
 
   const providers = providersResult.value;
-  const runtime: ExecutableSchemaRuntime<TContext> = {
+  const runtime = {
     schema,
     providers,
   };
 
-  return Result.ok({
+  const executableSchema = {
     schema,
     query(input) {
       return queryInternal({
@@ -99,20 +100,6 @@ function createExecutableSchemaResultInternal<TContext, TSchema extends SchemaDe
         ...input,
       });
     },
-    createSession(input) {
-      return createQuerySessionInternal({
-        schema: runtime.schema,
-        providers: runtime.providers,
-        ...input,
-      });
-    },
-    createSessionResult(input) {
-      return createQuerySessionResult({
-        schema: runtime.schema,
-        providers: runtime.providers,
-        ...input,
-      });
-    },
     explain(input) {
       return explainInternal({
         schema: runtime.schema,
@@ -120,7 +107,18 @@ function createExecutableSchemaResultInternal<TContext, TSchema extends SchemaDe
         ...input,
       });
     },
+  } satisfies ExecutableSchema<TContext, TSchema | SchemaDefinition>;
+
+  bindExecutableSchemaSessionAccess(executableSchema, {
+    createSessionResult(input) {
+      return createQuerySessionResult({
+        schema: runtime.schema,
+        providers: runtime.providers,
+        ...input,
+      });
+    },
   });
+  return Result.ok(executableSchema);
 }
 
 export function createExecutableSchemaResult<TContext>(

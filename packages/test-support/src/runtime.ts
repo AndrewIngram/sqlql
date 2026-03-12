@@ -13,9 +13,14 @@ import {
 import {
   type ConstraintValidationOptions,
   createExecutableSchema,
+  type ExecutableSchema,
   type QueryGuardrails,
-  type QuerySessionOptions,
 } from "@tupl/runtime";
+import {
+  createExecutableSchemaSession,
+  type ExecutableSchemaSessionInput,
+  type QuerySessionOptions,
+} from "@tupl/runtime/session";
 import {
   createSchemaBuilder,
   getNormalizedTableBinding,
@@ -879,13 +884,20 @@ export function createMethodsSession<TContext>(input: {
   constraintValidation?: ConstraintValidationOptions;
   options?: QuerySessionOptions;
 }) {
-  return createExecutableMethodsSchema(input.schema, input.methods).createSession({
+  return createExecutableSchemaSession(createExecutableMethodsSchema(input.schema, input.methods), {
     context: input.context,
     sql: input.sql,
     ...(input.queryGuardrails ? { queryGuardrails: input.queryGuardrails } : {}),
     ...(input.constraintValidation ? { constraintValidation: input.constraintValidation } : {}),
     ...(input.options ? { options: input.options } : {}),
   });
+}
+
+export function createSessionFromExecutableSchema<TContext>(
+  executableSchema: ExecutableSchema<TContext>,
+  input: ExecutableSchemaSessionInput<TContext>,
+) {
+  return createExecutableSchemaSession(executableSchema, input);
 }
 
 export type RowsByTable<TSchema extends SchemaDefinition> = {

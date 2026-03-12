@@ -1,6 +1,6 @@
 import type { RelNode } from "@tupl/foundation";
 
-import type { QuerySessionInput } from "../contracts";
+import type { QuerySessionInput } from "../session/contracts";
 import { buildJoinStep, buildSetOpStep, buildWithStep } from "./execution-branch-builders";
 import {
   buildAggregateStep,

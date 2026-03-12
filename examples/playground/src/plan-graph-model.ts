@@ -4,7 +4,7 @@ import type {
   QueryExecutionPlanScope,
   QueryExecutionPlanStep,
   QueryStepState,
-} from "@tupl/runtime";
+} from "@tupl/runtime/session";
 
 const NODE_WIDTH = 320;
 const NODE_HEIGHT = 170;

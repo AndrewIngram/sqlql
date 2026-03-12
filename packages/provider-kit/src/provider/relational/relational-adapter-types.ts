@@ -97,13 +97,31 @@ export interface RelationalProviderSupportArgs<
   TStrategy extends RelationalProviderRelCompileStrategy,
 > extends RelationalProviderCapabilityContext<TContext, TEntities, TStrategy> {}
 
+export const DEFAULT_RELATIONAL_CAPABILITY_ATOMS = [
+  "scan.project",
+  "scan.filter.basic",
+  "scan.filter.set_membership",
+  "scan.sort",
+  "scan.limit_offset",
+  "aggregate.group_by",
+  "join.inner",
+  "join.left",
+  "join.right_full",
+  "set_op.union_all",
+  "set_op.union_distinct",
+  "set_op.intersect",
+  "set_op.except",
+  "cte.non_recursive",
+  "window.rank_basic",
+] as const satisfies readonly ProviderCapabilityAtom[];
+
 interface RelationalProviderAdapterOptionsBase<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
 > {
   name: string;
-  declaredAtoms: readonly ProviderCapabilityAtom[];
+  declaredAtoms?: readonly ProviderCapabilityAtom[];
   entities: TEntities;
   fallbackPolicy?: QueryFallbackPolicy;
   routeFamilies?: readonly ProviderRouteFamily[];
@@ -118,6 +136,7 @@ interface RelationalProviderAdapterOptionsBase<
   unsupportedRelReason?(
     args: RelationalProviderCapabilityContext<TContext, TEntities, TStrategy>,
   ): string;
+  unsupportedRelReasonMessage?: string;
   unsupportedRelCompileMessage?: string;
   isRelStrategySupported?(
     args: RelationalProviderSupportArgs<TContext, TEntities, TStrategy>,
@@ -125,9 +144,12 @@ interface RelationalProviderAdapterOptionsBase<
   compileScanFragment?(
     args: RelationalProviderCompileScanArgs<TContext, TEntities>,
   ): MaybePromise<AdapterResult<ProviderCompiledPlan>>;
-  compileRelFragment(
+  compileRelFragment?(
     args: RelationalProviderCompileRelArgs<TContext, TEntities, TStrategy>,
   ): MaybePromise<AdapterResult<ProviderCompiledPlan>>;
+  buildRelPlanPayload?(
+    args: RelationalProviderCompileRelArgs<TContext, TEntities, TStrategy>,
+  ): unknown;
   executeCompiledPlan(
     args: RelationalProviderExecuteArgs<TContext, TEntities>,
   ): MaybePromise<AdapterResult<QueryRow[]>>;

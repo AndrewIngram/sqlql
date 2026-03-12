@@ -9,7 +9,9 @@ import * as providerIoredis from "@tupl/provider-ioredis";
 import * as providerKysely from "@tupl/provider-kysely";
 import * as providerObjection from "@tupl/provider-objection";
 import * as planner from "@tupl/planner";
+import * as runtime from "@tupl/runtime";
 import * as runtimeExecutor from "@tupl/runtime/executor";
+import * as runtimeSession from "@tupl/runtime/session";
 import * as schema from "@tupl/schema";
 import type {
   QueryRow as ProviderQueryRow,
@@ -88,8 +90,20 @@ describe("public package imports", () => {
 
   it("resolves canonical public subpaths directly", () => {
     expect(typeof providerKitShapes.buildScanUnsupportedReport).toBe("function");
+    expect("hasSqlNode" in providerKitShapes).toBe(false);
     expect(typeof runtimeExecutor.executeRelWithProvidersResult).toBe("function");
+    expect(typeof runtimeSession.createExecutableSchemaSession).toBe("function");
     expect(typeof providerKitTesting.createProviderConformanceCases).toBe("function");
+  });
+
+  it("keeps session observation off the runtime root surface", () => {
+    expect("QueryExecutionPlan" in runtime).toBe(false);
+    expect("QueryExecutionPlanScope" in runtime).toBe(false);
+    expect("QueryExecutionPlanStep" in runtime).toBe(false);
+    expect("QuerySession" in runtime).toBe(false);
+    expect("QuerySessionOptions" in runtime).toBe(false);
+    expect("QueryStepEvent" in runtime).toBe(false);
+    expect("QueryStepState" in runtime).toBe(false);
   });
 
   it("keeps the planner root surface stable", () => {
