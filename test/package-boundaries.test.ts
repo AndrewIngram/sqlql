@@ -450,6 +450,25 @@ describe("package boundaries", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("keeps third-party provider authoring fixtures on the public provider-kit surface", () => {
+    const offenders: string[] = [];
+    const allowedImports = new Set<string>(["@tupl/provider-kit"]);
+
+    for (const file of walkFiles(join(REPO_ROOT, "test/provider-fixtures"))) {
+      if (!file.endsWith(".ts")) {
+        continue;
+      }
+
+      const imports = getWorkspaceImports(readFileSync(file, "utf8"));
+      const disallowed = imports.filter((specifier) => !allowedImports.has(specifier));
+      if (disallowed.length > 0) {
+        offenders.push(`${relative(REPO_ROOT, file)} -> ${disallowed.join(", ")}`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps first-party adapter conformance on the public provider-kit/testing surface", () => {
     const contents = readFileSync(join(REPO_ROOT, "test/providers/conformance.test.ts"), "utf8");
     expect(contents).toContain("@tupl/provider-kit/testing");
