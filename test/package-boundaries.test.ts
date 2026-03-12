@@ -146,6 +146,16 @@ const STRUCTURAL_LINE_BUDGETS = {
   "packages/schema-model/src/mapping/logical-row-mapping.ts": 200,
   "packages/schema-model/src/mapping/output-inference.ts": 500,
   "packages/schema-model/src/mapping/rel-output-mapping.ts": 200,
+  "packages/provider-kysely/src/index.ts": 250,
+  "packages/provider-kysely/src/planning/rel-strategy.ts": 250,
+  "packages/provider-kysely/src/execution/scan-execution.ts": 350,
+  "packages/provider-objection/src/index.ts": 250,
+  "packages/provider-objection/src/planning/rel-strategy.ts": 250,
+  "packages/provider-objection/src/execution/scan-execution.ts": 350,
+  "packages/provider-drizzle/src/index.ts": 250,
+  "packages/provider-drizzle/src/planning/rel-strategy.ts": 500,
+  "packages/provider-drizzle/src/planning/rel-builder.ts": 1000,
+  "packages/provider-drizzle/src/execution/scan-execution.ts": 350,
 } as const;
 
 function walkFiles(root: string): string[] {
@@ -464,6 +474,35 @@ describe("package boundaries", () => {
         }
 
         if (disallowedPrimitives.some((name) => contents.includes(name))) {
+          offenders.push(relative(REPO_ROOT, file));
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps provider internal modules importing their owning families, not the package root", () => {
+    const offenders: string[] = [];
+    const providerRoots = [
+      "packages/provider-kysely/src",
+      "packages/provider-objection/src",
+      "packages/provider-drizzle/src",
+    ];
+
+    for (const root of providerRoots) {
+      for (const file of walkFiles(join(REPO_ROOT, root))) {
+        if (!file.endsWith(".ts") || file.includes("/__tests__/") || file.endsWith("/index.ts")) {
+          continue;
+        }
+
+        const contents = readFileSync(file, "utf8");
+        if (
+          contents.includes('from "../index"') ||
+          contents.includes("from '../index'") ||
+          contents.includes('from "../../index"') ||
+          contents.includes("from '../../index'")
+        ) {
           offenders.push(relative(REPO_ROOT, file));
         }
       }
