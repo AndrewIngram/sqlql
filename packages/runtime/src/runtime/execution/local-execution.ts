@@ -6,6 +6,7 @@ import {
   executeFilterResult,
   executeJoinResult,
   executeLimitOffsetResult,
+  executeRepeatUnionResult,
   executeProjectResult,
   executeSetOpResult,
   executeSortResult,
@@ -144,6 +145,8 @@ export async function executeRelNodeResult<TContext>(
       return executeSetOpResult(node, context);
     case "with":
       return executeWithResult(node, context);
+    case "repeat_union":
+      return executeRepeatUnionResult(node, context);
     case "sql":
       return Result.err(
         new TuplExecutionError({

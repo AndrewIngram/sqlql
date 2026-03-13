@@ -72,6 +72,8 @@ export function appearsInRel(node: RelNode, alias: string): boolean {
     case "join":
     case "set_op":
       return appearsInRel(node.left, alias) || appearsInRel(node.right, alias);
+    case "repeat_union":
+      return appearsInRel(node.seed, alias) || appearsInRel(node.iterative, alias);
     case "with":
       return appearsInRel(node.body, alias);
     case "sql":

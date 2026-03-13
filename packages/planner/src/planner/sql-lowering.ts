@@ -1,7 +1,6 @@
 import { Result, type Result as BetterResult } from "better-result";
 
 import {
-  createSqlRel,
   type RelNode,
   type TuplParseError,
   type TuplPlanningError,
@@ -78,11 +77,7 @@ function lowerSqlAstToRelUnchecked(
     };
   }
 
-  const tables = collectTablesFromSelectAst(ast);
-  return {
-    rel: createSqlRel(sql, tables),
-    tables,
-  };
+  throw new Error("Query could not be lowered into canonical relational operators.");
 }
 
 export { expandRelViews, expandRelViewsResult } from "./view-expansion";

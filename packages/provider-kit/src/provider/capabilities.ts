@@ -217,6 +217,10 @@ function collectCapabilityAtomsForRel(node: RelNode, atoms: Set<ProviderCapabili
       }
       collectCapabilityAtomsForRel(node.body, atoms);
       return;
+    case "repeat_union":
+      collectCapabilityAtomsForRel(node.seed, atoms);
+      collectCapabilityAtomsForRel(node.iterative, atoms);
+      return;
     case "sql":
       return;
   }
@@ -330,6 +334,7 @@ function hasAdvancedRelFeatures(node: RelNode): boolean {
   switch (node.kind) {
     case "window":
     case "with":
+    case "repeat_union":
     case "set_op":
       return true;
     case "scan":

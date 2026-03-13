@@ -249,7 +249,72 @@ describe("query/planning", () => {
       `,
     );
 
-    expect(physical.steps.some((step) => step.kind === "lookup_join")).toBe(true);
+    expect(physical.steps.some((step) => step.kind === "lookup_join")).toBe(false);
+    expect(physical.steps.some((step) => step.kind === "remote_fragment")).toBe(true);
+    expect(physical.steps.some((step) => step.kind === "local_hash_join")).toBe(true);
+  });
+
+  it("lowers FROM subqueries into local relational plans instead of rejecting them", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          org_id: "text",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT scoped.id
+        FROM (
+          SELECT id
+          FROM orders
+          WHERE org_id = 'org_1'
+        ) scoped
+        ORDER BY scoped.id ASC
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("with");
+  });
+
+  it("lowers recursive CTEs to repeat_union rel nodes", () => {
+    const schema = buildEntitySchema({
+      edges: {
+        provider: "warehouse",
+        columns: {
+          source_id: "integer",
+          target_id: "integer",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        WITH RECURSIVE reachable AS (
+          SELECT source_id AS node_id
+          FROM edges
+          WHERE source_id = 1
+          UNION ALL
+          SELECT e.target_id AS node_id
+          FROM reachable r
+          JOIN edges e ON e.source_id = r.node_id
+        )
+        SELECT node_id
+        FROM reachable
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("with");
+    if (lowered.rel.kind !== "with") {
+      throw new Error("Expected with root.");
+    }
+
+    expect(lowered.rel.ctes[0]?.query.kind).toBe("repeat_union");
   });
 
   it("plans same-provider subtree as a remote rel fragment when supported", async () => {

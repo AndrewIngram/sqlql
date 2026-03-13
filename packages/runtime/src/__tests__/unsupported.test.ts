@@ -51,48 +51,4 @@ describe("query/unsupported", () => {
       },
     );
   });
-
-  it("rejects recursive CTEs", async () => {
-    await withQueryHarness(
-      {
-        schema: commerceSchema,
-        rowsByTable: commerceRows,
-      },
-      async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              WITH RECURSIVE n AS (
-                SELECT id FROM orders
-                UNION ALL
-                SELECT id FROM n
-              )
-              SELECT id FROM n
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Recursive CTEs are not yet supported.");
-      },
-    );
-  });
-
-  it("rejects FROM subqueries", async () => {
-    await withQueryHarness(
-      {
-        schema: commerceSchema,
-        rowsByTable: commerceRows,
-      },
-      async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT s.id
-              FROM (SELECT id FROM orders) s
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Unsupported FROM clause entry.");
-      },
-    );
-  });
 });

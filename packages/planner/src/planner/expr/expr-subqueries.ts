@@ -1,4 +1,5 @@
 import type { SelectAst, WindowClauseEntryAst, WindowSpecificationAst } from "../sqlite-parser/ast";
+import type { RelWindowFrame } from "@tupl/foundation";
 
 /**
  * Expr subqueries own subquery AST parsing, correlation checks, and named window resolution.
@@ -32,7 +33,7 @@ export function parseWindowOver(
 
   if (typeof rawSpec === "string") {
     const resolved = windowDefinitions.get(rawSpec);
-    if (!resolved || resolved.window_frame_clause) {
+    if (!resolved) {
       return null;
     }
     return resolved;
@@ -46,11 +47,7 @@ export function parseWindowOver(
   if (!spec || typeof spec !== "object") {
     return null;
   }
-  const typed = spec as WindowSpecificationAst;
-  if (typed.window_frame_clause) {
-    return null;
-  }
-  return typed;
+  return spec as WindowSpecificationAst;
 }
 
 export function parseSubqueryAst(raw: unknown): SelectAst | null {
@@ -103,4 +100,46 @@ export function isCorrelatedSubquery(ast: SelectAst, outerAliases: Set<string>):
 
   visit(ast);
   return correlated;
+}
+
+export function parseWindowFrameClause(raw: string | undefined): RelWindowFrame | null {
+  if (!raw) {
+    return null;
+  }
+
+  const normalized = raw.replace(/\s+/g, " ").trim().toUpperCase();
+  switch (normalized) {
+    case "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW":
+      return {
+        mode: "rows",
+        start: "unbounded_preceding",
+        end: "current_row",
+      };
+    case "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING":
+      return {
+        mode: "rows",
+        start: "unbounded_preceding",
+        end: "unbounded_following",
+      };
+    case "ROWS BETWEEN CURRENT ROW AND CURRENT ROW":
+      return {
+        mode: "rows",
+        start: "current_row",
+        end: "current_row",
+      };
+    case "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW":
+      return {
+        mode: "range",
+        start: "unbounded_preceding",
+        end: "current_row",
+      };
+    case "RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING":
+      return {
+        mode: "range",
+        start: "unbounded_preceding",
+        end: "unbounded_following",
+      };
+    default:
+      return null;
+  }
 }

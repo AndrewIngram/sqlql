@@ -5,6 +5,7 @@ export { executeFilterResult, executeJoinResult } from "./local-filter-join";
 export { executeAggregateResult, executeProjectResult } from "./local-projection-aggregation";
 export {
   executeLimitOffsetResult,
+  executeRepeatUnionResult,
   executeSetOpResult,
   executeSortResult,
   executeWithResult,

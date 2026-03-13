@@ -107,6 +107,8 @@ export function inferRelOutputDefinitions(
       }
       return inferRelOutputDefinitions(rel.body, schema, nextCtes);
     }
+    case "repeat_union":
+      return inferRelOutputDefinitions(rel.seed, schema, cteDefinitions);
     case "sql":
       return {};
   }

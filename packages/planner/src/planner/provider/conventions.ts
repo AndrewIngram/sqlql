@@ -33,19 +33,6 @@ export function resolveSingleProvider(
         providers.add(current.entity?.provider ?? readResolvedTableProvider(schema, current.table));
         return true;
       }
-      case "sql": {
-        for (const table of current.tables) {
-          if (scopedCteNames.has(table) || !schema.tables[table]) {
-            continue;
-          }
-          const normalized = getNormalizedTableBinding(schema, table);
-          if (normalized?.kind === "view") {
-            return false;
-          }
-          providers.add(readResolvedTableProvider(schema, table));
-        }
-        return true;
-      }
       case "filter":
       case "project":
       case "aggregate":
@@ -56,6 +43,8 @@ export function resolveSingleProvider(
       case "join":
       case "set_op":
         return visit(current.left, scopedCteNames) && visit(current.right, scopedCteNames);
+      case "repeat_union":
+        return false;
       case "with": {
         const nextScopedCteNames = new Set(scopedCteNames);
         for (const cte of current.ctes) {
@@ -123,6 +112,18 @@ export function assignConventions(
         convention: provider ? (`provider:${provider}` as const) : "local",
       };
     }
+    case "repeat_union": {
+      const nextCteNames = new Set(cteNames);
+      nextCteNames.add(node.cteName);
+      const seed = assignConventions(node.seed, schema, nextCteNames);
+      const iterative = assignConventions(node.iterative, schema, nextCteNames);
+      return {
+        ...node,
+        seed,
+        iterative,
+        convention: "local",
+      };
+    }
     case "with": {
       const nextCteNames = new Set(cteNames);
       for (const cte of node.ctes) {
@@ -138,13 +139,6 @@ export function assignConventions(
         ...node,
         ctes,
         body,
-        convention: provider ? (`provider:${provider}` as const) : "local",
-      };
-    }
-    case "sql": {
-      const provider = resolveSingleProvider(node, schema, cteNames);
-      return {
-        ...node,
         convention: provider ? (`provider:${provider}` as const) : "local",
       };
     }
@@ -188,11 +182,6 @@ export function resolveLookupJoinCandidate<TContext>(
     return null;
   }
 
-  const rightAdapter = providers[rightProvider];
-  if (!rightAdapter || !supportsLookupMany(rightAdapter)) {
-    return null;
-  }
-
   return {
     leftProvider,
     rightProvider,
@@ -218,6 +207,8 @@ function findFirstScanNode(node: RelNode): RelScanNode | null {
     case "join":
     case "set_op":
       return findFirstScanNode(node.left) ?? findFirstScanNode(node.right);
+    case "repeat_union":
+      return findFirstScanNode(node.seed) ?? findFirstScanNode(node.iterative);
     case "with":
       return findFirstScanNode(node.body);
     case "sql":

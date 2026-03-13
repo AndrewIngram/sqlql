@@ -1,4 +1,4 @@
-import type { SelectAst, WindowSpecificationAst } from "./sqlite-parser/ast";
+import type { SelectAst } from "./sqlite-parser/ast";
 import { isCorrelatedSubquery, parseSubqueryAst } from "./sql-expr-lowering";
 
 /**
@@ -18,9 +18,6 @@ function findUnsupportedQueryShape(ast: SelectAst, cteNames: Set<string>): strin
   }
 
   const withClauses = Array.isArray(ast.with) ? ast.with : [];
-  if (withClauses.some((clause) => clause.recursive)) {
-    return "Recursive CTEs are not yet supported.";
-  }
 
   const scopedCteNames = new Set(cteNames);
   for (const clause of withClauses) {
@@ -47,8 +44,14 @@ function findUnsupportedQueryShape(ast: SelectAst, cteNames: Set<string>): strin
   }
 
   const from = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
-  if (from.some((entry) => !!entry.stmt)) {
-    return "Unsupported FROM clause entry.";
+  for (const entry of from) {
+    const nested = entry.stmt?.ast;
+    if (nested) {
+      const reason = findUnsupportedQueryShape(nested, scopedCteNames);
+      if (reason) {
+        return reason;
+      }
+    }
   }
 
   const outerAliases = new Set<string>(
@@ -85,10 +88,6 @@ function findUnsupportedWindowShape(ast: SelectAst): string | null {
   const hasWindow = hasWindowExpression(ast.columns);
   if (hasWindow && (ast.groupby || ast.having)) {
     return "Window functions cannot be mixed with GROUP BY/HAVING.";
-  }
-
-  if (ast.window && ast.window.length > 0) {
-    return "Named WINDOW clauses are not yet supported.";
   }
 
   return findUnsupportedWindowShapeInValue(ast.columns);
@@ -155,23 +154,6 @@ function validateSupportedWindowOver(expr: Record<string, unknown>): string | nu
     normalized !== "max"
   ) {
     return `Unsupported window function: ${rawName.toUpperCase()}`;
-  }
-
-  const rawSpec = (expr.over as { as_window_specification?: unknown }).as_window_specification;
-  if (typeof rawSpec === "string") {
-    return "Named WINDOW clauses are not yet supported.";
-  }
-  if (!rawSpec || typeof rawSpec !== "object") {
-    return null;
-  }
-
-  const spec = (rawSpec as { window_specification?: unknown }).window_specification;
-  if (!spec || typeof spec !== "object") {
-    return null;
-  }
-
-  if ((spec as WindowSpecificationAst).window_frame_clause) {
-    return "Explicit window frame clauses are not yet supported.";
   }
 
   return null;

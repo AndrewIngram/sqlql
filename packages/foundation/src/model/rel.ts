@@ -5,7 +5,7 @@ import type { AggregateFunction, ScanFilterClause, ScanOrderBy } from "./primiti
  * Relational contracts define the logical IR shared by planner, runtime, and provider normalization.
  * They describe query shape and output semantics, not a backend-specific execution plan.
  */
-export type RelConvention = `provider:${string}` | "local";
+export type RelConvention = `provider:${string}` | "local" | "logical";
 
 /** Column refs identify one logical column, optionally qualified by table or alias. */
 export interface RelColumnRef {
@@ -128,6 +128,12 @@ export interface RelJoinNode extends RelNodeBase {
 }
 
 /** Rank window functions compute rank-style outputs over one partitioned and ordered input. */
+export interface RelWindowFrame {
+  mode: "rows" | "range" | "groups";
+  start: "unbounded_preceding" | "current_row";
+  end: "current_row" | "unbounded_following";
+}
+
 export interface RelRankWindowFunction {
   fn: "dense_rank" | "rank" | "row_number";
   as: string;
@@ -136,6 +142,7 @@ export interface RelRankWindowFunction {
     source: RelColumnRef;
     direction: "asc" | "desc";
   }>;
+  frame?: RelWindowFrame;
 }
 
 /** Aggregate window functions compute aggregate outputs over one partitioned and ordered input. */
@@ -149,6 +156,7 @@ export interface RelAggregateWindowFunction {
     source: RelColumnRef;
     direction: "asc" | "desc";
   }>;
+  frame?: RelWindowFrame;
 }
 
 /** Relational window functions are the supported local/provider-neutral window calculation forms. */
@@ -213,6 +221,15 @@ export interface RelWithNode extends RelNodeBase {
   body: RelNode;
 }
 
+/** Repeat-union nodes evaluate a recursive relation until a fixpoint is reached. */
+export interface RelRepeatUnionNode extends RelNodeBase {
+  kind: "repeat_union";
+  cteName: string;
+  mode: "union" | "union_all";
+  seed: RelNode;
+  iterative: RelNode;
+}
+
 /**
  * SQL nodes are escape hatches for query shapes not lowered into canonical relational operators.
  * They require provider pushdown and are not executable by the local relational runtime.
@@ -235,6 +252,7 @@ export type RelNode =
   | RelLimitOffsetNode
   | RelSetOpNode
   | RelWithNode
+  | RelRepeatUnionNode
   | RelSqlNode;
 
 let relIdCounter = 0;
@@ -293,6 +311,8 @@ export function relContainsSqlNode(node: RelNode): boolean {
     case "join":
     case "set_op":
       return relContainsSqlNode(node.left) || relContainsSqlNode(node.right);
+    case "repeat_union":
+      return relContainsSqlNode(node.seed) || relContainsSqlNode(node.iterative);
     case "with":
       return (
         node.ctes.some((cte) => relContainsSqlNode(cte.query)) || relContainsSqlNode(node.body)
@@ -339,6 +359,8 @@ export function countRelNodes(node: RelNode): number {
     case "join":
     case "set_op":
       return 1 + countRelNodes(node.left) + countRelNodes(node.right);
+    case "repeat_union":
+      return 1 + countRelNodes(node.seed) + countRelNodes(node.iterative);
     case "with":
       return (
         1 +
@@ -351,67 +373,82 @@ export function countRelNodes(node: RelNode): number {
 /** `collectRelTables` gathers the set of physical tables referenced anywhere in a relational tree. */
 export function collectRelTables(node: RelNode): string[] {
   const out = new Set<string>();
+  const visit = (current: RelNode, scopedCteNames: Set<string>): void => {
+    switch (current.kind) {
+      case "scan":
+        if (!scopedCteNames.has(current.table)) {
+          out.add(current.table);
+        }
+        return;
+      case "sql":
+        for (const table of current.tables) {
+          if (!scopedCteNames.has(table)) {
+            out.add(table);
+          }
+        }
+        return;
+      case "filter":
+        if (current.expr) {
+          visitExpr(current.expr, scopedCteNames);
+        }
+        visit(current.input, scopedCteNames);
+        return;
+      case "project":
+        for (const column of current.columns) {
+          if ("expr" in column) {
+            visitExpr(column.expr, scopedCteNames);
+          }
+        }
+        visit(current.input, scopedCteNames);
+        return;
+      case "aggregate":
+      case "window":
+      case "sort":
+      case "limit_offset":
+        visit(current.input, scopedCteNames);
+        return;
+      case "join":
+      case "set_op":
+        visit(current.left, scopedCteNames);
+        visit(current.right, scopedCteNames);
+        return;
+      case "repeat_union": {
+        const nextScoped = new Set(scopedCteNames);
+        nextScoped.add(current.cteName);
+        visit(current.seed, nextScoped);
+        visit(current.iterative, nextScoped);
+        return;
+      }
+      case "with": {
+        const nextScoped = new Set(scopedCteNames);
+        for (const cte of current.ctes) {
+          nextScoped.add(cte.name);
+        }
+        for (const cte of current.ctes) {
+          visit(cte.query, nextScoped);
+        }
+        visit(current.body, nextScoped);
+        return;
+      }
+    }
+  };
 
-  const visitExpr = (expr: RelExpr): void => {
+  const visitExpr = (expr: RelExpr, scopedCteNames: Set<string>): void => {
     switch (expr.kind) {
       case "literal":
       case "column":
         return;
       case "function":
         for (const arg of expr.args) {
-          visitExpr(arg);
+          visitExpr(arg, scopedCteNames);
         }
         return;
       case "subquery":
-        visit(expr.rel);
+        visit(expr.rel, scopedCteNames);
         return;
     }
   };
 
-  const visit = (current: RelNode): void => {
-    switch (current.kind) {
-      case "scan":
-        out.add(current.table);
-        return;
-      case "sql":
-        for (const table of current.tables) {
-          out.add(table);
-        }
-        return;
-      case "filter":
-        if (current.expr) {
-          visitExpr(current.expr);
-        }
-        visit(current.input);
-        return;
-      case "project":
-        for (const column of current.columns) {
-          if ("expr" in column) {
-            visitExpr(column.expr);
-          }
-        }
-        visit(current.input);
-        return;
-      case "aggregate":
-      case "window":
-      case "sort":
-      case "limit_offset":
-        visit(current.input);
-        return;
-      case "join":
-      case "set_op":
-        visit(current.left);
-        visit(current.right);
-        return;
-      case "with":
-        for (const cte of current.ctes) {
-          visit(cte.query);
-        }
-        visit(current.body);
-        return;
-    }
-  };
-
-  visit(node);
+  visit(node, new Set<string>());
   return [...out];
 }

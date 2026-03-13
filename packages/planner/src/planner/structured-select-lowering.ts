@@ -1,5 +1,5 @@
 import type { RelNode } from "@tupl/foundation";
-import type { SelectAst } from "./sqlite-parser/ast";
+import type { CteAst, FromEntryAst, SelectAst } from "./sqlite-parser/ast";
 import type { SchemaDefinition } from "@tupl/schema-model";
 import { nextRelId } from "./physical/planner-ids";
 import { collectTablesFromSelectAst } from "./sql-expr-lowering";
@@ -14,9 +14,10 @@ export function tryLowerStructuredSelect(
   schema: SchemaDefinition,
   cteNames: Set<string>,
 ): RelNode | null {
+  const normalizedAst = rewriteDerivedTables(ast);
   const scopedCteNames = new Set(cteNames);
   const loweredCtes: Array<{ name: string; query: RelNode }> = [];
-  const withClauses = Array.isArray(ast.with) ? ast.with : [];
+  const withClauses = Array.isArray(normalizedAst.with) ? normalizedAst.with : [];
 
   for (const clause of withClauses) {
     const rawName = (clause as { name?: unknown }).name;
@@ -48,16 +49,19 @@ export function tryLowerStructuredSelect(
     if (!cteName || !cteAst || typeof cteAst !== "object") {
       return null;
     }
-    const loweredCte = tryLowerStructuredSelect(cteAst as SelectAst, schema, scopedCteNames);
+    const loweredCte =
+      clause.recursive && isRecursiveCteBody(cteAst as SelectAst, cteName)
+        ? lowerRecursiveCte(cteName, cteAst as SelectAst, schema, scopedCteNames)
+        : tryLowerStructuredSelect(cteAst as SelectAst, schema, scopedCteNames);
     if (!loweredCte) {
       return null;
     }
     loweredCtes.push({ name: cteName, query: loweredCte });
   }
 
-  const hasSetOp = typeof ast.set_op === "string" && !!ast._next;
+  const hasSetOp = typeof normalizedAst.set_op === "string" && !!normalizedAst._next;
   if (!hasSetOp) {
-    const { with: _ignoredWith, ...withoutWith } = ast;
+    const { with: _ignoredWith, ...withoutWith } = normalizedAst;
     const simple = tryLowerSimpleSelect(
       withoutWith as SelectAst,
       schema,
@@ -82,7 +86,7 @@ export function tryLowerStructuredSelect(
     };
   }
 
-  const { with: _ignoredWith, ...withoutWith } = ast;
+  const { with: _ignoredWith, ...withoutWith } = normalizedAst;
   let currentAst: SelectAst = withoutWith as SelectAst;
   const { set_op: _ignoredSetOp, _next: _ignoredNext, ...currentBaseAst } = currentAst;
   let currentNode = tryLowerSimpleSelect(
@@ -145,3 +149,122 @@ export function tryLowerStructuredSelect(
 }
 
 export { collectTablesFromSelectAst };
+
+function lowerRecursiveCte(
+  cteName: string,
+  ast: SelectAst,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
+): RelNode | null {
+  if (!ast.set_op || !ast._next) {
+    return null;
+  }
+
+  const op = parseSetOp(ast.set_op);
+  if (op !== "union" && op !== "union_all") {
+    return null;
+  }
+
+  const { with: _ignoredWith, set_op: _ignoredSetOp, _next: _ignoredNext, ...seedAst } = ast;
+  const seed = tryLowerSimpleSelect(seedAst as SelectAst, schema, cteNames, (subqueryAst) =>
+    tryLowerStructuredSelect(subqueryAst, schema, cteNames),
+  );
+  if (!seed) {
+    return null;
+  }
+
+  const recursiveTerm = tryLowerSimpleSelect(
+    rewriteDerivedTables(ast._next) as SelectAst,
+    schema,
+    cteNames,
+    (subqueryAst) => tryLowerStructuredSelect(subqueryAst, schema, cteNames),
+  );
+  if (!recursiveTerm) {
+    return null;
+  }
+
+  return {
+    id: nextRelId("repeat_union"),
+    kind: "repeat_union",
+    convention: "logical",
+    cteName,
+    mode: op,
+    seed,
+    iterative: recursiveTerm,
+    output: seed.output,
+  };
+}
+
+function isRecursiveCteBody(ast: SelectAst, cteName: string): boolean {
+  const visit = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    if (Array.isArray(value)) {
+      return value.some(visit);
+    }
+
+    const record = value as Record<string, unknown>;
+    if (typeof record.table === "string" && record.table === cteName) {
+      return true;
+    }
+
+    return Object.values(record).some(visit);
+  };
+
+  return visit(ast._next);
+}
+
+function rewriteDerivedTables(ast: SelectAst): SelectAst {
+  const from = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
+  if (!from.some((entry) => !!entry.stmt)) {
+    return ast;
+  }
+
+  const existingCteNames = new Set(
+    (ast.with ?? []).flatMap((clause) => {
+      const name = clause.name;
+      if (typeof name === "string") {
+        return [name];
+      }
+      if (name && typeof name === "object" && typeof name.value === "string") {
+        return [name.value];
+      }
+      return [];
+    }),
+  );
+
+  const syntheticCtes: CteAst[] = [];
+  const rewrittenFrom: FromEntryAst[] = from.map((entry, index) => {
+    if (!entry.stmt) {
+      return entry;
+    }
+
+    const alias =
+      typeof entry.as === "string" && entry.as.length > 0 ? entry.as : `derived_${index + 1}`;
+    let syntheticName = `__tupl_derived_${index + 1}`;
+    while (existingCteNames.has(syntheticName)) {
+      syntheticName = `${syntheticName}_next`;
+    }
+    existingCteNames.add(syntheticName);
+    syntheticCtes.push({
+      name: { value: syntheticName },
+      stmt: {
+        ast: rewriteDerivedTables(entry.stmt.ast),
+      },
+    });
+
+    return {
+      table: syntheticName,
+      as: alias,
+      ...(entry.join ? { join: entry.join } : {}),
+      ...(entry.on ? { on: entry.on } : {}),
+    };
+  });
+
+  return {
+    ...ast,
+    from: rewrittenFrom,
+    with: [...(ast.with ?? []), ...syntheticCtes],
+  };
+}

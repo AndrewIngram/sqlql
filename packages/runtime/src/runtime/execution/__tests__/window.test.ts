@@ -146,58 +146,69 @@ describe("query/window", () => {
     );
   });
 
-  it("rejects explicit ROWS frame clauses", async () => {
+  it("supports explicit ROWS frame clauses", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                id,
-                SUM(total_cents) OVER (
-                  PARTITION BY org_id
-                  ORDER BY created_at
-                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                ) AS running_total
-              FROM orders
-              WHERE org_id = 'org_1'
-              ORDER BY id ASC
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Explicit window frame clauses are not yet supported.");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER (
+                PARTITION BY org_id
+                ORDER BY created_at
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+              ) AS running_total
+            FROM orders
+            WHERE org_id = 'org_1'
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", running_total: 1200 },
+          { id: "ord_2", running_total: 3000 },
+          { id: "ord_3", running_total: 5400 },
+        ]);
       },
     );
   });
 
-  it("rejects named WINDOW clauses and references", async () => {
+  it("supports named WINDOW clauses and references", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                id,
-                SUM(total_cents) OVER w AS running_total
-              FROM orders
-              WINDOW w AS (
-                PARTITION BY org_id
-                ORDER BY created_at
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-              )
-              ORDER BY id ASC
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Named WINDOW clauses are not yet supported.");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER w AS running_total
+            FROM orders
+            WINDOW w AS (
+              PARTITION BY org_id
+              ORDER BY created_at
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", running_total: 1200 },
+          { id: "ord_2", running_total: 3000 },
+          { id: "ord_3", running_total: 5400 },
+          { id: "ord_4", running_total: 9900 },
+        ]);
       },
     );
   });

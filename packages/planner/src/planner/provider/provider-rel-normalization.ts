@@ -117,6 +117,8 @@ export function normalizeRelForProvider(node: RelNode, schema: SchemaDefinition)
           })),
           body: visit(current.body),
         };
+      case "repeat_union":
+        return current;
       case "sql":
         return current;
     }
@@ -161,6 +163,8 @@ function simplifyProviderProjects(node: RelNode): RelNode {
         })),
         body: simplifyProviderProjects(node.body),
       };
+    case "repeat_union":
+      return node;
   }
 }
 

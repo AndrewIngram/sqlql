@@ -51,6 +51,26 @@ export function buildExecutionGraph<TContext>(
         return buildSetOpStep(state, node, scopeId, visit);
       case "with":
         return buildWithStep(state, node, scopeId, visit);
+      case "repeat_union": {
+        const seedId = visit(node.seed, scopeId);
+        const iterativeId = visit(node.iterative, scopeId);
+        const id = `repeat_union_${state.steps.length + 1}`;
+        state.steps.push({
+          id,
+          kind: "projection",
+          dependsOn: [seedId, iterativeId],
+          summary: `Recursive CTE (${node.cteName})`,
+          phase: "transform",
+          operation: {
+            name: "repeat_union",
+            details: { cteName: node.cteName, mode: node.mode },
+          },
+          outputs: node.output.map((column) => column.name),
+          sqlOrigin: "WITH",
+          scopeId,
+        });
+        return id;
+      }
       case "sql":
         return buildSqlStep(state, node, scopeId);
     }

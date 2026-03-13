@@ -9,6 +9,7 @@ import type { Binding, SelectProjection, SelectWindowProjection } from "../plann
 import {
   lowerSqlAstToRelExpr,
   parseNamedWindowSpecifications,
+  parseWindowFrameClause,
   parseWindowOver,
   readWindowFunctionName,
   resolveColumnRef,
@@ -178,6 +179,10 @@ function parseWindowProjection(
   }
 
   const output = typeof entry.as === "string" && entry.as.length > 0 ? entry.as : name;
+  const frame = parseWindowFrameClause(over.window_frame_clause?.raw);
+  if (over.window_frame_clause && !frame) {
+    return null;
+  }
 
   if (name === "dense_rank" || name === "rank" || name === "row_number") {
     if (!supportsRankWindowArgs(expr.args)) {
@@ -192,6 +197,7 @@ function parseWindowProjection(
         as: output,
         partitionBy,
         orderBy,
+        ...(frame ? { frame } : {}),
       },
     };
   }
@@ -215,6 +221,7 @@ function parseWindowProjection(
       ...(metric.column ? { column: metric.column } : {}),
       ...(metric.distinct ? { distinct: true } : {}),
       orderBy,
+      ...(frame ? { frame } : {}),
     },
   };
 }

@@ -155,6 +155,18 @@ export function rewriteExpandedViewNode<TContext>(
         aliases: mergeAliasMaps(left.aliases, right.aliases),
       };
     }
+    case "repeat_union": {
+      const seed = expandRelViewsInternal(node.seed, schema, context);
+      const iterative = expandRelViewsInternal(node.iterative, schema, context);
+      return {
+        node: {
+          ...node,
+          seed: seed.node,
+          iterative: iterative.node,
+        },
+        aliases: mergeAliasMaps(seed.aliases, iterative.aliases),
+      };
+    }
     case "with": {
       const cteAliases: Array<ViewExpansionResult["aliases"]> = [];
       const ctes = node.ctes.map((cte) => {

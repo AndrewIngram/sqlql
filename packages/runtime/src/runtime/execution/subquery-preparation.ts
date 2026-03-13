@@ -114,5 +114,12 @@ export async function prepareSubqueryResultsResult<TContext>(
       }
       return prepareSubqueryResultsResult(node.body, context);
     }
+    case "repeat_union": {
+      const seedResult = await prepareSubqueryResultsResult(node.seed, context);
+      if (Result.isError(seedResult)) {
+        return seedResult;
+      }
+      return prepareSubqueryResultsResult(node.iterative, context);
+    }
   }
 }

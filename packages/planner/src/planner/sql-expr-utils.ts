@@ -17,6 +17,7 @@ export {
 export {
   isCorrelatedSubquery,
   parseNamedWindowSpecifications,
+  parseWindowFrameClause,
   parseSubqueryAst,
   parseWindowOver,
 } from "./expr/expr-subqueries";

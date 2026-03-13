@@ -96,6 +96,7 @@ export function canCompileBasicRel(
     case "window":
     case "set_op":
     case "with":
+    case "repeat_union":
     case "sql":
       return false;
   }

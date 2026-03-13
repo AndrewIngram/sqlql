@@ -94,6 +94,8 @@ function findFirstScanForPlan(node: RelNode): Extract<RelNode, { kind: "scan" }>
     case "join":
     case "set_op":
       return findFirstScanForPlan(node.left) ?? findFirstScanForPlan(node.right);
+    case "repeat_union":
+      return findFirstScanForPlan(node.seed) ?? findFirstScanForPlan(node.iterative);
     case "with":
       return findFirstScanForPlan(node.body);
     case "sql":

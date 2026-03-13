@@ -4,7 +4,6 @@ import { TuplPlanningError, type RelNode } from "@tupl/foundation";
 import type { ProviderMap } from "@tupl/provider-kit";
 import type { SchemaDefinition } from "@tupl/schema-model";
 
-import { resolveLookupJoinCandidate } from "../provider/conventions";
 import { nextPhysicalStepId } from "../physical/planner-ids";
 import { recordPhysicalStep, type PhysicalPlanningState } from "./physical-plan-state";
 import { tryPlanRemoteFragmentResult } from "./remote-fragment-planning";
@@ -96,6 +95,22 @@ export async function planPhysicalNodeResult<TContext>(
           }),
         );
       }
+      case "repeat_union": {
+        const seed = yield* Result.await(
+          planPhysicalNodeResult(node.seed, schema, providers, context, state),
+        );
+        const iterative = yield* Result.await(
+          planPhysicalNodeResult(node.iterative, schema, providers, context, state),
+        );
+        return Result.ok(
+          recordPhysicalStep(state, {
+            id: nextPhysicalStepId("local_with"),
+            kind: "local_with",
+            dependsOn: [seed, iterative],
+            summary: `Local recursive CTE execution (${node.cteName})`,
+          }),
+        );
+      }
       case "sql":
         return Result.ok(
           recordPhysicalStep(state, {
@@ -150,28 +165,6 @@ async function planJoinNodeResult<TContext>(
   state: PhysicalPlanningState,
 ): Promise<BetterResult<string, TuplPlanningError>> {
   return Result.gen(async function* () {
-    const lookup = resolveLookupJoinCandidate(node, schema, providers);
-    if (lookup) {
-      const left = yield* Result.await(
-        planPhysicalNodeResult(node.left, schema, providers, context, state),
-      );
-      return Result.ok(
-        recordPhysicalStep(state, {
-          id: nextPhysicalStepId("lookup_join"),
-          kind: "lookup_join",
-          dependsOn: [left],
-          summary: `Lookup join ${lookup.leftScan.table}.${lookup.leftKey} -> ${lookup.rightScan.table}.${lookup.rightKey}`,
-          leftProvider: lookup.leftProvider,
-          rightProvider: lookup.rightProvider,
-          leftTable: lookup.leftScan.table,
-          rightTable: lookup.rightScan.table,
-          leftKey: lookup.leftKey,
-          rightKey: lookup.rightKey,
-          joinType: lookup.joinType,
-        }),
-      );
-    }
-
     const left = yield* Result.await(
       planPhysicalNodeResult(node.left, schema, providers, context, state),
     );

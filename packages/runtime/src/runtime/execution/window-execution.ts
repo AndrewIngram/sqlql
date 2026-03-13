@@ -88,7 +88,7 @@ function applyWindowFunction(
       }
 
       const aggregateFn = fn as Extract<typeof fn, { fn: "count" | "sum" | "avg" | "min" | "max" }>;
-      const frameEntries = aggregateFn.orderBy.length > 0 ? entries.slice(0, idx + 1) : entries;
+      const frameEntries = resolveFrameEntries(entries, idx, aggregateFn);
       const values = aggregateFn.column
         ? frameEntries.map(
             (current) => readRowValue(current.row, toColumnKey(aggregateFn.column!)) ?? null,
@@ -112,6 +112,26 @@ function applyWindowFunction(
   }
 
   return out;
+}
+
+function resolveFrameEntries(
+  entries: Array<{ row: InternalRow; index: number }>,
+  idx: number,
+  fn: Extract<RelNode, { kind: "window" }>["functions"][number],
+) {
+  const frame = fn.frame;
+  if (!frame) {
+    return fn.orderBy.length > 0 ? entries.slice(0, idx + 1) : entries;
+  }
+
+  const startIndex = frame.start === "current_row" ? idx : 0;
+  const endIndex =
+    frame.end === "current_row"
+      ? idx + 1
+      : frame.end === "unbounded_following"
+        ? entries.length
+        : idx + 1;
+  return entries.slice(startIndex, endIndex);
 }
 
 function compareWindowEntries(

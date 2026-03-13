@@ -228,6 +228,8 @@ function findFirstScan(node: RelNode): RelScanNode | null {
     case "join":
     case "set_op":
       return findFirstScan(node.left) ?? findFirstScan(node.right);
+    case "repeat_union":
+      return findFirstScan(node.seed) ?? findFirstScan(node.iterative);
     case "with":
       return findFirstScan(node.body);
     case "sql":
