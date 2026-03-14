@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
 import { buildEntitySchema } from "@tupl/test-support/schema";
+import { explainInternalResult } from "../runtime/query-runner";
 
 describe("runtime/explain", () => {
   it("returns staged explain artifacts for translation introspection", async () => {
@@ -120,5 +121,103 @@ describe("runtime/explain", () => {
         }),
       ]),
     );
+  });
+
+  it("supports basic explain descriptions without compiling provider plans", async () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+        },
+      },
+    });
+    let compileCalls = 0;
+
+    const result = await explainInternalResult(
+      {
+        schema,
+        providers: {
+          warehouse: {
+            name: "warehouse",
+            canExecute() {
+              return true;
+            },
+            async compile() {
+              compileCalls += 1;
+              return Result.ok({
+                provider: "warehouse",
+                kind: "rel",
+                payload: {},
+              });
+            },
+            async execute() {
+              return Result.ok([]);
+            },
+          },
+        },
+        context: {},
+        sql: "SELECT id FROM orders",
+      },
+      { providerDescriptionMode: "basic" },
+    );
+
+    expect(Result.isOk(result)).toBe(true);
+    if (Result.isError(result)) {
+      throw new Error("Expected explain to succeed.");
+    }
+
+    expect(compileCalls).toBe(0);
+    expect(result.value.providerPlans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "warehouse",
+          kind: "rel_fragment",
+          descriptionUnavailable: true,
+        }),
+      ]),
+    );
+  });
+
+  it("returns tagged errors when enriched explain compilation fails", async () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+        },
+      },
+    });
+
+    const result = await explainInternalResult({
+      schema,
+      providers: {
+        warehouse: {
+          name: "warehouse",
+          canExecute() {
+            return true;
+          },
+          async compile() {
+            return Result.err(new Error("compile failed for explain"));
+          },
+          async execute() {
+            return Result.ok([]);
+          },
+        },
+      },
+      context: {},
+      sql: "SELECT id FROM orders",
+    });
+
+    expect(Result.isError(result)).toBe(true);
+    if (Result.isOk(result)) {
+      throw new Error("Expected explain to fail.");
+    }
+
+    expect(result.error).toMatchObject({
+      _tag: "TuplRuntimeError",
+      name: "TuplRuntimeError",
+      message: "compile failed for explain",
+    });
   });
 });

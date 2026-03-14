@@ -117,7 +117,9 @@ export interface ExplainProviderPlan {
 
 /**
  * Explain results expose the staged translation pipeline from SQL to logical and physical plans.
- * They are pure introspection artifacts and never imply that the query has executed.
+ * They are introspection artifacts and never imply that the query has executed. Provider plan
+ * descriptions may use either basic fragment metadata or enriched compiled descriptions depending
+ * on the runtime's internal explain mode.
  */
 export interface ExplainResult {
   sql: string;

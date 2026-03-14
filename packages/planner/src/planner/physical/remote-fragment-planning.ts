@@ -1,56 +1,22 @@
 import { Result, type Result as BetterResult } from "better-result";
 
-import { PhysicalPlanningError, type RelNode, type TuplError } from "@tupl/foundation";
-import { normalizeCapability, type ProvidersMap } from "@tupl/provider-kit";
-import type { SchemaDefinition } from "@tupl/schema-model";
-
-import { resolveSingleProvider } from "../provider/conventions";
-import { buildProviderFragmentForNodeResult } from "../provider-fragments";
+import { type RelNode, type TuplError } from "@tupl/foundation";
 import { nextPhysicalStepId } from "../physical/planner-ids";
-import { toPhysicalPlanningError } from "../planner-errors";
 import type { PhysicalStep } from "../physical/physical";
+import { getProviderSupportDecision } from "../provider/provider-support-analysis";
 import { recordPhysicalStep, type PhysicalPlanningState } from "./physical-plan-state";
 
 /**
- * Remote fragment planning owns provider capability checks and remote-fragment step creation.
+ * Remote fragment planning owns maximal remote-fragment step creation from precomputed support
+ * analysis. Capability discovery happens earlier in the planner so this module stays focused on
+ * turning accepted provider-owned subtrees into physical steps.
  */
-export async function tryPlanRemoteFragmentResult<TContext>(
+export async function tryPlanRemoteFragmentResult(
   node: RelNode,
-  schema: SchemaDefinition,
-  providers: ProvidersMap<TContext>,
-  context: TContext,
   state: PhysicalPlanningState,
 ): Promise<BetterResult<string | null, TuplError>> {
-  const provider = resolveSingleProvider(node, schema);
-  if (!provider) {
-    return Result.ok(null);
-  }
-
-  const adapter = providers[provider];
-  if (!adapter) {
-    return Result.err(
-      new PhysicalPlanningError({
-        operation: "plan remote fragment",
-        message: `Missing provider adapter: ${provider}`,
-      }),
-    );
-  }
-
-  const fragmentResult = buildProviderFragmentForNodeResult(node, schema, provider);
-  if (Result.isError(fragmentResult)) {
-    return fragmentResult;
-  }
-
-  const capabilityResult = await Result.tryPromise({
-    try: () => Promise.resolve(adapter.canExecute(fragmentResult.value.rel, context)),
-    catch: (error) => toPhysicalPlanningError(error, "plan remote fragment"),
-  });
-  if (Result.isError(capabilityResult)) {
-    return capabilityResult;
-  }
-
-  const capability = normalizeCapability(capabilityResult.value);
-  if (!capability.supported) {
+  const support = getProviderSupportDecision(state.providerSupport, node);
+  if (!support?.supported || !support.provider || !support.fragment) {
     return Result.ok(null);
   }
 
@@ -58,9 +24,9 @@ export async function tryPlanRemoteFragmentResult<TContext>(
     id: nextPhysicalStepId("remote_fragment"),
     kind: "remote_fragment",
     dependsOn: [],
-    summary: `Execute provider fragment (${provider})`,
-    provider,
-    fragment: fragmentResult.value,
+    summary: `Execute provider fragment (${support.provider})`,
+    provider: support.provider,
+    fragment: support.fragment,
   };
 
   return Result.ok(recordPhysicalStep(state, step));

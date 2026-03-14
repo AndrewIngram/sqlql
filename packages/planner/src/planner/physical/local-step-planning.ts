@@ -19,9 +19,7 @@ export async function planPhysicalNodeResult<TContext>(
   state: PhysicalPlanningState,
 ): Promise<BetterResult<string, TuplError>> {
   return Result.gen(async function* () {
-    const remoteStepId = yield* Result.await(
-      tryPlanRemoteFragmentResult(node, schema, providers, context, state),
-    );
+    const remoteStepId = yield* Result.await(tryPlanRemoteFragmentResult(node, state));
     if (remoteStepId) {
       return Result.ok(remoteStepId);
     }

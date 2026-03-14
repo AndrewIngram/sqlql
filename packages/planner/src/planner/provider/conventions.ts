@@ -6,66 +6,12 @@ import {
   resolveTableProvider,
   type SchemaDefinition,
 } from "@tupl/schema-model";
+import { resolveScanProviderName, resolveSingleProvider } from "./provider-ownership";
 
 /**
  * Conventions own provider assignment and lookup-join viability analysis for planner nodes.
  */
-export function resolveSingleProvider(node: RelNode, schema: SchemaDefinition): string | null {
-  const providers = new Set<string>();
-
-  const visit = (current: RelNode): boolean => {
-    switch (current.kind) {
-      case "values":
-        return false;
-      case "cte_ref":
-        return false;
-      case "scan": {
-        if (!schema.tables[current.table] && !current.entity) {
-          return true;
-        }
-        const normalized = getNormalizedTableBinding(schema, current.table);
-        if (normalized?.kind === "view") {
-          return false;
-        }
-        const providerName =
-          current.entity?.provider ?? resolveTableProvider(schema, current.table);
-        const providerNameResult =
-          typeof providerName === "string" ? Result.ok(providerName) : providerName;
-        if (Result.isError(providerNameResult)) {
-          return false;
-        }
-        providers.add(providerNameResult.value);
-        return true;
-      }
-      case "filter":
-      case "project":
-      case "aggregate":
-      case "window":
-      case "sort":
-      case "limit_offset":
-        return visit(current.input);
-      case "correlate":
-        return false;
-      case "join":
-      case "set_op":
-        return visit(current.left) && visit(current.right);
-      case "repeat_union":
-        return false;
-      case "with":
-        for (const cte of current.ctes) {
-          if (!visit(cte.query)) {
-            return false;
-          }
-        }
-        return visit(current.body);
-    }
-  };
-
-  if (!visit(node) || providers.size !== 1) {
-    return null;
-  }
-  return [...providers][0] ?? null;
-}
+export { resolveSingleProvider } from "./provider-ownership";
 
 export function assignConventions(node: RelNode, schema: SchemaDefinition): RelNode {
   switch (node.kind) {
@@ -73,22 +19,13 @@ export function assignConventions(node: RelNode, schema: SchemaDefinition): RelN
     case "cte_ref":
       return { ...node, convention: "local" };
     case "scan": {
-      if (!schema.tables[node.table] && !node.entity) {
-        return { ...node, convention: "local" };
-      }
-      const normalized = getNormalizedTableBinding(schema, node.table);
-      if (normalized?.kind === "view") {
-        return { ...node, convention: "local" };
-      }
-      const providerName = node.entity?.provider ?? resolveTableProvider(schema, node.table);
-      const providerNameResult =
-        typeof providerName === "string" ? Result.ok(providerName) : providerName;
-      if (Result.isError(providerNameResult)) {
+      const providerName = resolveScanProviderName(node, schema);
+      if (!providerName) {
         return { ...node, convention: "local" };
       }
       return {
         ...node,
-        convention: `provider:${providerNameResult.value}`,
+        convention: `provider:${providerName}`,
       };
     }
     case "filter":

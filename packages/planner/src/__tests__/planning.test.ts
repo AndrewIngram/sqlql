@@ -495,6 +495,60 @@ describe("query/planning", () => {
     expect(physical.steps.some((step) => step.kind === "local_hash_join")).toBe(true);
   });
 
+  it("discovers provider support bottom-up before cutting maximal fragments", async () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          email: "text",
+        },
+      },
+    });
+
+    const supportChecks: string[] = [];
+    const providers = finalizeProviders({
+      warehouse: {
+        canExecute(rel) {
+          supportChecks.push(rel.kind);
+          return rel.kind === "scan";
+        },
+        async compile(rel) {
+          return Result.ok({
+            provider: "warehouse",
+            kind: "rel",
+            payload: rel,
+          });
+        },
+        async execute() {
+          return Result.ok([]);
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT o.id, u.email
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+      `,
+      schema,
+    );
+
+    const physical = await planPhysicalQuery(lowered.rel, schema, providers, {});
+
+    expect(physical.steps.some((step) => step.kind === "remote_fragment")).toBe(true);
+    expect(supportChecks.slice(0, 2)).toEqual(["scan", "scan"]);
+    expect(supportChecks.at(-1)).toBe("project");
+  });
+
   it("does not plan lookup_join for RIGHT joins", async () => {
     const schema = buildEntitySchema({
       orders: {

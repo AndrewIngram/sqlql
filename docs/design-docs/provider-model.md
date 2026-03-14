@@ -31,3 +31,10 @@ Compiled plans are provider-specific payloads. `tupl` does not assume SQL text i
 - `compile(...)` lowers canonical rel into a provider-owned compiled plan.
 - `execute(...)` runs that compiled plan.
 - This separation exists to support explainability, plan descriptions, and future caching/replay opportunities without exposing provider internals upstream.
+
+## Explain descriptions
+
+- Runtime owns two explain modes internally:
+  - basic fragment descriptions that never compile provider plans
+  - enriched provider descriptions that may compile supported provider fragments
+- Providers do not need a separate public explain-only method in the current model.

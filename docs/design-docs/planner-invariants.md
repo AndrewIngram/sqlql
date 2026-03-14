@@ -11,6 +11,8 @@ These invariants should hold unless a deliberate architecture change updates thi
 ## Provider ownership
 
 - `cte_ref` is a local barrier for provider ownership.
+- `values`, `correlate`, and `repeat_union` are also local ownership barriers under the current
+  execution model.
 - Cross-provider or local-only nodes must not be misattributed to one provider just because nearby scans share a provider.
 - Providers receive normalized rel subtrees, not planner-private wrapper nodes.
 
@@ -19,6 +21,8 @@ These invariants should hold unless a deliberate architecture change updates thi
 - The executor consumes rewritten rel, not raw lowered rel.
 - Planner rewrite work does not happen again inside the executor.
 - View expansion and decorrelation belong to planner rewrite stages.
+- `explain()` has explicit basic and enriched provider-description modes; only enriched mode may
+  compile provider fragments.
 
 ## Window semantics
 

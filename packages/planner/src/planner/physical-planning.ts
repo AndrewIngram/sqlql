@@ -5,6 +5,7 @@ import type { ProvidersMap } from "@tupl/provider-kit";
 import type { SchemaDefinition } from "@tupl/schema-model";
 import { toPhysicalPlanningError } from "./planner-errors";
 import { assignConventions } from "./provider/conventions";
+import { analyzeProviderSupportResult } from "./provider/provider-support-analysis";
 import { createPhysicalPlanningState } from "./physical/physical-plan-state";
 import { planPhysicalNodeResult } from "./physical/local-step-planning";
 
@@ -21,7 +22,10 @@ export async function planPhysicalQueryResult<TContext>(
   return Result.gen(async function* () {
     try {
       const plannedRel = assignConventions(rel, schema);
-      const state = createPhysicalPlanningState();
+      const providerSupport = yield* Result.await(
+        analyzeProviderSupportResult(plannedRel, schema, providers, context),
+      );
+      const state = createPhysicalPlanningState(providerSupport);
       const rootStepId = yield* Result.await(
         planPhysicalNodeResult(plannedRel, schema, providers, context, state),
       );

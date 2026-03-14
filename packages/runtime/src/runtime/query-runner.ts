@@ -1,21 +1,20 @@
 import { Result, type Result as BetterResult } from "better-result";
 
 import { type RelNode, type TuplError } from "@tupl/foundation";
-import {
-  buildLogicalQueryPlanResult,
-  buildPhysicalQueryPlanResult,
-  buildProviderFragmentForRelResult,
-} from "@tupl/planner";
-import { normalizeCapability } from "@tupl/provider-kit";
+import { buildLogicalQueryPlanResult, buildPhysicalQueryPlanResult } from "@tupl/planner";
 import {
   resolveSchemaLinkedEnums,
   validateProviderBindings,
   type QueryRow,
 } from "@tupl/schema-model";
 
-import type { ExplainFragment, ExplainProviderPlan, ExplainResult, QueryInput } from "./contracts";
-import { tryQueryStepAsync, unwrapQueryResult } from "./diagnostics";
+import type { ExplainFragment, ExplainResult, QueryInput } from "./contracts";
+import { unwrapQueryResult } from "./diagnostics";
 import { executeRelWithProvidersResult } from "./executor";
+import {
+  describeExplainProviderPlansResult,
+  type ExplainProviderDescriptionMode,
+} from "./explain/provider-plan-descriptions";
 import {
   enforceExecutionRowLimitResult,
   enforcePlannerNodeLimitResult,
@@ -151,65 +150,6 @@ function collectExplainFragments(rel: RelNode): ExplainFragment[] {
   return fragments;
 }
 
-async function compileExplainProviderPlansResult<TContext>(
-  input: QueryInput<TContext>,
-  fragments: ExplainFragment[],
-): Promise<BetterResult<ExplainProviderPlan[], TuplError>> {
-  return tryQueryStepAsync("compile explain provider plans", async () => {
-    const providerPlans: ExplainProviderPlan[] = [];
-
-    for (const fragment of fragments) {
-      if (!fragment.provider) {
-        continue;
-      }
-
-      const adapter = input.providers[fragment.provider];
-      if (!adapter) {
-        continue;
-      }
-
-      const providerFragment = unwrapQueryResult(
-        buildProviderFragmentForRelResult(fragment.rel, input.schema, input.context),
-      );
-      if (!providerFragment) {
-        continue;
-      }
-
-      const capability = normalizeCapability(
-        await Promise.resolve(adapter.canExecute(providerFragment.rel, input.context)),
-      );
-      if (!capability.supported) {
-        providerPlans.push({
-          fragmentId: fragment.id,
-          provider: fragment.provider,
-          kind: "unsupported_fragment",
-          rel: fragment.rel,
-          descriptionUnavailable: true as const,
-        });
-        continue;
-      }
-
-      const compiledPlan = unwrapQueryResult(
-        await adapter.compile(providerFragment.rel, input.context),
-      );
-      const description =
-        typeof adapter.describeCompiledPlan === "function"
-          ? await adapter.describeCompiledPlan(compiledPlan, input.context)
-          : undefined;
-
-      providerPlans.push({
-        fragmentId: fragment.id,
-        provider: fragment.provider,
-        kind: compiledPlan.kind,
-        rel: fragment.rel,
-        ...(description ? { description } : { descriptionUnavailable: true as const }),
-      });
-    }
-
-    return providerPlans;
-  });
-}
-
 export async function explainInternal<TContext>(
   input: QueryInput<TContext>,
 ): Promise<ExplainResult> {
@@ -218,6 +158,9 @@ export async function explainInternal<TContext>(
 
 export async function explainInternalResult<TContext>(
   input: QueryInput<TContext>,
+  options: {
+    providerDescriptionMode?: ExplainProviderDescriptionMode;
+  } = {},
 ): Promise<BetterResult<ExplainResult, TuplError>> {
   return Result.gen(async function* () {
     const resolvedInput = yield* normalizeRuntimeSchemaResult(input);
@@ -237,7 +180,11 @@ export async function explainInternalResult<TContext>(
     );
     const fragments = collectExplainFragments(plannedQuery.physicalPlan.rel);
     const providerPlans = yield* Result.await(
-      compileExplainProviderPlansResult(resolvedInput, fragments),
+      describeExplainProviderPlansResult(
+        resolvedInput,
+        fragments,
+        options.providerDescriptionMode ?? "enriched",
+      ),
     );
 
     return Result.ok({

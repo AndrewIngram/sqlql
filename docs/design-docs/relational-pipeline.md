@@ -18,7 +18,7 @@
 - rewritten rel
 - physical plan
 - fragment boundaries
-- provider plan descriptions when available
+- provider plan descriptions in either basic or enriched mode
 
 ## Conventions and ownership
 
@@ -29,7 +29,7 @@
 
 ## Fragment planning
 
-- Current fragment planning is greedy and maximal-first.
+- Fragment selection stays maximal-first, but support discovery is bottom-up and memoized.
 - Providers compile canonical rel subtrees.
 - Unsupported or cross-provider portions fall back to local execution.
 - Fragment boundaries materialize canonical rows.
@@ -37,6 +37,5 @@
 ## Current limitations
 
 - Physical planning is not cost-based.
-- `explain()` currently compiles provider-owned fragments for description.
 - Non-`ROWS` window frame modes are explicitly rejected.
 - Remaining architecture questions are tracked in [tech debt](../exec-plans/tech-debt-tracker.md).
