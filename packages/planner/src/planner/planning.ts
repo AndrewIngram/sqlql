@@ -13,3 +13,7 @@ export {
   planPhysicalQueryResult,
   type RelLoweringResult,
 } from "./sql-lowering";
+export {
+  normalizePhysicalPlanForSnapshot,
+  normalizeRelForSnapshot,
+} from "./translation-normalization";

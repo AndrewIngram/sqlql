@@ -62,6 +62,8 @@ export function appearsInRel(node: RelNode, alias: string): boolean {
   switch (node.kind) {
     case "scan":
       return node.alias === alias;
+    case "values":
+      return false;
     case "filter":
     case "project":
     case "aggregate":

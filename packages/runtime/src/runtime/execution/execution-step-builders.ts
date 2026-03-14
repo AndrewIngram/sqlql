@@ -41,6 +41,31 @@ export function buildScanStep(
   return id;
 }
 
+export function buildValuesStep(
+  state: PlanBuildState,
+  node: Extract<RelNode, { kind: "values" }>,
+  scopeId: string,
+): string {
+  const id = nextPlanId(state, "projection");
+  state.steps.push({
+    id,
+    kind: "projection",
+    dependsOn: [],
+    summary: "Materialize literal rows",
+    phase: "fetch",
+    operation: {
+      name: "values",
+      details: {
+        rowCount: node.rows.length,
+      },
+    },
+    outputs: node.output.map((column) => column.name),
+    sqlOrigin: "SELECT",
+    scopeId,
+  });
+  return id;
+}
+
 export function buildFilterStep(
   state: PlanBuildState,
   node: Extract<RelNode, { kind: "filter" }>,

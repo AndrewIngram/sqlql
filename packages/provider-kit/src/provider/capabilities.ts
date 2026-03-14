@@ -337,6 +337,8 @@ function hasAdvancedRelFeatures(node: RelNode): boolean {
     case "repeat_union":
     case "set_op":
       return true;
+    case "values":
+      return false;
     case "scan":
     case "sql":
       return false;

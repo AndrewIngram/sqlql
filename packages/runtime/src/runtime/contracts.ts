@@ -1,5 +1,11 @@
-import type { ProviderMap, QueryFallbackPolicy, TuplDiagnostic } from "@tupl/provider-kit";
-import type { RelNode, TuplResult } from "@tupl/foundation";
+import type { PhysicalPlan } from "@tupl/planner";
+import type {
+  ProviderPlanDescription,
+  QueryFallbackPolicy,
+  ProviderMap,
+  TuplDiagnostic,
+} from "@tupl/provider-kit";
+import type { RelConvention, RelNode, TuplResult } from "@tupl/foundation";
 
 import type { ConstraintValidationOptions } from "./constraints";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
@@ -81,16 +87,45 @@ export interface ExecutableSchemaQueryInput<TContext> {
 export interface ExecutableSchema<TContext, TSchema extends SchemaDefinition = SchemaDefinition> {
   schema: TSchema;
   query(input: ExecutableSchemaQueryInput<TContext>): Promise<TuplResult<QueryRow[]>>;
-  explain(input: ExecutableSchemaQueryInput<TContext>): TuplResult<ExplainResult>;
+  explain(input: ExecutableSchemaQueryInput<TContext>): Promise<ExplainResult>;
 }
 
 /**
- * Explain results expose the lowered relational tree plus the runtime guardrails used for inspection.
- * They describe planner/runtime reasoning but do not imply that the query has executed.
+ * Explain diagnostics are attached to a concrete translation stage so query tooling can render
+ * planner/provider warnings next to the artifact that produced them.
+ */
+export interface ExplainDiagnostic {
+  stage: "lowering" | "rewriting" | "physical_planning" | "provider_planning";
+  diagnostic: TuplDiagnostic;
+}
+
+export interface ExplainFragment {
+  id: string;
+  convention: RelConvention;
+  provider?: string;
+  rel: RelNode;
+}
+
+export interface ExplainProviderPlan {
+  fragmentId: string;
+  provider: string;
+  kind: string;
+  rel: RelNode;
+  description?: ProviderPlanDescription;
+  descriptionUnavailable?: true;
+}
+
+/**
+ * Explain results expose the staged translation pipeline from SQL to logical and physical plans.
+ * They are pure introspection artifacts and never imply that the query has executed.
  */
 export interface ExplainResult {
-  rel: RelNode;
+  sql: string;
+  initialRel: RelNode;
+  rewrittenRel: RelNode;
+  physicalPlan: PhysicalPlan;
+  fragments: ExplainFragment[];
+  providerPlans: ExplainProviderPlan[];
   plannerNodeCount: number;
-  guardrails: QueryGuardrails;
-  diagnostics?: TuplDiagnostic[];
+  diagnostics: ExplainDiagnostic[];
 }

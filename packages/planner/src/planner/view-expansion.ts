@@ -42,6 +42,7 @@ function expandRelViewsInternal<TContext>(
   switch (node.kind) {
     case "scan":
       return expandViewScanNode(node, schema, context, expandRelViewsInternal);
+    case "values":
     case "sql":
       return {
         node,

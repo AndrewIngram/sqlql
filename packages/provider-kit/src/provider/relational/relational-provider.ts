@@ -4,6 +4,7 @@ import type {
   ProviderCompiledPlan,
   ProviderFragment,
   ProviderLookupManyRequest,
+  ProviderPlanDescription,
 } from "../contracts";
 import {
   canExecuteRelationalFragment,
@@ -36,6 +37,7 @@ export type {
   RelationalProviderCapabilityContext,
   RelationalProviderCompileRelArgs,
   RelationalProviderCompileScanArgs,
+  RelationalProviderDescribeArgs,
   RelationalProviderEntityColumnsArgs,
   RelationalProviderEntityConfig,
   RelationalProviderExecuteArgs,
@@ -51,6 +53,82 @@ type RelationalProviderOptionsWithLookup<
 > = RelationalProviderOptions<TContext, TEntities, TStrategy> & {
   lookupMany: NonNullable<RelationalProviderOptions<TContext, TEntities, TStrategy>["lookupMany"]>;
 };
+function describeRelationalCompiledPlan(
+  name: string,
+  plan: ProviderCompiledPlan,
+): ProviderPlanDescription {
+  switch (plan.kind) {
+    case "scan": {
+      const payload = plan.payload as { table?: unknown; request?: unknown } | null;
+      const table =
+        payload && typeof payload === "object" && typeof payload.table === "string"
+          ? payload.table
+          : undefined;
+      return {
+        kind: "scan_fragment",
+        summary: table ? `${name} scan on ${table}` : `${name} scan fragment`,
+        operations: [
+          {
+            kind: "scan",
+            ...(table ? { target: table } : {}),
+            raw: plan.payload,
+          },
+        ],
+        raw: plan.payload,
+      };
+    }
+    case "aggregate":
+      return {
+        kind: "aggregate_fragment",
+        summary: `${name} aggregate fragment`,
+        operations: [
+          {
+            kind: "aggregate",
+            raw: plan.payload,
+          },
+        ],
+        raw: plan.payload,
+      };
+    case "rel": {
+      const payload = plan.payload as { strategy?: unknown; sql?: unknown } | null;
+      const strategy =
+        payload && typeof payload === "object" && typeof payload.strategy === "string"
+          ? payload.strategy
+          : undefined;
+      const sql =
+        payload && typeof payload === "object" && typeof payload.sql === "string"
+          ? payload.sql
+          : undefined;
+      return {
+        kind: "rel_fragment",
+        summary: strategy ? `${name} rel fragment (${strategy})` : `${name} rel fragment`,
+        operations: [
+          {
+            kind: sql ? "sql" : "rel",
+            ...(sql ? { sql } : {}),
+            target: name,
+            ...(strategy ? { summary: strategy } : {}),
+            raw: plan.payload,
+          },
+        ],
+        raw: plan.payload,
+      };
+    }
+    default:
+      return {
+        kind: "compiled_plan",
+        summary: `${name} compiled plan`,
+        operations: [
+          {
+            kind: "compiled_plan",
+            target: name,
+            raw: plan.payload,
+          },
+        ],
+        raw: plan.payload,
+      };
+  }
+}
 
 export function createRelationalProviderAdapter<
   TContext,
@@ -170,6 +248,16 @@ export function createRelationalProviderAdapter<
         name: options.name,
         plan,
       });
+    },
+    async describeCompiledPlan(plan: ProviderCompiledPlan, context: TContext) {
+      return (
+        options.describeCompiledPlan?.({
+          context,
+          entities: options.entities,
+          name: options.name,
+          plan,
+        }) ?? describeRelationalCompiledPlan(options.name, plan)
+      );
     },
   };
 

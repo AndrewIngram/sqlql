@@ -37,6 +37,7 @@ export function parseLiteralFilter(
     const subquery = parseSubqueryAst(expr.right);
     if (col && subquery) {
       return {
+        negated: false,
         alias: col.alias,
         column: col.column,
         subquery,
@@ -60,6 +61,16 @@ export function parseLiteralFilter(
 
   if (operator === "not_in") {
     const col = resolveColumnRef(expr.left, bindings, aliasToBinding);
+    const subquery = parseSubqueryAst(expr.right);
+    if (col && subquery) {
+      return {
+        negated: true,
+        alias: col.alias,
+        column: col.column,
+        subquery,
+      };
+    }
+
     const values = tryParseLiteralExpressionList(expr.right);
     if (!col || !values) {
       return null;

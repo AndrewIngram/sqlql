@@ -31,6 +31,65 @@ const cases: ComplianceCase[] = [
     expectedRows: [{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_3" }, { id: "ord_4" }],
   },
   {
+    name: "correlated EXISTS subquery",
+    sql: `
+      SELECT o.id
+      FROM orders o
+      WHERE EXISTS (
+        SELECT u.id
+        FROM users u
+        WHERE u.id = o.user_id
+          AND u.team_id = 'team_smb'
+      )
+      ORDER BY o.id ASC
+    `,
+    expectedRows: [{ id: "ord_3" }],
+  },
+  {
+    name: "correlated NOT EXISTS subquery",
+    sql: `
+      SELECT o.id
+      FROM orders o
+      WHERE NOT EXISTS (
+        SELECT u.id
+        FROM users u
+        WHERE u.id = o.user_id
+          AND u.team_id = 'team_smb'
+      )
+      ORDER BY o.id ASC
+    `,
+    expectedRows: [{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_4" }],
+  },
+  {
+    name: "correlated IN subquery",
+    sql: `
+      SELECT o.id
+      FROM orders o
+      WHERE o.user_id IN (
+        SELECT u.id
+        FROM users u
+        WHERE u.team_id = 'team_smb'
+          AND u.id = o.user_id
+      )
+      ORDER BY o.id ASC
+    `,
+    expectedRows: [{ id: "ord_3" }],
+  },
+  {
+    name: "correlated scalar aggregate in WHERE",
+    sql: `
+      SELECT o.id
+      FROM orders o
+      WHERE o.total_cents = (
+        SELECT MAX(i.total_cents)
+        FROM orders i
+        WHERE i.user_id = o.user_id
+      )
+      ORDER BY o.id ASC
+    `,
+    expectedRows: [{ id: "ord_2" }, { id: "ord_3" }, { id: "ord_4" }],
+  },
+  {
     name: "scalar subquery in WHERE",
     sql: `
       SELECT id

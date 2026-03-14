@@ -19,6 +19,8 @@ export function resolveSingleProvider(
 
   const visit = (current: RelNode, scopedCteNames: Set<string>): boolean => {
     switch (current.kind) {
+      case "values":
+        return false;
       case "scan": {
         if (scopedCteNames.has(current.table)) {
           return true;
@@ -72,6 +74,8 @@ export function assignConventions(
   cteNames: Set<string> = new Set<string>(),
 ): RelNode {
   switch (node.kind) {
+    case "values":
+      return { ...node, convention: "local" };
     case "scan": {
       if (cteNames.has(node.table) || (!schema.tables[node.table] && !node.entity)) {
         return { ...node, convention: "local" };
@@ -197,6 +201,8 @@ function findFirstScanNode(node: RelNode): RelScanNode | null {
   switch (node.kind) {
     case "scan":
       return node;
+    case "values":
+      return null;
     case "filter":
     case "project":
     case "aggregate":

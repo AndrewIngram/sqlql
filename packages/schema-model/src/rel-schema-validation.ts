@@ -82,18 +82,9 @@ export function validateRelAgainstSchema(
           });
         }
         return Result.ok(undefined);
-      case "sql":
-        for (const table of current.tables) {
-          if (!cteNames.has(table) && !schema.tables[table]) {
-            return Result.err(
-              createSchemaNormalizationError({
-                operation: "validate relational plan against schema",
-                message: `Unknown table in relational plan: ${table}`,
-                table,
-              }),
-            );
-          }
-        }
+      case "values":
+        return Result.ok(undefined);
+      case "cte_ref":
         return Result.ok(undefined);
       case "filter":
       case "project":
@@ -107,6 +98,14 @@ export function validateRelAgainstSchema(
         return Result.gen(function* () {
           yield* visit(current.left, cteNames);
           yield* visit(current.right, cteNames);
+          return Result.ok(undefined);
+        });
+      case "repeat_union":
+        return Result.gen(function* () {
+          const nextCteNames = new Set(cteNames);
+          nextCteNames.add(current.cteName);
+          yield* visit(current.seed, nextCteNames);
+          yield* visit(current.iterative, nextCteNames);
           return Result.ok(undefined);
         });
       case "with": {

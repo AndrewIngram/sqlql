@@ -95,6 +95,12 @@ export interface RelScanNode extends RelNodeBase {
   offset?: number;
 }
 
+/** Values nodes materialize literal rows without requiring a backing table scan. */
+export interface RelValuesNode extends RelNodeBase {
+  kind: "values";
+  rows: Array<Array<string | number | boolean | null>>;
+}
+
 /** Filter nodes preserve input shape while applying residual filters or computed expressions. */
 export interface RelFilterNode extends RelNodeBase {
   kind: "filter";
@@ -243,6 +249,7 @@ export interface RelSqlNode extends RelNodeBase {
 /** Relational nodes are the full logical IR consumed by runtime and provider normalization. */
 export type RelNode =
   | RelScanNode
+  | RelValuesNode
   | RelFilterNode
   | RelProjectNode
   | RelJoinNode
@@ -274,6 +281,20 @@ export function createSqlRel(sql: string, tables: string[]): RelSqlNode {
   };
 }
 
+/** `createValuesRel` materializes literal rows without any backing table/provider. */
+export function createValuesRel(
+  rows: Array<Array<string | number | boolean | null>>,
+  output: RelOutputColumn[] = [],
+): RelValuesNode {
+  return {
+    id: nextRelId("values"),
+    kind: "values",
+    convention: "local",
+    rows,
+    output,
+  };
+}
+
 /**
  * `relContainsSqlNode` detects whether a relational tree or any nested scalar subquery expression
  * still depends on SQL-shaped execution semantics that only a provider can satisfy.
@@ -295,6 +316,7 @@ export function relContainsSqlNode(node: RelNode): boolean {
     case "sql":
       return true;
     case "scan":
+    case "values":
       return false;
     case "filter":
       return relContainsSqlNode(node.input) || (node.expr ? exprContainsSqlNode(node.expr) : false);
@@ -336,6 +358,7 @@ export function countRelNodes(node: RelNode): number {
 
   switch (node.kind) {
     case "scan":
+    case "values":
     case "sql":
       return 1;
     case "filter":
@@ -379,6 +402,8 @@ export function collectRelTables(node: RelNode): string[] {
         if (!scopedCteNames.has(current.table)) {
           out.add(current.table);
         }
+        return;
+      case "values":
         return;
       case "sql":
         for (const table of current.tables) {

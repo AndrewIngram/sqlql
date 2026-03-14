@@ -1,5 +1,10 @@
 import type { SelectAst } from "./sqlite-parser/ast";
 import { isCorrelatedSubquery, parseSubqueryAst } from "./sql-expr-lowering";
+import {
+  parseSupportedCorrelatedExistsSubquery,
+  parseSupportedCorrelatedInSubquery,
+  parseSupportedCorrelatedScalarAggregateSubquery,
+} from "./expr/expr-subqueries";
 
 /**
  * Query-shape validation owns the unsupported SQL checks that run before relational lowering.
@@ -176,6 +181,24 @@ function findUnsupportedSubqueryShape(
   outerAliases: Set<string>,
   cteNames: Set<string>,
 ): string | null {
+  const correlatedExists = parseSupportedCorrelatedExistsSubquery(value, outerAliases);
+  if (correlatedExists) {
+    return findUnsupportedQueryShape(correlatedExists.rewrittenSubquery, cteNames);
+  }
+
+  const correlatedIn = parseSupportedCorrelatedInSubquery(value, outerAliases);
+  if (correlatedIn) {
+    return findUnsupportedQueryShape(correlatedIn.rewrittenSubquery, cteNames);
+  }
+
+  const correlatedScalarAggregate = parseSupportedCorrelatedScalarAggregateSubquery(
+    value,
+    outerAliases,
+  );
+  if (correlatedScalarAggregate) {
+    return findUnsupportedQueryShape(correlatedScalarAggregate.rewrittenSubquery, cteNames);
+  }
+
   const subquery = parseSubqueryAst(value);
   if (subquery) {
     if (isCorrelatedSubquery(subquery, outerAliases)) {

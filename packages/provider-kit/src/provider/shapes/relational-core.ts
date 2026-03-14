@@ -74,6 +74,8 @@ export function canCompileBasicRel(
   const requireColumnProjectMappings = options?.requireColumnProjectMappings ?? false;
 
   switch (node.kind) {
+    case "values":
+      return false;
     case "scan":
       return isKnownScan(node.table);
     case "filter":

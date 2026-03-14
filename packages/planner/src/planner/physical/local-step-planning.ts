@@ -27,6 +27,15 @@ export async function planPhysicalNodeResult<TContext>(
     }
 
     switch (node.kind) {
+      case "values":
+        return Result.ok(
+          recordPhysicalStep(state, {
+            id: nextPhysicalStepId("local_project"),
+            kind: "local_project",
+            dependsOn: [],
+            summary: "Local literal row materialization",
+          }),
+        );
       case "scan":
         return Result.ok(
           recordPhysicalStep(state, {

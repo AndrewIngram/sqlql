@@ -19,6 +19,23 @@ import type {
 } from "./capabilities";
 import type { AdapterResult, MaybePromise, ProviderRuntimeBinding } from "./operations";
 
+export interface ProviderPlanOperationDescription {
+  kind: string;
+  summary?: string;
+  sql?: string;
+  lookup?: unknown;
+  target?: string;
+  variables?: unknown;
+  raw?: unknown;
+}
+
+export interface ProviderPlanDescription {
+  kind: string;
+  summary: string;
+  operations: ProviderPlanOperationDescription[];
+  raw?: unknown;
+}
+
 /**
  * Provider compiled plans are provider-owned execution payloads produced from a fragment.
  * Runtime treats `payload` as opaque and must not assume any backend-specific structure.
@@ -115,6 +132,10 @@ export interface FragmentProvider<TContext = unknown> extends ProviderBase<TCont
     fragment: ProviderFragment,
     context: TContext,
   ): MaybePromise<ProviderOperationResult<ProviderCompiledPlan>>;
+  describeCompiledPlan?(
+    plan: ProviderCompiledPlan,
+    context: TContext,
+  ): MaybePromise<ProviderPlanDescription>;
   execute(
     plan: ProviderCompiledPlan,
     context: TContext,

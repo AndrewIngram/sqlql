@@ -10,6 +10,7 @@ import {
   buildScanStep,
   buildSortStep,
   buildSqlStep,
+  buildValuesStep,
   buildWindowStep,
 } from "./execution-step-builders";
 import type { PlanBuildState } from "./explain-shaping";
@@ -31,6 +32,8 @@ export function buildExecutionGraph<TContext>(
     }
 
     switch (node.kind) {
+      case "values":
+        return buildValuesStep(state, node, scopeId);
       case "scan":
         return buildScanStep(state, node, scopeId);
       case "filter":

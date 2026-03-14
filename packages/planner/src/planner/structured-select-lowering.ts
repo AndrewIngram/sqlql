@@ -4,6 +4,7 @@ import type { SchemaDefinition } from "@tupl/schema-model";
 import { nextRelId } from "./physical/planner-ids";
 import { collectTablesFromSelectAst } from "./sql-expr-lowering";
 import { tryLowerSimpleSelect } from "./simple-select-lowering";
+import { parseRelColumnRef } from "./select/select-from-lowering";
 import { parseSetOp } from "./select/set-op-lowering";
 
 /**
@@ -111,8 +112,12 @@ export function tryLowerStructuredSelect(
       _next: _ignoredRightNext,
       ...rightBaseAst
     } = currentAst._next;
-    const rightBase = tryLowerSimpleSelect(
+    const aliasedRightBaseAst = applyOutputAliases(
       rightBaseAst as SelectAst,
+      currentNode.output.map((column) => column.name),
+    );
+    const rightBase = tryLowerSimpleSelect(
+      aliasedRightBaseAst,
       schema,
       scopedCteNames,
       (subqueryAst) => tryLowerStructuredSelect(subqueryAst, schema, scopedCteNames),
@@ -120,6 +125,7 @@ export function tryLowerStructuredSelect(
     if (!rightBase) {
       return null;
     }
+    const alignedRightBase = alignRelOutputShape(rightBase, currentNode.output);
 
     currentNode = {
       id: nextRelId("set_op"),
@@ -127,7 +133,7 @@ export function tryLowerStructuredSelect(
       convention: "local",
       op,
       left: currentNode,
-      right: rightBase,
+      right: alignedRightBase,
       output: currentNode.output,
     };
 
@@ -173,15 +179,17 @@ function lowerRecursiveCte(
     return null;
   }
 
-  const recursiveTerm = tryLowerSimpleSelect(
+  const recursiveAst = applyOutputAliases(
     rewriteDerivedTables(ast._next) as SelectAst,
-    schema,
-    cteNames,
-    (subqueryAst) => tryLowerStructuredSelect(subqueryAst, schema, cteNames),
+    seed.output.map((column) => column.name),
+  );
+  const recursiveTerm = tryLowerSimpleSelect(recursiveAst, schema, cteNames, (subqueryAst) =>
+    tryLowerStructuredSelect(subqueryAst, schema, cteNames),
   );
   if (!recursiveTerm) {
     return null;
   }
+  const alignedRecursiveTerm = alignRelOutputShape(recursiveTerm, seed.output);
 
   return {
     id: nextRelId("repeat_union"),
@@ -190,8 +198,30 @@ function lowerRecursiveCte(
     cteName,
     mode: op,
     seed,
-    iterative: recursiveTerm,
+    iterative: alignedRecursiveTerm,
     output: seed.output,
+  };
+}
+
+function alignRelOutputShape(rel: RelNode, output: RelNode["output"]): RelNode {
+  if (
+    rel.output.length === output.length &&
+    rel.output.every((column, index) => column.name === output[index]?.name)
+  ) {
+    return rel;
+  }
+
+  return {
+    id: nextRelId("project"),
+    kind: "project",
+    convention: "local",
+    input: rel,
+    columns: output.map((column, index) => ({
+      kind: "column" as const,
+      source: parseRelColumnRef(rel.output[index]?.name ?? column.name),
+      output: column.name,
+    })),
+    output,
   };
 }
 
@@ -213,6 +243,20 @@ function isRecursiveCteBody(ast: SelectAst, cteName: string): boolean {
   };
 
   return visit(ast._next);
+}
+
+function applyOutputAliases(ast: SelectAst, outputNames: string[]): SelectAst {
+  if (!Array.isArray(ast.columns) || ast.columns.length !== outputNames.length) {
+    return ast;
+  }
+
+  return {
+    ...ast,
+    columns: ast.columns.map((column, index) => {
+      const alias = outputNames[index];
+      return alias ? { ...column, as: alias } : { ...column };
+    }),
+  };
 }
 
 function rewriteDerivedTables(ast: SelectAst): SelectAst {

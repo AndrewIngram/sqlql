@@ -111,14 +111,62 @@ export interface LiteralFilter {
 }
 
 export interface InSubqueryFilter {
+  negated?: boolean;
   alias: string;
   column: string;
   subquery: import("./sqlite-parser/ast").SelectAst;
 }
 
+export interface CorrelatedExistsFilter {
+  negated: boolean;
+  outer: {
+    alias: string;
+    column: string;
+  };
+  inner: {
+    alias: string;
+    column: string;
+  };
+  subquery: import("./sqlite-parser/ast").SelectAst;
+}
+
+export interface CorrelatedInSubqueryFilter {
+  outer: {
+    alias: string;
+    column: string;
+  };
+  inner: {
+    alias: string;
+    column: string;
+  };
+  subquery: import("./sqlite-parser/ast").SelectAst;
+}
+
+export interface CorrelatedScalarAggregateFilter {
+  outerCompare: {
+    alias: string;
+    column: string;
+  };
+  outerKey: {
+    alias: string;
+    column: string;
+  };
+  innerKey: {
+    alias: string;
+    column: string;
+  };
+  operator: string;
+  subquery: import("./sqlite-parser/ast").SelectAst;
+  correlationOutput: string;
+  metricOutput: string;
+}
+
 export interface ParsedWhereFilters {
   literals: LiteralFilter[];
   inSubqueries: InSubqueryFilter[];
+  existsSubqueries: CorrelatedExistsFilter[];
+  correlatedInSubqueries: CorrelatedInSubqueryFilter[];
+  correlatedScalarAggregates: CorrelatedScalarAggregateFilter[];
   residualExpr?: RelExpr;
 }
 

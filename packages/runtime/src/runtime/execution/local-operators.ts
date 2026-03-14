@@ -3,6 +3,7 @@
  */
 export { executeFilterResult, executeJoinResult } from "./local-filter-join";
 export { executeAggregateResult, executeProjectResult } from "./local-projection-aggregation";
+export { executeValuesResult } from "./local-values";
 export {
   executeLimitOffsetResult,
   executeRepeatUnionResult,

@@ -1,9 +1,22 @@
 import type { RelExpr } from "@tupl/foundation";
 
-import type { Binding, InSubqueryFilter, LiteralFilter, ParsedWhereFilters } from "./planner-types";
+import type {
+  Binding,
+  CorrelatedExistsFilter,
+  CorrelatedInSubqueryFilter,
+  CorrelatedScalarAggregateFilter,
+  InSubqueryFilter,
+  LiteralFilter,
+  ParsedWhereFilters,
+} from "./planner-types";
 import type { SqlExprLoweringContext } from "./sql-expr-lowering";
 import { lowerSqlAstToRelExpr } from "./sql-expr-lowering";
 import { flattenConjunctiveWhere, parseLiteralFilter } from "./expr/literal-filter-parser";
+import {
+  parseSupportedCorrelatedExistsSubquery,
+  parseSupportedCorrelatedInSubquery,
+  parseSupportedCorrelatedScalarAggregateSubquery,
+} from "./expr/expr-subqueries";
 import { literalFilterToRelExpr } from "./expr/literal-filter-operators";
 
 /**
@@ -19,6 +32,9 @@ export function parseWhereFilters(
     return {
       literals: [],
       inSubqueries: [],
+      existsSubqueries: [],
+      correlatedInSubqueries: [],
+      correlatedScalarAggregates: [],
     };
   }
 
@@ -31,14 +47,59 @@ export function parseWhereFilters(
     return {
       literals: [],
       inSubqueries: [],
+      existsSubqueries: [],
+      correlatedInSubqueries: [],
+      correlatedScalarAggregates: [],
       residualExpr,
     };
   }
 
   const literals: LiteralFilter[] = [];
   const inSubqueries: InSubqueryFilter[] = [];
+  const existsSubqueries: CorrelatedExistsFilter[] = [];
+  const correlatedInSubqueries: CorrelatedInSubqueryFilter[] = [];
+  const correlatedScalarAggregates: CorrelatedScalarAggregateFilter[] = [];
   const residualParts: RelExpr[] = [];
+  const outerAliases = new Set(bindings.map((binding) => binding.alias));
   for (const part of parts) {
+    const correlatedExists = parseSupportedCorrelatedExistsSubquery(part, outerAliases);
+    if (correlatedExists) {
+      existsSubqueries.push({
+        negated: correlatedExists.negated,
+        outer: correlatedExists.outer,
+        inner: correlatedExists.inner,
+        subquery: correlatedExists.rewrittenSubquery,
+      });
+      continue;
+    }
+
+    const correlatedIn = parseSupportedCorrelatedInSubquery(part, outerAliases);
+    if (correlatedIn) {
+      correlatedInSubqueries.push({
+        outer: correlatedIn.outer,
+        inner: correlatedIn.inner,
+        subquery: correlatedIn.rewrittenSubquery,
+      });
+      continue;
+    }
+
+    const correlatedScalarAggregate = parseSupportedCorrelatedScalarAggregateSubquery(
+      part,
+      outerAliases,
+    );
+    if (correlatedScalarAggregate) {
+      correlatedScalarAggregates.push({
+        outerCompare: correlatedScalarAggregate.outerCompare,
+        outerKey: correlatedScalarAggregate.outerKey,
+        innerKey: correlatedScalarAggregate.innerKey,
+        operator: correlatedScalarAggregate.operator,
+        subquery: correlatedScalarAggregate.rewrittenSubquery,
+        correlationOutput: correlatedScalarAggregate.correlationOutput,
+        metricOutput: correlatedScalarAggregate.metricOutput,
+      });
+      continue;
+    }
+
     const parsed = parseLiteralFilter(part, bindings, aliasToBinding);
     if (!parsed) {
       const residual = lowerSqlAstToRelExpr(part, bindings, aliasToBinding, lowerExprContext);
@@ -71,11 +132,17 @@ export function parseWhereFilters(
     ? {
         literals,
         inSubqueries,
+        existsSubqueries,
+        correlatedInSubqueries,
+        correlatedScalarAggregates,
         residualExpr,
       }
     : {
         literals,
         inSubqueries,
+        existsSubqueries,
+        correlatedInSubqueries,
+        correlatedScalarAggregates,
       };
 }
 

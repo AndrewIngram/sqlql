@@ -7,33 +7,29 @@ interface StandardsGapCase {
 
 const gapCases: StandardsGapCase[] = [
   {
-    name: "correlated subquery in WHERE",
+    name: "correlated NOT IN subquery in WHERE",
     sql: `
       SELECT o.id
       FROM orders o
-      WHERE EXISTS (
-        SELECT 1
+      WHERE o.user_id NOT IN (
+        SELECT u.id
         FROM users u
-        WHERE u.id = o.user_id
+        WHERE u.team_id = 'team_smb'
+          AND u.id = o.user_id
       )
     `,
   },
   {
-    name: "subquery in FROM",
+    name: "correlated scalar subquery in SELECT",
     sql: `
-      SELECT s.id
-      FROM (SELECT id FROM orders) s
-    `,
-  },
-  {
-    name: "recursive CTE",
-    sql: `
-      WITH RECURSIVE x(n) AS (
-        SELECT 1
-        UNION ALL
-        SELECT n + 1 FROM x WHERE n < 3
-      )
-      SELECT n FROM x
+      SELECT
+        o.id,
+        (
+          SELECT MAX(i.total_cents)
+          FROM orders i
+          WHERE i.user_id = o.user_id
+        ) AS user_max_total
+      FROM orders o
     `,
   },
   {
@@ -46,19 +42,6 @@ const gapCases: StandardsGapCase[] = [
           ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
         ) AS running_total
       FROM orders
-    `,
-  },
-  {
-    name: "named WINDOW clause reference",
-    sql: `
-      SELECT
-        SUM(total_cents) OVER w AS running_total
-      FROM orders
-      WINDOW w AS (
-        PARTITION BY org_id
-        ORDER BY created_at
-        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-      )
     `,
   },
   {

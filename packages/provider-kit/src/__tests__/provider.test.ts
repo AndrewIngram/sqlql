@@ -2107,7 +2107,7 @@ describe("query/provider runtime", () => {
     expect(plan.steps.some((step) => step.kind === "scan")).toBe(true);
   });
 
-  it("includes fallback diagnostics in explain output for unsupported rel pushdown", () => {
+  it("includes fallback diagnostics in explain output for unsupported rel pushdown", async () => {
     const schema = buildEntitySchema({
       orders: {
         provider: "warehouse",
@@ -2154,7 +2154,7 @@ describe("query/provider runtime", () => {
       } satisfies TestProvider,
     });
 
-    const explained = executableSchema.explain({
+    const explained = await executableSchema.explain({
       context: {},
       sql: `
         SELECT o.id, u.email
@@ -2166,8 +2166,11 @@ describe("query/provider runtime", () => {
     expect(explained.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "TUPL_WARN_FALLBACK",
-          severity: "warning",
+          stage: "physical_planning",
+          diagnostic: expect.objectContaining({
+            code: "TUPL_WARN_FALLBACK",
+            severity: "warning",
+          }),
         }),
       ]),
     );

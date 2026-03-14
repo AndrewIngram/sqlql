@@ -128,6 +128,62 @@ describe("query/ctes", () => {
     );
   });
 
+  it("supports SELECT without FROM with sqlite parity", async () => {
+    const sql = `
+      SELECT 1 AS answer, 2 + 3 AS sum_value
+    `;
+
+    await withQueryHarness(
+      {
+        schema: buildEntitySchema({}),
+        rowsByTable: {},
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([{ answer: 1, sum_value: 5 }]);
+      },
+    );
+  });
+
+  it("supports Fibonacci recursive CTE queries with sqlite parity", async () => {
+    const sql = `
+      WITH RECURSIVE fib AS (
+        SELECT 0 AS n, 1 AS next_n, 1 AS depth
+        UNION ALL
+        SELECT next_n, n + next_n, depth + 1
+        FROM fib
+        WHERE depth < 10
+      )
+      SELECT n
+      FROM fib
+      ORDER BY depth ASC
+    `;
+
+    await withQueryHarness(
+      {
+        schema: buildEntitySchema({}),
+        rowsByTable: {},
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { n: 0 },
+          { n: 1 },
+          { n: 1 },
+          { n: 2 },
+          { n: 3 },
+          { n: 5 },
+          { n: 8 },
+          { n: 13 },
+          { n: 21 },
+          { n: 34 },
+        ]);
+      },
+    );
+  });
+
   it("supports FROM subqueries with sqlite parity", async () => {
     const sql = `
       SELECT scoped.id

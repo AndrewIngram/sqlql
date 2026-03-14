@@ -61,6 +61,7 @@ export async function prepareSubqueryResultsResult<TContext>(
 
   switch (node.kind) {
     case "scan":
+    case "values":
     case "sql":
       return Result.ok(undefined);
     case "filter": {

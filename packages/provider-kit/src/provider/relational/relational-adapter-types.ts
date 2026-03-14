@@ -3,6 +3,7 @@ import type {
   FragmentProvider,
   LookupProvider,
   ProviderCompiledPlan,
+  ProviderPlanDescription,
   ProviderFragment,
   ProviderLookupManyRequest,
   QueryRow,
@@ -63,6 +64,16 @@ export interface RelationalProviderCompileRelArgs<
 }
 
 export interface RelationalProviderExecuteArgs<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+> {
+  context: TContext;
+  entities: TEntities;
+  plan: ProviderCompiledPlan;
+  name: string;
+}
+
+export interface RelationalProviderDescribeArgs<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
 > {
@@ -144,6 +155,9 @@ interface RelationalProviderOptionsBase<
   buildRelPlanPayload?(
     args: RelationalProviderCompileRelArgs<TContext, TEntities, TStrategy>,
   ): unknown;
+  describeCompiledPlan?(
+    args: RelationalProviderDescribeArgs<TContext, TEntities>,
+  ): MaybePromise<ProviderPlanDescription>;
   executeCompiledPlan(
     args: RelationalProviderExecuteArgs<TContext, TEntities>,
   ): MaybePromise<AdapterResult<QueryRow[]>>;

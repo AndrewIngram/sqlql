@@ -47,7 +47,7 @@ export interface PreparedSimpleSelect {
   joins: NonNullable<ReturnType<typeof parseJoins>>;
   whereFilters: NonNullable<ReturnType<typeof parseWhereFilters>>;
   windowFunctions: SelectWindowProjection["function"][];
-  rootBinding: Binding;
+  rootBinding: Binding | null;
 }
 
 /**
@@ -66,10 +66,6 @@ export function prepareSimpleSelectLowering(
   }
 
   const from = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
-  if (from.length === 0) {
-    return null;
-  }
-
   if (
     from.some(
       (entry) => typeof (entry as FromEntryAst).table !== "string" || (entry as FromEntryAst).stmt,
@@ -215,10 +211,7 @@ export function prepareSimpleSelectLowering(
       }
     : resolveNonAggregateOrderBy(orderByTerms, safeProjections, toParsedOrderSource);
 
-  const rootBinding = bindings[0];
-  if (!rootBinding) {
-    return null;
-  }
+  const rootBinding = bindings[0] ?? null;
 
   const { limit, offset } = parseLimitAndOffset(ast.limit);
 

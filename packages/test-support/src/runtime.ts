@@ -64,6 +64,7 @@ type ProviderInput<TContext> = {
   canExecute(fragment: ProviderFragment, context: TContext): unknown;
   estimate?(fragment: ProviderFragment, context: TContext): unknown;
   compile?(fragment: ProviderFragment, context: TContext): unknown;
+  describeCompiledPlan?(plan: unknown, context: TContext): unknown;
   execute?(plan: unknown, context: TContext): unknown;
   lookupMany?(request: unknown, context: TContext): unknown;
 };

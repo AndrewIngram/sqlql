@@ -41,7 +41,7 @@ export async function maybeExecuteLookupJoinResult<TContext>(
   }
 
   const leftScan = findFirstScan(join.left);
-  const rightScan = findFirstScan(join.right);
+  const rightScan = findLookupEligibleScan(join.right);
   if (!leftScan || !rightScan) {
     return Result.ok(null);
   }
@@ -214,10 +214,34 @@ export function applyLocalHashJoin(
   return joined;
 }
 
+function findLookupEligibleScan(node: RelNode): RelScanNode | null {
+  switch (node.kind) {
+    case "scan":
+      return node;
+    case "values":
+      return null;
+    case "filter":
+    case "project":
+    case "sort":
+    case "limit_offset":
+      return findLookupEligibleScan(node.input);
+    case "aggregate":
+    case "window":
+    case "join":
+    case "set_op":
+    case "repeat_union":
+    case "with":
+    case "sql":
+      return null;
+  }
+}
+
 function findFirstScan(node: RelNode): RelScanNode | null {
   switch (node.kind) {
     case "scan":
       return node;
+    case "values":
+      return null;
     case "filter":
     case "project":
     case "aggregate":

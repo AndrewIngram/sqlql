@@ -12,7 +12,7 @@ import {
   type QuerySession,
   type QueryStepEvent,
 } from "@tupl/runtime/session";
-import type { ExecutableSchema, QueryRow, SchemaDefinition } from "@tupl/schema";
+import type { ExecutableSchema, ExplainResult, QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { createVirtualModuleRuntime } from "./playground-module-runtime";
 import {
@@ -65,6 +65,7 @@ export interface SandboxCreateSessionSuccess {
   ok: true;
   sessionId: string;
   plan: QueryExecutionPlan;
+  explain: ExplainResult;
 }
 
 export interface SandboxCreateSessionFailure {
@@ -432,6 +433,12 @@ export async function createSandboxSession(
   const runtime = await runSandboxPhase("RUNTIME_INIT", () => getOrCreateProviderRuntime(compiled));
   const runtimeContext = toRuntimeContext(context, runtime);
   const { executableSchema } = runtime;
+  const explain = await runSandboxPhase("EXPLAIN", () =>
+    executableSchema.explain({
+      context: runtimeContext,
+      sql: compiled.sql,
+    }),
+  );
 
   const sessionResult = await runSandboxPhase("CREATE_SESSION", async () =>
     createExecutableSchemaSession(executableSchema, {
@@ -463,6 +470,7 @@ export async function createSandboxSession(
     ok: true,
     sessionId,
     plan: session.getPlan(),
+    explain,
   };
 }
 

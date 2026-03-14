@@ -689,6 +689,157 @@ describe("query/local executor", () => {
     expect(result).toEqual([{ id: "a" }, { id: "b" }, { id: "c" }]);
   });
 
+  it("executes grouped scalar-subquery join/filter shapes locally", async () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "memory",
+        columns: {
+          id: "text",
+          user_id: "text",
+          total_cents: "integer",
+        },
+      },
+    });
+
+    const rows: QueryRow[] = [
+      { id: "ord_1", user_id: "usr_1", total_cents: 1200 },
+      { id: "ord_2", user_id: "usr_1", total_cents: 1800 },
+      { id: "ord_3", user_id: "usr_2", total_cents: 2400 },
+      { id: "ord_4", user_id: "usr_3", total_cents: 9900 },
+    ];
+
+    const providers = finalizeProviders({
+      memory: {
+        canExecute(fragment: ProviderFragment) {
+          return fragment.kind === "scan";
+        },
+        async compile(fragment: ProviderFragment) {
+          return Result.ok({
+            provider: "memory",
+            kind: fragment.kind,
+            payload: fragment,
+          });
+        },
+        async execute(plan) {
+          const fragment = plan.payload as ProviderFragment;
+          if (fragment.kind !== "scan") {
+            return Result.ok([]);
+          }
+          return Result.ok(scanRows(rows, fragment.request));
+        },
+      } satisfies TestProvider,
+    });
+
+    const rel: RelNode = {
+      id: "project_root",
+      kind: "project",
+      convention: "local",
+      input: {
+        id: "filter_scalar",
+        kind: "filter",
+        convention: "local",
+        input: {
+          id: "join_scalar",
+          kind: "join",
+          convention: "local",
+          joinType: "inner",
+          left: {
+            id: "scan_outer",
+            kind: "scan",
+            convention: "local",
+            table: "orders",
+            alias: "o",
+            select: ["id", "user_id", "total_cents"],
+            output: [{ name: "o.id" }, { name: "o.user_id" }, { name: "o.total_cents" }],
+          },
+          right: {
+            id: "project_inner",
+            kind: "project",
+            convention: "local",
+            input: {
+              id: "aggregate_inner",
+              kind: "aggregate",
+              convention: "local",
+              input: {
+                id: "scan_inner",
+                kind: "scan",
+                convention: "local",
+                table: "orders",
+                alias: "i",
+                select: ["user_id", "total_cents"],
+                output: [{ name: "i.user_id" }, { name: "i.total_cents" }],
+              },
+              groupBy: [{ alias: "i", column: "user_id" }],
+              metrics: [
+                {
+                  fn: "max",
+                  as: "__tupl_scalar_metric",
+                  column: { alias: "i", column: "total_cents" },
+                },
+              ],
+              output: [{ name: "user_id" }, { name: "__tupl_scalar_metric" }],
+            },
+            columns: [
+              {
+                kind: "column",
+                source: { column: "user_id" },
+                output: "__tupl_scalar_corr_key",
+              },
+              {
+                kind: "column",
+                source: { column: "__tupl_scalar_metric" },
+                output: "__tupl_scalar_metric",
+              },
+            ],
+            output: [{ name: "__tupl_scalar_corr_key" }, { name: "__tupl_scalar_metric" }],
+          },
+          leftKey: { alias: "o", column: "user_id" },
+          rightKey: { column: "__tupl_scalar_corr_key" },
+          output: [
+            { name: "o.id" },
+            { name: "o.user_id" },
+            { name: "o.total_cents" },
+            { name: "__tupl_scalar_corr_key" },
+            { name: "__tupl_scalar_metric" },
+          ],
+        },
+        expr: {
+          kind: "function",
+          name: "eq",
+          args: [
+            { kind: "column", ref: { alias: "o", column: "total_cents" } },
+            { kind: "column", ref: { column: "__tupl_scalar_metric" } },
+          ],
+        },
+        output: [
+          { name: "o.id" },
+          { name: "o.user_id" },
+          { name: "o.total_cents" },
+          { name: "__tupl_scalar_corr_key" },
+          { name: "__tupl_scalar_metric" },
+        ],
+      },
+      columns: [{ kind: "column", source: { alias: "o", column: "id" }, output: "id" }],
+      output: [{ name: "id" }],
+    };
+
+    const result = (
+      await executeRelWithProvidersResult(
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
+      )
+    ).unwrap();
+
+    expect(result).toEqual([{ id: "ord_2" }, { id: "ord_3" }, { id: "ord_4" }]);
+  });
+
   it("executes WITH nodes via local cte materialization", async () => {
     const schema = buildEntitySchema({
       users: {

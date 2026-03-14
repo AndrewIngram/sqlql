@@ -21,6 +21,8 @@ export function inferRelOutputDefinitions(
   switch (rel.kind) {
     case "scan":
       return inferScanOutputDefinitions(rel, schema, cteDefinitions);
+    case "values":
+      return Object.fromEntries(rel.output.map((column) => [column.name, undefined]));
     case "filter":
     case "sort":
     case "limit_offset":

@@ -10,6 +10,7 @@ import {
   executeProjectResult,
   executeSetOpResult,
   executeSortResult,
+  executeValuesResult,
   executeWithResult,
 } from "./local-operators";
 import { tryExecuteRemoteSubtreeResult } from "./remote-subtree";
@@ -127,6 +128,8 @@ export async function executeRelNodeResult<TContext>(
   switch (node.kind) {
     case "scan":
       return executeScanResult(node, context);
+    case "values":
+      return executeValuesResult(node);
     case "join":
       return executeJoinResult(node, context);
     case "filter":

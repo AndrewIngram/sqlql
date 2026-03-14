@@ -4,7 +4,11 @@ import type { SchemaDefinition, ScanFilterClause } from "@tupl/schema-model";
 import { nextRelId } from "../physical/planner-ids";
 import type { PreparedSimpleSelect } from "./select-shape";
 import { appearsInRel, parseRelColumnRef } from "./select-from-lowering";
-import { collectRelExprRefs, isCorrelatedSubquery } from "../sql-expr-lowering";
+import {
+  collectRelExprRefs,
+  isCorrelatedSubquery,
+  mapBinaryOperatorToRelFunction,
+} from "../sql-expr-lowering";
 import {
   combineAndExprs,
   getPushableWhereAliases,
@@ -23,7 +27,9 @@ export function buildSimpleSelectJoinTree(
   // Push only literal predicates that attach cleanly to one scan alias. Everything else stays as
   // a residual rel expression so later provider/runtime layers can make one explicit fallback
   // decision instead of each lowering step inventing its own partial rule.
-  const pushableWhereAliases = getPushableWhereAliases(shape.rootBinding.alias, shape.joins);
+  const pushableWhereAliases = shape.rootBinding
+    ? getPushableWhereAliases(shape.rootBinding.alias, shape.joins)
+    : new Set<string>();
   const pushableLiteralFilters = shape.whereFilters.literals.filter((filter) =>
     pushableWhereAliases.has(filter.alias),
   );
@@ -42,7 +48,15 @@ export function buildSimpleSelectJoinTree(
   );
   const scansByAlias = buildScansByAlias(shape, columnsByAlias, pushableLiteralFilters);
 
-  let current: RelNode = scansByAlias.get(shape.rootBinding.alias)!;
+  let current: RelNode = shape.rootBinding
+    ? scansByAlias.get(shape.rootBinding.alias)!
+    : {
+        id: nextRelId("values"),
+        kind: "values",
+        convention: "local",
+        rows: [[]],
+        output: [],
+      };
 
   for (const join of shape.joins) {
     const right = scansByAlias.get(join.alias);
@@ -105,6 +119,150 @@ export function buildSimpleSelectJoinTree(
     };
   }
 
+  for (const inFilter of shape.whereFilters.correlatedInSubqueries) {
+    const subqueryRel = tryLowerSelect(inFilter.subquery);
+    if (!subqueryRel || subqueryRel.output.length !== 1) {
+      return null;
+    }
+
+    current = {
+      id: nextRelId("join"),
+      kind: "join",
+      convention: "local",
+      joinType: "semi",
+      left: current,
+      right: subqueryRel,
+      leftKey: {
+        alias: inFilter.outer.alias,
+        column: inFilter.outer.column,
+      },
+      rightKey: parseRelColumnRef(subqueryRel.output[0]!.name),
+      output: current.output,
+    };
+  }
+
+  for (const existsFilter of shape.whereFilters.existsSubqueries) {
+    const subqueryRel = tryLowerSelect(existsFilter.subquery);
+    if (!subqueryRel) {
+      return null;
+    }
+
+    if (existsFilter.negated) {
+      const keyedSubqueryRel = ensureQualifiedJoinKeyProjected(subqueryRel, existsFilter.inner);
+      const rightOutput = `${existsFilter.inner.alias}.${existsFilter.inner.column}`;
+      const leftOutput = current.output;
+      const antiJoin = {
+        id: nextRelId("join"),
+        kind: "join" as const,
+        convention: "local" as const,
+        joinType: "left" as const,
+        left: current,
+        right: keyedSubqueryRel,
+        leftKey: {
+          alias: existsFilter.outer.alias,
+          column: existsFilter.outer.column,
+        },
+        rightKey: parseRelColumnRef(rightOutput),
+        output: [...current.output, ...keyedSubqueryRel.output],
+      };
+      const filtered = {
+        id: nextRelId("filter"),
+        kind: "filter" as const,
+        convention: "local" as const,
+        input: antiJoin,
+        expr: {
+          kind: "function" as const,
+          name: "is_null",
+          args: [
+            {
+              kind: "column" as const,
+              ref: parseRelColumnRef(rightOutput),
+            },
+          ],
+        },
+        output: antiJoin.output,
+      };
+
+      current = projectToOutputShape(filtered, leftOutput);
+      continue;
+    }
+
+    const keyedSubqueryRel = ensureJoinKeyProjected(subqueryRel, existsFilter.inner);
+    const rightOutput = findProjectedJoinKeyOutput(keyedSubqueryRel, existsFilter.inner);
+    if (!rightOutput) {
+      return null;
+    }
+
+    current = {
+      id: nextRelId("join"),
+      kind: "join",
+      convention: "local",
+      joinType: "semi",
+      left: current,
+      right: keyedSubqueryRel,
+      leftKey: {
+        alias: existsFilter.outer.alias,
+        column: existsFilter.outer.column,
+      },
+      rightKey: parseRelColumnRef(rightOutput),
+      output: current.output,
+    };
+  }
+
+  for (const scalarFilter of shape.whereFilters.correlatedScalarAggregates) {
+    const subqueryRel = tryLowerSelect(scalarFilter.subquery);
+    if (!subqueryRel || subqueryRel.output.length !== 2) {
+      return null;
+    }
+
+    const mappedOperator = mapBinaryOperatorToRelFunction(scalarFilter.operator.toUpperCase());
+    if (!mappedOperator) {
+      return null;
+    }
+
+    current = {
+      id: nextRelId("join"),
+      kind: "join",
+      convention: "local",
+      joinType: "inner",
+      left: current,
+      right: subqueryRel,
+      leftKey: {
+        alias: scalarFilter.outerKey.alias,
+        column: scalarFilter.outerKey.column,
+      },
+      rightKey: parseRelColumnRef(scalarFilter.correlationOutput),
+      output: [...current.output, ...subqueryRel.output],
+    };
+
+    current = {
+      id: nextRelId("filter"),
+      kind: "filter",
+      convention: "local",
+      input: current,
+      expr: {
+        kind: "function",
+        name: mappedOperator,
+        args: [
+          {
+            kind: "column",
+            ref: {
+              alias: scalarFilter.outerCompare.alias,
+              column: scalarFilter.outerCompare.column,
+            },
+          },
+          {
+            kind: "column",
+            ref: {
+              column: scalarFilter.metricOutput,
+            },
+          },
+        ],
+      },
+      output: current.output,
+    };
+  }
+
   if (residualExpr) {
     current = {
       id: nextRelId("filter"),
@@ -117,6 +275,173 @@ export function buildSimpleSelectJoinTree(
   }
 
   return current;
+}
+
+function projectToOutputShape(rel: RelNode, output: RelNode["output"]): RelNode {
+  return {
+    id: nextRelId("project"),
+    kind: "project",
+    convention: "local",
+    input: rel,
+    columns: output.map((column) => ({
+      kind: "column" as const,
+      source: parseRelColumnRef(column.name),
+      output: column.name,
+    })),
+    output,
+  };
+}
+
+function findProjectedJoinKeyOutput(
+  rel: RelNode,
+  ref: { alias: string; column: string },
+): string | null {
+  if (rel.kind === "project") {
+    for (const mapping of rel.columns) {
+      if (
+        mapping.kind !== "expr" &&
+        mapping.source.alias === ref.alias &&
+        mapping.source.column === ref.column
+      ) {
+        return mapping.output;
+      }
+    }
+  }
+
+  for (const column of rel.output) {
+    const parsed = parseRelColumnRef(column.name);
+    if (parsed.alias === ref.alias && parsed.column === ref.column) {
+      return column.name;
+    }
+  }
+  return null;
+}
+
+function ensureJoinKeyProjected(rel: RelNode, ref: { alias: string; column: string }): RelNode {
+  const existing = findProjectedJoinKeyOutput(rel, ref);
+  if (existing) {
+    return rel;
+  }
+
+  if (rel.kind === "project") {
+    const outputName = `${ref.alias}.${ref.column}`;
+    return {
+      ...rel,
+      columns: [
+        ...rel.columns,
+        {
+          kind: "column",
+          source: {
+            alias: ref.alias,
+            column: ref.column,
+          },
+          output: outputName,
+        },
+      ],
+      output: [...rel.output, { name: outputName }],
+    };
+  }
+
+  if (rel.kind === "filter" || rel.kind === "sort" || rel.kind === "limit_offset") {
+    const input = ensureJoinKeyProjected(rel.input, ref);
+    if (input === rel.input) {
+      return rel;
+    }
+
+    return {
+      ...rel,
+      input,
+      output: input.output,
+    };
+  }
+
+  const outputName = `${ref.alias}.${ref.column}`;
+  return {
+    id: nextRelId("project"),
+    kind: "project",
+    convention: "local",
+    input: rel,
+    columns: [
+      ...rel.output.map((column) => ({
+        kind: "column" as const,
+        source: parseRelColumnRef(column.name),
+        output: column.name,
+      })),
+      {
+        kind: "column" as const,
+        source: {
+          alias: ref.alias,
+          column: ref.column,
+        },
+        output: outputName,
+      },
+    ],
+    output: [...rel.output, { name: outputName }],
+  };
+}
+
+function ensureQualifiedJoinKeyProjected(
+  rel: RelNode,
+  ref: { alias: string; column: string },
+): RelNode {
+  const outputName = `${ref.alias}.${ref.column}`;
+  if (rel.output.some((column) => column.name === outputName)) {
+    return rel;
+  }
+
+  if (rel.kind === "project") {
+    return {
+      ...rel,
+      columns: [
+        ...rel.columns,
+        {
+          kind: "column",
+          source: {
+            alias: ref.alias,
+            column: ref.column,
+          },
+          output: outputName,
+        },
+      ],
+      output: [...rel.output, { name: outputName }],
+    };
+  }
+
+  if (rel.kind === "filter" || rel.kind === "sort" || rel.kind === "limit_offset") {
+    const input = ensureQualifiedJoinKeyProjected(rel.input, ref);
+    if (input === rel.input) {
+      return rel;
+    }
+
+    return {
+      ...rel,
+      input,
+      output: input.output,
+    };
+  }
+
+  return {
+    id: nextRelId("project"),
+    kind: "project",
+    convention: "local",
+    input: rel,
+    columns: [
+      ...rel.output.map((column) => ({
+        kind: "column" as const,
+        source: parseRelColumnRef(column.name),
+        output: column.name,
+      })),
+      {
+        kind: "column" as const,
+        source: {
+          alias: ref.alias,
+          column: ref.column,
+        },
+        output: outputName,
+      },
+    ],
+    output: [...rel.output, { name: outputName }],
+  };
 }
 
 function collectRequiredColumns(
@@ -213,6 +538,19 @@ function collectRequiredColumns(
   }
   for (const filter of shape.whereFilters.inSubqueries) {
     columnsByAlias.get(filter.alias)?.add(filter.column);
+  }
+  for (const filter of shape.whereFilters.existsSubqueries) {
+    columnsByAlias.get(filter.inner.alias)?.add(filter.inner.column);
+    columnsByAlias.get(filter.outer.alias)?.add(filter.outer.column);
+  }
+  for (const filter of shape.whereFilters.correlatedInSubqueries) {
+    columnsByAlias.get(filter.inner.alias)?.add(filter.inner.column);
+    columnsByAlias.get(filter.outer.alias)?.add(filter.outer.column);
+  }
+  for (const filter of shape.whereFilters.correlatedScalarAggregates) {
+    columnsByAlias.get(filter.outerCompare.alias)?.add(filter.outerCompare.column);
+    columnsByAlias.get(filter.outerKey.alias)?.add(filter.outerKey.column);
+    columnsByAlias.get(filter.innerKey.alias)?.add(filter.innerKey.column);
   }
   if (residualExpr) {
     for (const ref of collectRelExprRefs(residualExpr)) {

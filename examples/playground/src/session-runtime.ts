@@ -1,7 +1,7 @@
 import { Result } from "better-result";
 import { defaultSqlAstParser, lowerSqlToRel } from "@tupl/planner";
 import type { QueryExecutionPlan, QuerySession, QueryStepEvent } from "@tupl/runtime/session";
-import type { QueryRow, SchemaDefinition } from "@tupl/schema";
+import type { ExplainResult, QueryRow, SchemaDefinition } from "@tupl/schema";
 import { resolveSchemaLinkedEnums, resolveTableColumnDefinition } from "@tupl/schema-model";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
@@ -11,7 +11,7 @@ import {
   isSandboxQuerySession,
   readSandboxSessionId,
 } from "./playground-sandbox-session";
-import { hasSqlNode, validateSelectReferences } from "./playground-sql-validation";
+import { hasSqlNode } from "./playground-sql-validation";
 import { requestSandboxWorker } from "./playground-sandbox-client";
 import {
   buildPlaygroundModules,
@@ -59,6 +59,7 @@ export interface SessionSnapshot {
 
 export interface PlaygroundSessionBundle {
   session: QuerySession;
+  explain: ExplainResult;
 }
 
 interface PlaygroundPreparedInputCacheEntry extends PlaygroundPreparedInputSuccess {
@@ -200,15 +201,15 @@ export function compilePreparedPlaygroundQuery(
     };
   }
 
-  const referenceIssue = validateSelectReferences(ast, schema, new Set<string>());
-  if (referenceIssue) {
+  let lowered;
+  try {
+    lowered = lowerSqlToRel(normalizedSql, schema);
+  } catch (error) {
     return {
       ok: false,
-      issues: [referenceIssue],
+      issues: [error instanceof Error ? error.message : "Invalid SQL query."],
     };
   }
-
-  const lowered = lowerSqlToRel(normalizedSql, schema);
   if (hasSqlNode(lowered.rel)) {
     return {
       ok: false,
@@ -267,6 +268,7 @@ export async function createSession(
 
   return {
     session,
+    explain: bundle.explain,
   };
 }
 

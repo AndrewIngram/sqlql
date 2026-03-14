@@ -317,6 +317,24 @@ describe("query/planning", () => {
     expect(lowered.rel.ctes[0]?.query.kind).toBe("repeat_union");
   });
 
+  it("lowers SELECT without FROM through a singleton values rel", () => {
+    const schema = buildEntitySchema({});
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT 1 AS answer, 2 + 3 AS sum_value
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+
+    expect(lowered.rel.input.kind).toBe("values");
+  });
+
   it("plans same-provider subtree as a remote rel fragment when supported", async () => {
     const schema = buildEntitySchema({
       orders: {
@@ -560,6 +578,190 @@ describe("query/planning", () => {
       throw new Error("Expected semi join input.");
     }
     expect(lowered.rel.input.joinType).toBe("semi");
+  });
+
+  it("lowers supported correlated EXISTS to a semi join", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          team_id: "text",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE EXISTS (
+          SELECT 1
+          FROM users u
+          WHERE u.id = o.user_id
+            AND u.team_id = 'team_smb'
+        )
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("join");
+    if (lowered.rel.input.kind !== "join") {
+      throw new Error("Expected semi join input.");
+    }
+    expect(lowered.rel.input.joinType).toBe("semi");
+    expect(lowered.rel.input.leftKey).toEqual({ alias: "o", column: "user_id" });
+    expect(lowered.rel.input.right.output.some((column) => column.name === "u.id")).toBe(true);
+  });
+
+  it("lowers supported correlated NOT EXISTS to a left join plus null filter", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          team_id: "text",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM users u
+          WHERE u.id = o.user_id
+            AND u.team_id = 'team_smb'
+        )
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("project");
+    if (lowered.rel.input.kind !== "project") {
+      throw new Error("Expected cleanup project after anti-join emulation.");
+    }
+    expect(lowered.rel.input.input.kind).toBe("filter");
+    if (lowered.rel.input.input.kind !== "filter") {
+      throw new Error("Expected is-null filter above left join.");
+    }
+    expect(lowered.rel.input.input.input.kind).toBe("join");
+    if (lowered.rel.input.input.input.kind !== "join") {
+      throw new Error("Expected left join input.");
+    }
+    expect(lowered.rel.input.input.input.joinType).toBe("left");
+  });
+
+  it("lowers supported correlated IN to a semi join", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          team_id: "text",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE o.user_id IN (
+          SELECT u.id
+          FROM users u
+          WHERE u.team_id = 'team_smb'
+            AND u.id = o.user_id
+        )
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("join");
+    if (lowered.rel.input.kind !== "join") {
+      throw new Error("Expected semi join input.");
+    }
+    expect(lowered.rel.input.joinType).toBe("semi");
+    expect(lowered.rel.input.leftKey).toEqual({ alias: "o", column: "user_id" });
+  });
+
+  it("lowers supported correlated scalar aggregate predicates to join plus filter", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+          total_cents: "integer",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE o.total_cents = (
+          SELECT MAX(i.total_cents)
+          FROM orders i
+          WHERE i.user_id = o.user_id
+        )
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("filter");
+    if (lowered.rel.input.kind !== "filter") {
+      throw new Error("Expected comparison filter above join.");
+    }
+    expect(lowered.rel.input.input.kind).toBe("join");
+    if (lowered.rel.input.input.kind !== "join") {
+      throw new Error("Expected join input.");
+    }
+    expect(lowered.rel.input.input.joinType).toBe("inner");
+    expect(lowered.rel.input.input.right.output.map((column) => column.name)).toEqual([
+      "__tupl_scalar_corr_key",
+      "__tupl_scalar_metric",
+    ]);
   });
 
   it("lowers UNION ALL to structured set_op rel", () => {

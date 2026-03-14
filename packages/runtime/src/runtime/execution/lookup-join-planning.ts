@@ -84,6 +84,8 @@ function findFirstScanForPlan(node: RelNode): Extract<RelNode, { kind: "scan" }>
   switch (node.kind) {
     case "scan":
       return node;
+    case "values":
+      return null;
     case "filter":
     case "project":
     case "aggregate":

@@ -723,6 +723,8 @@ export const QUERY_PRESETS: PlaygroundQueryPreset[] = [
   {
     id: "orders_calculated_columns",
     label: "Orders using calculated columns",
+    category: "Single-provider",
+    highlights: ["Calculated columns", "Filter", "Sort"],
     description: "Filter and sort directly on calculated columns defined on a base table.",
     sql: `
 SELECT id, total_cents, total_dollars, is_large_order
@@ -734,6 +736,8 @@ ORDER BY total_dollars DESC, id;
   {
     id: "orders_with_vendors",
     label: "My orders with vendors",
+    category: "Single-provider",
+    highlights: ["Join", "Ordering"],
     description: "Simple join over facade tables; downstream adds org/user scope.",
     sql: `
 SELECT o.id, o.status, o.total_cents, o.created_at, v.name AS vendor_name
@@ -745,6 +749,8 @@ ORDER BY o.created_at DESC;
   {
     id: "vendor_spend",
     label: "My spend by vendor",
+    category: "Single-provider",
+    highlights: ["Join", "Aggregate", "ORDER BY alias"],
     description: "Join + grouped aggregate with ORDER BY metric alias.",
     sql: `
 SELECT v.name AS vendor_name, COUNT(*) AS order_count, SUM(o.total_cents) AS spend_cents
@@ -757,6 +763,8 @@ ORDER BY spend_cents DESC;
   {
     id: "items_with_products",
     label: "My order lines",
+    category: "Single-provider",
+    highlights: ["View", "Join"],
     description: "Query a composed facade view that joins order items to the active-products view.",
     sql: `
 SELECT order_id, product_sku, product_name, quantity, unit_price_cents, line_total_cents
@@ -767,6 +775,8 @@ ORDER BY order_id, product_sku;
   {
     id: "product_engagement",
     label: "Product engagement",
+    category: "Multi-provider",
+    highlights: ["Cross-provider view", "Left join"],
     description:
       "Cross-provider facade view over SQL-backed products and Redis-backed view counters.",
     sql: `
@@ -778,6 +788,8 @@ ORDER BY view_count DESC, product_name;
   {
     id: "product_performance",
     label: "Product performance",
+    category: "Single-provider",
+    highlights: ["Aggregate-over-view", "GROUP BY"],
     description: "Aggregate-over-view example built from the derived order-lines facade view.",
     sql: `
 SELECT product_name, units_sold, revenue_cents, line_count
@@ -788,6 +800,8 @@ ORDER BY revenue_cents DESC, product_name;
   {
     id: "preferred_vendor_orders",
     label: "Orders from preferred vendors",
+    category: "Single-provider",
+    highlights: ["IN subquery"],
     description: "IN subquery over another facade table.",
     sql: `
 SELECT id, vendor_id, total_cents
@@ -803,6 +817,8 @@ ORDER BY total_cents DESC;
   {
     id: "status_distinct",
     label: "Distinct statuses",
+    category: "Single-provider",
+    highlights: ["DISTINCT"],
     description: "DISTINCT projection shape.",
     sql: `
 SELECT DISTINCT status
@@ -813,6 +829,8 @@ ORDER BY status;
   {
     id: "product_coverage",
     label: "Product coverage (left join)",
+    category: "Single-provider",
+    highlights: ["Left join", "Aggregate"],
     description: "LEFT JOIN with aggregate to include products with zero units.",
     sql: `
 SELECT p.name, p.category, COUNT(i.id) AS line_count, SUM(i.quantity) AS units
@@ -825,6 +843,8 @@ ORDER BY units DESC, p.name;
   {
     id: "activity_union",
     label: "Activity union",
+    category: "Single-provider",
+    highlights: ["UNION ALL"],
     description: "UNION ALL over two facade tables.",
     sql: `
 SELECT id, vendor_id AS activity_ref
@@ -838,6 +858,8 @@ ORDER BY activity_ref, id;
   {
     id: "paid_orders",
     label: "Paid orders over threshold",
+    category: "Single-provider",
+    highlights: ["Filter", "Ordering"],
     description: "Simple filter + ordering.",
     sql: `
 SELECT id, total_cents, created_at
@@ -849,6 +871,8 @@ ORDER BY total_cents DESC;
   {
     id: "vendor_rank",
     label: "Vendor spend rank",
+    category: "Single-provider",
+    highlights: ["CTE", "Window function"],
     description: "CTE + window function shape.",
     sql: `
 WITH vendor_totals AS (
@@ -865,6 +889,188 @@ SELECT
   DENSE_RANK() OVER (ORDER BY spend_cents DESC) AS spend_rank
 FROM vendor_totals
 ORDER BY spend_rank, vendor_name;
+    `.trim(),
+  },
+  {
+    id: "math_fibonacci",
+    label: "Math: Fibonacci sequence",
+    category: "Logical only",
+    highlights: ["Recursive CTE", "Arithmetic"],
+    description: "Pure logical recursive CTE over literal seed rows; no provider tables involved.",
+    sql: `
+WITH RECURSIVE fib AS (
+  SELECT 0 AS n, 1 AS next_n, 1 AS depth
+  UNION ALL
+  SELECT next_n AS n, n + next_n AS next_n, depth + 1 AS depth
+  FROM fib
+  WHERE depth < 10
+)
+SELECT n
+FROM fib
+ORDER BY depth;
+    `.trim(),
+  },
+  {
+    id: "math_powers_of_two",
+    label: "Math: Powers of two",
+    category: "Logical only",
+    highlights: ["Recursive CTE", "Arithmetic"],
+    description: "Recursive CTE with arithmetic growth, showing providerless logical iteration.",
+    sql: `
+WITH RECURSIVE powers AS (
+  SELECT 0 AS exponent, 1 AS value
+  UNION ALL
+  SELECT exponent + 1 AS exponent, value * 2 AS value
+  FROM powers
+  WHERE exponent < 8
+)
+SELECT exponent, value
+FROM powers
+ORDER BY exponent;
+    `.trim(),
+  },
+  {
+    id: "math_triangular_window",
+    label: "Math: Triangular numbers",
+    category: "Logical only",
+    highlights: ["Recursive CTE", "Window aggregate"],
+    description: "Recursive sequence generation plus a running window aggregate, entirely logical.",
+    sql: `
+WITH RECURSIVE seq AS (
+  SELECT 1 AS n
+  UNION ALL
+  SELECT n + 1 AS n
+  FROM seq
+  WHERE n < 8
+)
+SELECT
+  n,
+  SUM(n) OVER (
+    ORDER BY n
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  ) AS triangular
+FROM seq
+ORDER BY n;
+    `.trim(),
+  },
+  {
+    id: "logical_derived_table",
+    label: "Logical: Derived table in FROM",
+    category: "Logical only",
+    highlights: ["Derived table", "Literal CTE"],
+    description: "Literal dataset plus subquery-in-FROM shape, fully local and providerless.",
+    sql: `
+WITH sample AS (
+  SELECT 1 AS n, 'odd' AS parity
+  UNION ALL
+  SELECT 2 AS n, 'even' AS parity
+  UNION ALL
+  SELECT 3 AS n, 'odd' AS parity
+  UNION ALL
+  SELECT 4 AS n, 'even' AS parity
+)
+SELECT scoped.parity, scoped.n_squared
+FROM (
+  SELECT parity, n * n AS n_squared
+  FROM sample
+  WHERE n >= 2
+) scoped
+ORDER BY scoped.n_squared;
+    `.trim(),
+  },
+  {
+    id: "logical_correlated_exists",
+    label: "Logical: Correlated EXISTS",
+    category: "Logical only",
+    highlights: ["Correlated EXISTS", "Literal CTE"],
+    description:
+      "Restricted decorrelatable EXISTS against literal CTE datasets, with no backing provider scans.",
+    sql: `
+WITH sample AS (
+  SELECT 1 AS id, 'alpha' AS grp, 2 AS val
+  UNION ALL
+  SELECT 2 AS id, 'alpha' AS grp, 5 AS val
+  UNION ALL
+  SELECT 3 AS id, 'beta' AS grp, 1 AS val
+  UNION ALL
+  SELECT 4 AS id, 'beta' AS grp, 4 AS val
+  UNION ALL
+  SELECT 5 AS id, 'gamma' AS grp, 3 AS val
+),
+focus AS (
+  SELECT 2 AS val
+  UNION ALL
+  SELECT 4 AS val
+)
+SELECT s.id, s.grp, s.val
+FROM sample s
+WHERE EXISTS (
+  SELECT f.val
+  FROM focus f
+  WHERE f.val = s.val
+)
+ORDER BY s.id;
+    `.trim(),
+  },
+  {
+    id: "logical_correlated_scalar_max",
+    label: "Logical: Correlated scalar aggregate",
+    category: "Logical only",
+    highlights: ["Correlated scalar aggregate", "Literal CTE"],
+    description: "Correlated MAX() predicate in WHERE over a literal CTE dataset.",
+    sql: `
+WITH sample AS (
+  SELECT 1 AS id, 'alpha' AS grp, 2 AS val
+  UNION ALL
+  SELECT 2 AS id, 'alpha' AS grp, 5 AS val
+  UNION ALL
+  SELECT 3 AS id, 'beta' AS grp, 1 AS val
+  UNION ALL
+  SELECT 4 AS id, 'beta' AS grp, 4 AS val
+  UNION ALL
+  SELECT 5 AS id, 'gamma' AS grp, 3 AS val
+)
+SELECT s.id, s.grp, s.val
+FROM sample s
+WHERE s.val = (
+  SELECT MAX(i.val)
+  FROM sample i
+  WHERE i.grp = s.grp
+)
+ORDER BY s.id;
+    `.trim(),
+  },
+  {
+    id: "logical_named_window",
+    label: "Logical: Named window frame",
+    category: "Logical only",
+    highlights: ["Named window", "Explicit frame"],
+    description: "Named WINDOW clause plus explicit ROWS frame over a literal local dataset.",
+    sql: `
+WITH sample AS (
+  SELECT 1 AS id, 'alpha' AS grp, 2 AS val
+  UNION ALL
+  SELECT 2 AS id, 'alpha' AS grp, 5 AS val
+  UNION ALL
+  SELECT 3 AS id, 'beta' AS grp, 1 AS val
+  UNION ALL
+  SELECT 4 AS id, 'beta' AS grp, 4 AS val
+  UNION ALL
+  SELECT 5 AS id, 'gamma' AS grp, 3 AS val
+)
+SELECT
+  id,
+  grp,
+  val,
+  SUM(val) OVER w AS running_total,
+  DENSE_RANK() OVER (PARTITION BY grp ORDER BY val DESC) AS grp_rank
+FROM sample
+WINDOW w AS (
+  PARTITION BY grp
+  ORDER BY val
+  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+)
+ORDER BY grp, val;
     `.trim(),
   },
 ];
@@ -1509,6 +1715,8 @@ export function buildQueryCatalog(queries: PlaygroundQueryPreset[]): CatalogQuer
     id: query.id,
     label: query.label,
     sql: query.sql,
+    ...(query.category ? { category: query.category } : {}),
+    ...(query.highlights ? { highlights: [...query.highlights] } : {}),
     ...(query.description ? { description: query.description } : {}),
   }));
 }
