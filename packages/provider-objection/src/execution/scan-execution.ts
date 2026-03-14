@@ -2,7 +2,7 @@ import type { QueryRow, TableScanRequest } from "@tupl/provider-kit";
 
 import { applyWhereClause, createBaseQuery, executeQuery } from "../backend/query-helpers";
 import type { ResolvedEntityConfig } from "../types";
-import type { ScanBinding } from "../planning/rel-builder";
+import type { ScanBinding } from "../planning/rel-strategy";
 
 export async function executeScan<TContext>(
   knex: import("../types").KnexLike,

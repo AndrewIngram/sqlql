@@ -9,7 +9,7 @@ import {
   type RelScanNode,
 } from "@tupl/foundation";
 import {
-  bindAdapterEntities,
+  bindProviderEntities,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
   type ProviderAdapter,
@@ -23,6 +23,7 @@ import {
   type ConstraintValidationOptions,
   createExecutableSchema,
   type ExecutableSchema,
+  type ExplainResult,
   type QueryGuardrails,
 } from "@tupl/runtime";
 import {
@@ -74,6 +75,43 @@ type ProviderInput<TContext> = {
   execute?(plan: unknown, context: TContext): unknown;
 } & Partial<LookupManyCapableProviderAdapter<TContext>>;
 
+type TestExecutableSchema<TContext, TSchema extends SchemaDefinition> = Omit<
+  ExecutableSchema<TContext, TSchema>,
+  "query" | "explain"
+> & {
+  query(input: Parameters<ExecutableSchema<TContext, TSchema>["query"]>[0]): Promise<QueryRow[]>;
+  queryResult: ExecutableSchema<TContext, TSchema>["query"];
+  explain(
+    input: Parameters<ExecutableSchema<TContext, TSchema>["explain"]>[0],
+  ): Promise<ExplainResult>;
+  explainResult: ExecutableSchema<TContext, TSchema>["explain"];
+};
+
+function augmentExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+  executableSchema: ExecutableSchema<TContext, TSchema>,
+): TestExecutableSchema<TContext, TSchema> {
+  const queryResult = executableSchema.query.bind(executableSchema);
+  const explainResult = executableSchema.explain.bind(executableSchema);
+
+  return Object.assign(executableSchema, {
+    query(input: Parameters<typeof queryResult>[0]) {
+      return queryResult(input).then(unwrapResult);
+    },
+    queryResult,
+    explain(input: Parameters<typeof explainResult>[0]) {
+      return explainResult(input).then(unwrapResult);
+    },
+    explainResult,
+  }) as TestExecutableSchema<TContext, TSchema>;
+}
+
+function unwrapResult<T, E>(result: import("better-result").Result<T, E>) {
+  if (Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
+}
+
 export function finalizeProviders<TContext>(
   providers: Record<string, ProviderInput<TContext>>,
 ): Record<string, ProviderAdapter<TContext>> {
@@ -82,7 +120,7 @@ export function finalizeProviders<TContext>(
     if (!boundAdapter.name) {
       boundAdapter.name = providerName;
     }
-    bindAdapterEntities(boundAdapter);
+    bindProviderEntities(boundAdapter);
   }
 
   return providers as Record<string, ProviderAdapter<TContext>>;
@@ -294,7 +332,7 @@ export function createExecutableSchemaFromProviders<TContext, TSchema extends Sc
       boundAdapter.entities[tableName] = createDataEntityHandle({
         entity: binding?.kind === "physical" ? binding.entity : tableName,
         provider: providerName,
-        adapter: boundAdapter,
+        providerInstance: boundAdapter,
         columns:
           binding?.kind === "physical"
             ? toEntityColumnsFromBindings(binding.columnBindings, tableDefinition.columns)
@@ -302,7 +340,7 @@ export function createExecutableSchemaFromProviders<TContext, TSchema extends Sc
       });
     }
 
-    bindAdapterEntities(boundAdapter);
+    bindProviderEntities(boundAdapter);
 
     builder.table(tableName, boundAdapter.entities[tableName], {
       columns: ({ col }) =>
@@ -355,7 +393,7 @@ export function createExecutableSchemaFromProviders<TContext, TSchema extends Sc
     });
   }
 
-  return createExecutableSchema(builder);
+  return augmentExecutableSchema(unwrapResult(createExecutableSchema(builder)));
 }
 
 export function createMethodsProvider<TContext>(
@@ -445,12 +483,12 @@ export function createMethodsProvider<TContext>(
     adapter.entities![tableName] = createDataEntityHandle({
       entity: tableName,
       provider: providerName,
-      adapter,
+      providerInstance: adapter,
       columns: toEntityColumns(schema.tables[tableName]!.columns),
     });
   }
 
-  return bindAdapterEntities(adapter);
+  return bindProviderEntities(adapter);
 }
 
 export function createExecutableMethodsSchema<TContext, TSchema extends SchemaDefinition>(
@@ -476,7 +514,7 @@ export function createExecutableMethodsSchema<TContext, TSchema extends SchemaDe
     });
   }
 
-  return createExecutableSchema(builder);
+  return augmentExecutableSchema(unwrapResult(createExecutableSchema(builder)));
 }
 
 function extractMethodsExecutableRel(rel: RelNode):
@@ -998,20 +1036,30 @@ export function createMethodsSession<TContext>(input: {
   constraintValidation?: ConstraintValidationOptions;
   options?: QuerySessionOptions;
 }) {
-  return createExecutableSchemaSession(createExecutableMethodsSchema(input.schema, input.methods), {
-    context: input.context,
-    sql: input.sql,
-    ...(input.queryGuardrails ? { queryGuardrails: input.queryGuardrails } : {}),
-    ...(input.constraintValidation ? { constraintValidation: input.constraintValidation } : {}),
-    ...(input.options ? { options: input.options } : {}),
-  });
+  return unwrapResult(
+    createExecutableSchemaSession(
+      createExecutableMethodsSchema(
+        input.schema,
+        input.methods,
+      ) as unknown as ExecutableSchema<TContext>,
+      {
+        context: input.context,
+        sql: input.sql,
+        ...(input.queryGuardrails ? { queryGuardrails: input.queryGuardrails } : {}),
+        ...(input.constraintValidation ? { constraintValidation: input.constraintValidation } : {}),
+        ...(input.options ? { options: input.options } : {}),
+      },
+    ),
+  );
 }
 
 export function createSessionFromExecutableSchema<TContext>(
-  executableSchema: ExecutableSchema<TContext>,
+  executableSchema: ExecutableSchema<TContext> | TestExecutableSchema<TContext, SchemaDefinition>,
   input: ExecutableSchemaSessionInput<TContext>,
 ) {
-  return createExecutableSchemaSession(executableSchema, input);
+  return unwrapResult(
+    createExecutableSchemaSession(executableSchema as ExecutableSchema<TContext>, input),
+  );
 }
 
 export type RowsByTable<TSchema extends SchemaDefinition> = {
@@ -1090,7 +1138,7 @@ function createControlDatabase<TSchema extends SchemaDefinition>(
   rowsByTable: RowsByTable<TSchema>,
 ): InstanceType<typeof Database> {
   const db = new Database(":memory:");
-  db.exec(toSqlDDL(schema, { ifNotExists: true }));
+  db.exec(unwrapResult(toSqlDDL(schema, { ifNotExists: true })));
 
   for (const [tableName, table] of Object.entries(schema.tables)) {
     const columns = Object.keys(table.columns);

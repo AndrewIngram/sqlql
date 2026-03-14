@@ -5,7 +5,7 @@ import {
   getDataEntityProvider,
   normalizeCapability,
   unwrapProviderOperationResult,
-  type Provider,
+  type ProviderAdapter,
 } from "@tupl/provider-kit";
 import { buildProviderFragmentForRelResult } from "@tupl/planner";
 import { mapProviderRowsToRelOutput } from "@tupl/schema-model";
@@ -86,20 +86,20 @@ function resolveProviderForNode<TContext>(
   node: RelNode,
   providerName: string,
   context: RelExecutionContext<TContext>,
-): Provider<TContext> | undefined {
+): ProviderAdapter<TContext> | undefined {
   return context.providers[providerName] ?? findNodeProvider(node, providerName);
 }
 
 function findNodeProvider<TContext>(
   node: RelNode,
   providerName: string,
-): Provider<TContext> | undefined {
+): ProviderAdapter<TContext> | undefined {
   switch (node.kind) {
     case "scan": {
       if (!node.entity || node.entity.provider !== providerName) {
         return undefined;
       }
-      return getDataEntityProvider(node.entity) as Provider<TContext> | undefined;
+      return getDataEntityProvider(node.entity) as ProviderAdapter<TContext> | undefined;
     }
     case "filter":
     case "project":
@@ -118,5 +118,9 @@ function findNodeProvider<TContext>(
         node.ctes.map((cte) => findNodeProvider(cte.query, providerName)).find(Boolean) ??
         findNodeProvider(node.body, providerName)
       );
+    case "values":
+    case "cte_ref":
+    case "repeat_union":
+      return undefined;
   }
 }

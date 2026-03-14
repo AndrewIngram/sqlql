@@ -48,7 +48,7 @@ declare const providerSqlRelationalProviderOptions: ProviderSqlRelationalProvide
     entity: string;
     table: string;
     resolved: { entity: string; table: string; config: unknown };
-    scan: Extract<providerKit.ProviderFragment, { kind: "scan" }>;
+    scan: Extract<foundation.RelNode, { kind: "scan" }>;
   },
   unknown,
   unknown

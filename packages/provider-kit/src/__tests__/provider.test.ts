@@ -6,7 +6,7 @@ import {
   createDataEntityHandle,
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
-  getDataEntityAdapter,
+  getDataEntityProvider,
   type QueryRow,
   type ProviderAdapter,
   type ProviderCapabilityAtom,
@@ -17,7 +17,7 @@ import type {
   LookupManyCapableProviderAdapter,
   ProviderLookupManyRequest,
 } from "@tupl/provider-kit/shapes";
-import { getNormalizedTableBinding, validateProviderBindingsResult } from "@tupl/schema-model";
+import { getNormalizedTableBinding, validateProviderBindings } from "@tupl/schema-model";
 import {
   createExecutableSchemaFromProviders,
   createSessionFromExecutableSchema,
@@ -253,7 +253,7 @@ describe("query/provider runtime", () => {
       id: { source: "id", type: "text" },
       total_cents: { source: "total_cents", type: "integer" },
     });
-    expect(getDataEntityAdapter(adapter.entities.orders)).toBe(adapter);
+    expect(getDataEntityProvider(adapter.entities.orders)).toBe(adapter);
   });
 
   it("returns structured capability reports for unsupported relational fragments", async () => {
@@ -1448,7 +1448,7 @@ describe("query/provider runtime", () => {
     const ordersEntity = createDataEntityHandle({
       entity: "orders_raw",
       provider: "warehouse",
-      adapter: warehouseProvider as unknown as ProviderAdapter,
+      providerInstance: warehouseProvider as unknown as ProviderAdapter,
       columns: {
         id: { source: "id", type: "text", nullable: false },
         vendorId: { source: "vendor_id", type: "text", nullable: false },
@@ -1458,7 +1458,7 @@ describe("query/provider runtime", () => {
     const vendorsEntity = createDataEntityHandle({
       entity: "vendors_raw",
       provider: "warehouse",
-      adapter: warehouseProvider as unknown as ProviderAdapter,
+      providerInstance: warehouseProvider as unknown as ProviderAdapter,
       columns: {
         id: { source: "id", type: "text", nullable: false },
         name: { source: "name", type: "text", nullable: false },
@@ -2432,7 +2432,7 @@ describe("query/provider runtime", () => {
       },
     });
 
-    const result = validateProviderBindingsResult(schema, {});
+    const result = validateProviderBindings(schema, {});
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
       throw new Error("Expected provider binding validation to fail.");

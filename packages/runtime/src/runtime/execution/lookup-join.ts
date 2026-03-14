@@ -7,7 +7,7 @@ import {
   type RelScanNode,
 } from "@tupl/foundation";
 import {
-  getDataEntityAdapter,
+  getDataEntityProvider,
   unwrapProviderOperationResult,
   type ProviderAdapter,
 } from "@tupl/provider-kit";
@@ -49,10 +49,15 @@ export async function maybeExecuteLookupJoinResult<TContext>(
   const rightBinding = getNormalizedTableBinding(context.schema, rightScan.table);
   const rightProviderName =
     rightScan.entity?.provider ?? resolveTableProvider(context.schema, rightScan.table);
+  const rightProviderResult =
+    typeof rightProviderName === "string" ? Result.ok(rightProviderName) : rightProviderName;
+  if (Result.isError(rightProviderResult)) {
+    return Result.ok(null);
+  }
   const rightProvider =
-    context.providers[rightProviderName] ??
+    context.providers[rightProviderResult.value] ??
     (rightScan.entity
-      ? (getDataEntityAdapter(rightScan.entity) as ProviderAdapter<TContext> | undefined)
+      ? (getDataEntityProvider(rightScan.entity) as ProviderAdapter<TContext> | undefined)
       : undefined);
   if (!rightProvider || !supportsLookupMany(rightProvider)) {
     return Result.ok(null);

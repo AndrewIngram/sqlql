@@ -1,5 +1,6 @@
 import type { RelJoinNode, RelNode, RelScanNode } from "@tupl/foundation";
 import type { ProvidersMap } from "@tupl/provider-kit";
+import { Result } from "better-result";
 import {
   getNormalizedTableBinding,
   resolveTableProvider,
@@ -26,7 +27,14 @@ export function resolveSingleProvider(node: RelNode, schema: SchemaDefinition): 
         if (normalized?.kind === "view") {
           return false;
         }
-        providers.add(current.entity?.provider ?? resolveTableProvider(schema, current.table));
+        const providerName =
+          current.entity?.provider ?? resolveTableProvider(schema, current.table);
+        const providerNameResult =
+          typeof providerName === "string" ? Result.ok(providerName) : providerName;
+        if (Result.isError(providerNameResult)) {
+          return false;
+        }
+        providers.add(providerNameResult.value);
         return true;
       }
       case "filter":
@@ -72,10 +80,15 @@ export function assignConventions(node: RelNode, schema: SchemaDefinition): RelN
       if (normalized?.kind === "view") {
         return { ...node, convention: "local" };
       }
-      const provider = node.entity?.provider ?? resolveTableProvider(schema, node.table);
+      const providerName = node.entity?.provider ?? resolveTableProvider(schema, node.table);
+      const providerNameResult =
+        typeof providerName === "string" ? Result.ok(providerName) : providerName;
+      if (Result.isError(providerNameResult)) {
+        return { ...node, convention: "local" };
+      }
       return {
         ...node,
-        convention: `provider:${provider}`,
+        convention: `provider:${providerNameResult.value}`,
       };
     }
     case "filter":
@@ -170,8 +183,19 @@ export function resolveLookupJoinCandidate<TContext>(
     return null;
   }
 
-  const leftProvider = leftScan.entity?.provider ?? resolveTableProvider(schema, leftScan.table);
-  const rightProvider = rightScan.entity?.provider ?? resolveTableProvider(schema, rightScan.table);
+  const leftProviderName =
+    leftScan.entity?.provider ?? resolveTableProvider(schema, leftScan.table);
+  const rightProviderName =
+    rightScan.entity?.provider ?? resolveTableProvider(schema, rightScan.table);
+  const leftProviderResult =
+    typeof leftProviderName === "string" ? Result.ok(leftProviderName) : leftProviderName;
+  const rightProviderResult =
+    typeof rightProviderName === "string" ? Result.ok(rightProviderName) : rightProviderName;
+  if (Result.isError(leftProviderResult) || Result.isError(rightProviderResult)) {
+    return null;
+  }
+  const leftProvider = leftProviderResult.value;
+  const rightProvider = rightProviderResult.value;
   if (leftProvider === rightProvider) {
     return null;
   }

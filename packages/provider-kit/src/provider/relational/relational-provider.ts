@@ -1,4 +1,4 @@
-import { bindAdapterEntities } from "../entity-handles";
+import { bindProviderEntities } from "../entity-handles";
 import { AdapterResult } from "../operations";
 import type { RelNode } from "@tupl/foundation";
 import type { ProviderCompiledPlan, ProviderPlanDescription } from "../contracts";
@@ -214,6 +214,6 @@ export function createRelationalProviderAdapter<
       : {}),
   };
 
-  return bindAdapterEntities(boundAdapter) as RelationalProviderAdapter<TContext, TEntities> &
+  return bindProviderEntities(boundAdapter) as RelationalProviderAdapter<TContext, TEntities> &
     Partial<LookupManyCapableProviderAdapter<TContext>>;
 }

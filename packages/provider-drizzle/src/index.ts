@@ -17,6 +17,7 @@ import {
 import { deriveEntityColumnsFromTable } from "./backend/table-columns";
 import { impossibleCondition, runDrizzleScan } from "./backend/query-helpers";
 import {
+  resolveDrizzleEntityConfigs,
   resolveDrizzleRelCompileStrategy,
   type DrizzleRelCompiledPlan,
   type DrizzleRelCompileStrategy,
@@ -55,6 +56,7 @@ export function createDrizzleProvider<
 } {
   const providerName = options.name ?? "drizzle";
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
+  const entityConfigs = resolveDrizzleEntityConfigs(tableConfigs);
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
   void dialect;
 
@@ -67,7 +69,7 @@ export function createDrizzleProvider<
       return deriveEntityColumnsFromTable(config.table);
     },
     resolveRelCompileStrategy({ rel }) {
-      return resolveDrizzleRelCompileStrategy(rel, tableConfigs);
+      return resolveDrizzleRelCompileStrategy(rel, entityConfigs);
     },
     isRelStrategySupported({ context, strategy }) {
       if (strategy == null) {

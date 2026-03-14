@@ -18,6 +18,7 @@ import {
   buildSingleQueryPlan,
   requireColumnProjectMapping,
   resolveColumnRefFromAliasMap,
+  resolveDrizzleEntityConfigs,
   resolveDrizzleRelCompileStrategy,
   resolveJoinKeyColumnRefFromAliasMap,
   resolveProjectedSqlExpression,
@@ -54,7 +55,8 @@ export async function buildDrizzleRelBuilderForStrategy<TContext>(
   db: DrizzleQueryExecutor,
 ): Promise<{ builder: DrizzleExecutableBuilder }> {
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
-  const strategy = resolveDrizzleRelCompileStrategy(rel, tableConfigs);
+  const entityConfigs = resolveDrizzleEntityConfigs(tableConfigs);
+  const strategy = resolveDrizzleRelCompileStrategy(rel, entityConfigs);
   if (!strategy) {
     throw new UnsupportedSingleQueryPlanError(
       `Rel node "${rel.kind}" is not supported in Drizzle single-query pushdown.`,
@@ -87,7 +89,8 @@ export async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
   db: DrizzleQueryExecutor,
 ): Promise<{ builder: DrizzleExecutableBuilder }> {
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
-  const plan = buildSingleQueryPlan(rel, tableConfigs);
+  const entityConfigs = resolveDrizzleEntityConfigs(tableConfigs);
+  const plan = buildSingleQueryPlan(rel, entityConfigs);
   const selection = buildSingleQuerySelection(plan);
   const preferDistinctSelection =
     !!plan.pipeline.aggregate &&
@@ -129,7 +132,9 @@ export async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
       ? dbWithSelectDistinct.selectDistinct.bind(dbWithSelectDistinct)
       : dbWithSelectDistinct.select.bind(dbWithSelectDistinct);
 
-  let builder = selectFn(selection).from(plan.joinPlan.root.table) as DrizzleExecutableBuilder & {
+  let builder = selectFn(selection).from(
+    plan.joinPlan.root.sourceTable,
+  ) as DrizzleExecutableBuilder & {
     innerJoin: (table: object, on: SQL) => unknown;
     leftJoin: (table: object, on: SQL) => unknown;
     rightJoin: (table: object, on: SQL) => unknown;
@@ -161,12 +166,12 @@ export async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
     const onClause = eq(leftColumn, rightColumn);
     builder = (
       joinStep.joinType === "inner"
-        ? builder.innerJoin(joinStep.right.table, onClause)
+        ? builder.innerJoin(joinStep.right.sourceTable, onClause)
         : joinStep.joinType === "left"
-          ? builder.leftJoin(joinStep.right.table, onClause)
+          ? builder.leftJoin(joinStep.right.sourceTable, onClause)
           : joinStep.joinType === "right"
-            ? builder.rightJoin(joinStep.right.table, onClause)
-            : builder.fullJoin(joinStep.right.table, onClause)
+            ? builder.rightJoin(joinStep.right.sourceTable, onClause)
+            : builder.fullJoin(joinStep.right.sourceTable, onClause)
     ) as typeof builder;
   }
 

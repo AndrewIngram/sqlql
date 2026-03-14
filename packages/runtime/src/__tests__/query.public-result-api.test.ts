@@ -2,17 +2,16 @@ import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 import type { RelNode } from "@tupl/foundation";
 
-import { createExecutableSchemaResult } from "@tupl/runtime";
-import { createExecutableSchemaSessionResult } from "@tupl/runtime/session";
+import { createExecutableSchema } from "@tupl/runtime";
+import { createExecutableSchemaSession } from "@tupl/runtime/session";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
-import { createDataEntityHandle, type FragmentProviderAdapter } from "@tupl/provider-kit";
+import { createDataEntityHandle, type ProviderAdapter } from "@tupl/provider-kit";
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
-import { createSchemaBuilder, resolveTableProviderResult } from "@tupl/schema-model";
+import { createSchemaBuilder, resolveTableProvider } from "@tupl/schema-model";
 import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
 import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";
 
-type TestProvider = Omit<FragmentProviderAdapter, "name"> &
-  Partial<LookupManyCapableProviderAdapter>;
+type TestProvider = Omit<ProviderAdapter, "name"> & Partial<LookupManyCapableProviderAdapter>;
 
 function createRowsProvider(rows: QueryRow[] = [{ id: "u1" }]): TestProvider {
   return {
@@ -117,8 +116,8 @@ describe("public result APIs", () => {
 
     expect(result.error).toMatchObject({
       _tag: "TuplParseError",
-      message: "Only SELECT statements are currently supported.",
     });
+    expect(result.error.message).toBe("Only SELECT statements are currently supported.");
   });
 
   it("returns tagged planning errors from queryResult", async () => {
@@ -147,8 +146,8 @@ describe("public result APIs", () => {
 
     expect(result.error).toMatchObject({
       _tag: "RelLoweringError",
-      message: "Unknown table: missing_table",
     });
+    expect(result.error.message).toBe("Unknown table: missing_table");
   });
 
   it("returns tagged runtime errors from queryResult", async () => {
@@ -191,8 +190,8 @@ describe("public result APIs", () => {
 
     expect(result.error).toMatchObject({
       _tag: "TuplExecutionError",
-      message: "warehouse exploded",
     });
+    expect(result.error.message).toBe("warehouse exploded");
   });
 
   it("returns tagged runtime errors when executable schema provider bindings are inconsistent", () => {
@@ -211,7 +210,7 @@ describe("public result APIs", () => {
       async execute() {
         return Result.ok([{ id: "u1" }]);
       },
-    } satisfies FragmentProviderAdapter;
+    } satisfies ProviderAdapter;
 
     const builder = createSchemaBuilder<Record<string, never>>();
     builder.table(
@@ -219,7 +218,7 @@ describe("public result APIs", () => {
       createDataEntityHandle({
         entity: "users",
         provider: "warehouse",
-        adapter,
+        providerInstance: adapter,
       }),
       {
         columns: {
@@ -228,7 +227,7 @@ describe("public result APIs", () => {
       },
     );
 
-    const result = createExecutableSchemaResult(builder);
+    const result = createExecutableSchema(builder);
 
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
@@ -237,9 +236,10 @@ describe("public result APIs", () => {
 
     expect(result.error).toMatchObject({
       _tag: "TuplRuntimeError",
-      message:
-        "Table users is bound to provider warehouse, but the attached adapter is named actual.",
     });
+    expect(result.error.message).toBe(
+      "Table users is bound to provider warehouse, but the attached provider is named actual.",
+    );
   });
 
   it("returns tagged setup errors from createExecutableSchemaSessionResult", () => {
@@ -256,10 +256,13 @@ describe("public result APIs", () => {
       warehouse: createRowsProvider(),
     });
 
-    const result = createExecutableSchemaSessionResult(executableSchema, {
-      context: {},
-      sql: "INSERT INTO users VALUES ('u1')",
-    });
+    const result = createExecutableSchemaSession(
+      executableSchema as unknown as Parameters<typeof createExecutableSchemaSession>[0],
+      {
+        context: {},
+        sql: "INSERT INTO users VALUES ('u1')",
+      },
+    );
 
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
@@ -287,7 +290,7 @@ describe("public result APIs", () => {
       },
     );
 
-    const result = createExecutableSchemaResult(builder);
+    const result = createExecutableSchema(builder);
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
       throw new Error("Expected createExecutableSchemaResult to fail.");
@@ -301,7 +304,7 @@ describe("public result APIs", () => {
   });
 });
 
-describe("resolveTableProviderResult", () => {
+describe("resolveTableProvider", () => {
   it("returns a tagged error for views without a direct provider", () => {
     const schema = buildSchema((builder) => {
       builder.view("active_users", ({ scan }) => scan("users"), {
@@ -311,7 +314,7 @@ describe("resolveTableProviderResult", () => {
       });
     });
 
-    const result = resolveTableProviderResult(schema, "active_users");
+    const result = resolveTableProvider(schema, "active_users");
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
       throw new Error("Expected resolveTableProviderResult to fail.");
@@ -328,7 +331,7 @@ describe("resolveTableProviderResult", () => {
       tables: {},
     };
 
-    const result = resolveTableProviderResult(schema, "missing");
+    const result = resolveTableProvider(schema, "missing");
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
       throw new Error("Expected resolveTableProviderResult to fail.");
@@ -351,7 +354,7 @@ describe("resolveTableProviderResult", () => {
       },
     };
 
-    const result = resolveTableProviderResult(schema, "users");
+    const result = resolveTableProvider(schema, "users");
     expect(Result.isError(result)).toBe(true);
     if (Result.isOk(result)) {
       throw new Error("Expected resolveTableProviderResult to fail.");

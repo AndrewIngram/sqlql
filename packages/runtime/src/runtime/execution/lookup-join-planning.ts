@@ -1,4 +1,5 @@
 import type { RelNode } from "@tupl/foundation";
+import { Result } from "better-result";
 import { supportsLookupMany } from "@tupl/provider-kit/shapes";
 import { getNormalizedTableBinding, resolveTableProvider } from "@tupl/schema-model";
 
@@ -42,10 +43,19 @@ export function resolveSyncLookupJoinCandidate<TContext>(
     return null;
   }
 
-  const leftProvider =
+  const leftProviderName =
     leftScan.entity?.provider ?? resolveTableProvider(input.schema, leftScan.table);
-  const rightProvider =
+  const rightProviderName =
     rightScan.entity?.provider ?? resolveTableProvider(input.schema, rightScan.table);
+  const leftProviderResult =
+    typeof leftProviderName === "string" ? Result.ok(leftProviderName) : leftProviderName;
+  const rightProviderResult =
+    typeof rightProviderName === "string" ? Result.ok(rightProviderName) : rightProviderName;
+  if (Result.isError(leftProviderResult) || Result.isError(rightProviderResult)) {
+    return null;
+  }
+  const leftProvider = leftProviderResult.value;
+  const rightProvider = rightProviderResult.value;
 
   const rightAdapter = input.providers[rightProvider];
   if (!rightAdapter || !supportsLookupMany(rightAdapter)) {

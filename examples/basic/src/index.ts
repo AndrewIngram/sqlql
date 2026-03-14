@@ -1,10 +1,11 @@
 import {
   AdapterResult,
-  bindAdapterEntities,
+  bindProviderEntities,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
   type ProviderAdapter,
 } from "@tupl/provider-kit";
+import { Result } from "better-result";
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
 import {
@@ -16,6 +17,13 @@ import {
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/schema";
+
+function unwrapResult<T, E>(result: import("better-result").Result<T, E>) {
+  if (Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
+}
 
 function createMemoryProvider<TContext>(
   schema: SchemaDefinition,
@@ -58,7 +66,7 @@ function createMemoryProvider<TContext>(
     adapter.entities![tableName] = createDataEntityHandle({
       entity: tableName,
       provider: adapter.name,
-      adapter,
+      providerInstance: adapter,
       columns: Object.fromEntries(
         Object.entries(table.columns).map(([columnName, definition]) => [
           columnName,
@@ -74,7 +82,7 @@ function createMemoryProvider<TContext>(
     });
   }
 
-  return bindAdapterEntities(adapter);
+  return bindProviderEntities(adapter);
 }
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
@@ -210,7 +218,7 @@ async function main(): Promise<void> {
       org_id: "text",
     },
   });
-  const rawSchema = rawSchemaBuilder.build();
+  const rawSchema = unwrapResult(rawSchemaBuilder.build());
 
   const tableData = {
     orders_raw: [
@@ -316,37 +324,45 @@ async function main(): Promise<void> {
     },
   );
 
-  const executableSchema = createExecutableSchema<Record<string, never>>(schemaBuilder);
+  const executableSchema = unwrapResult(
+    createExecutableSchema<Record<string, never>>(schemaBuilder),
+  );
 
-  const ddl = toSqlDDL(rawSchema, { ifNotExists: true });
+  const ddl = unwrapResult(toSqlDDL(rawSchema, { ifNotExists: true }));
 
-  const virtualRows = await executableSchema.query({
-    context: {},
-    sql: `
-      SELECT id, totalDollars, isLargeOrder
-      FROM myOrders
-      WHERE totalDollars >= 20
-      ORDER BY totalDollars DESC
-    `,
-  });
+  const virtualRows = unwrapResult(
+    await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT id, totalDollars, isLargeOrder
+        FROM myOrders
+        WHERE totalDollars >= 20
+        ORDER BY totalDollars DESC
+      `,
+    }),
+  );
 
-  const orderFactRows = await executableSchema.query({
-    context: {},
-    sql: `
-      SELECT orderId, vendorName, totalDollars, isLargeOrder
-      FROM myOrderFacts
-      ORDER BY totalDollars DESC
-    `,
-  });
+  const orderFactRows = unwrapResult(
+    await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT orderId, vendorName, totalDollars, isLargeOrder
+        FROM myOrderFacts
+        ORDER BY totalDollars DESC
+      `,
+    }),
+  );
 
-  const spendRows = await executableSchema.query({
-    context: {},
-    sql: `
-      SELECT vendorName, totalSpendCents, orderCount
-      FROM myVendorSpend
-      ORDER BY totalSpendCents DESC
-    `,
-  });
+  const spendRows = unwrapResult(
+    await executableSchema.query({
+      context: {},
+      sql: `
+        SELECT vendorName, totalSpendCents, orderCount
+        FROM myVendorSpend
+        ORDER BY totalSpendCents DESC
+      `,
+    }),
+  );
 
   console.log("Generated DDL:");
   console.log(ddl);

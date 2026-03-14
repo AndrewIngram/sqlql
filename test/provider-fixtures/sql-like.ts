@@ -1,6 +1,5 @@
 import {
   createSqlRelationalProviderAdapter,
-  type ProviderFragment,
   type QueryRow,
   type RelationalProviderEntityConfig,
   type ScanFilterClause,
@@ -126,64 +125,45 @@ export function createSqlLikeConformanceOptions() {
   return {
     provider: createSqlLikeFixtureProvider(),
     context: {},
-    scan: {
-      fragment: {
-        kind: "scan",
-        provider: "fixture_sql_like",
-        table: "orders",
-        request: {
-          table: "orders",
-          select: ["id", "total_cents"],
-          where: [{ column: "customer_id", op: "eq", value: "c1" }],
-          orderBy: [{ column: "total_cents", direction: "desc" }],
-          limit: 1,
-        },
-      } satisfies Extract<ProviderFragment, { kind: "scan" }>,
-      expectedRows: [{ id: "o2", total_cents: 1800 }],
-    },
     rel: {
-      fragment: {
-        kind: "rel",
-        provider: "fixture_sql_like",
-        rel: {
-          id: "limit_orders",
-          kind: "limit_offset",
+      node: {
+        id: "limit_orders",
+        kind: "limit_offset",
+        convention: "local",
+        limit: 1,
+        input: {
+          id: "sort_orders",
+          kind: "sort",
           convention: "local",
-          limit: 1,
+          orderBy: [{ source: { alias: "orders", column: "total_cents" }, direction: "desc" }],
           input: {
-            id: "sort_orders",
-            kind: "sort",
+            id: "project_orders",
+            kind: "project",
             convention: "local",
-            orderBy: [{ source: { alias: "orders", column: "total_cents" }, direction: "desc" }],
+            columns: [
+              { source: { alias: "orders", column: "id" }, output: "id" },
+              { source: { alias: "orders", column: "total_cents" }, output: "total_cents" },
+            ],
             input: {
-              id: "project_orders",
-              kind: "project",
+              id: "scan_orders",
+              kind: "scan",
               convention: "local",
-              columns: [
-                { source: { alias: "orders", column: "id" }, output: "id" },
-                { source: { alias: "orders", column: "total_cents" }, output: "total_cents" },
+              table: "orders",
+              alias: "orders",
+              select: ["id", "total_cents", "customer_id"],
+              where: [{ column: "customer_id", op: "eq", value: "c1" }],
+              output: [
+                { name: "orders.id" },
+                { name: "orders.total_cents" },
+                { name: "orders.customer_id" },
               ],
-              input: {
-                id: "scan_orders",
-                kind: "scan",
-                convention: "local",
-                table: "orders",
-                alias: "orders",
-                select: ["id", "total_cents", "customer_id"],
-                where: [{ column: "customer_id", op: "eq", value: "c1" }],
-                output: [
-                  { name: "orders.id" },
-                  { name: "orders.total_cents" },
-                  { name: "orders.customer_id" },
-                ],
-              },
-              output: [{ name: "id" }, { name: "total_cents" }],
             },
             output: [{ name: "id" }, { name: "total_cents" }],
           },
           output: [{ name: "id" }, { name: "total_cents" }],
         },
-      } satisfies Extract<ProviderFragment, { kind: "rel" }>,
+        output: [{ name: "id" }, { name: "total_cents" }],
+      },
       expectedRows: [{ id: "o2", total_cents: 1800 }],
     },
   };

@@ -12,7 +12,7 @@ import type {
   ObjectionProviderEntityConfig,
   ResolvedEntityConfig,
 } from "../types";
-import type { ScanBinding } from "../planning/rel-builder";
+import type { ScanBinding } from "../planning/rel-strategy";
 
 class UnsupportedSingleQueryPlanError extends UnsupportedSqlRelationalPlanError {}
 

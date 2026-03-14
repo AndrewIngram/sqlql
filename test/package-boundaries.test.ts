@@ -488,7 +488,7 @@ describe("package boundaries", () => {
       "packages/provider-objection/src",
     ];
     const disallowedPrimitives = [
-      "bindAdapterEntities",
+      "bindProviderEntities",
       "collectCapabilityAtomsForRel",
       "createDataEntityHandle",
       "inferRouteFamilyForRel",

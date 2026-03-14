@@ -92,6 +92,13 @@ function setBoundedCacheEntry<T>(
   cache.set(key, value);
 }
 
+function unwrapResult<T, E>(result: import("better-result").Result<T, E>) {
+  if (Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
+}
+
 function resolveDownstreamEnumValues(ref: {
   table: string;
   column: string;
@@ -132,11 +139,13 @@ export async function preparePlaygroundInput(
 
       let schema = schemaResult.schema;
       try {
-        schema = resolveSchemaLinkedEnums(schema, {
-          resolveEnumValues: (ref) => resolveDownstreamEnumValues(ref),
-          onUnresolved: "throw",
-          strictUnmapped: true,
-        });
+        schema = unwrapResult(
+          resolveSchemaLinkedEnums(schema, {
+            resolveEnumValues: (ref) => resolveDownstreamEnumValues(ref),
+            onUnresolved: "error",
+            strictUnmapped: true,
+          }),
+        );
       } catch (error) {
         return {
           ok: false,

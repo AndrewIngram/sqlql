@@ -1,4 +1,4 @@
-import type { Provider } from "@tupl/provider-kit";
+import type { ProviderAdapter } from "@tupl/provider-kit";
 import type { RelExpr } from "@tupl/foundation";
 
 import type {
@@ -16,7 +16,7 @@ export interface NormalizedPhysicalTableBinding {
   entity: string;
   columnBindings: Record<string, NormalizedColumnBinding>;
   columnToSource: Record<string, string>;
-  providerInstance?: Provider<unknown>;
+  providerInstance?: ProviderAdapter<unknown>;
 }
 
 export interface NormalizedViewTableBinding<TContext = unknown> {

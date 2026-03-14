@@ -3,10 +3,10 @@ import * as drizzlePgCoreModule from "drizzle-orm/pg-core";
 import * as drizzlePgliteModule from "drizzle-orm/pglite";
 import * as pgliteModule from "@electric-sql/pglite";
 import * as betterResultModule from "better-result";
-import type { FragmentProviderAdapter, ProviderAdapter } from "@tupl/provider-kit";
+import type { ProviderAdapter } from "@tupl/provider-kit";
 import { lowerSqlToRelResult, planPhysicalQueryResult } from "@tupl/planner";
 import {
-  createExecutableSchemaSessionResult,
+  createExecutableSchemaSession,
   type QueryExecutionPlan,
   type QuerySession,
   type QueryStepEvent,
@@ -84,11 +84,13 @@ interface SessionRecord {
 }
 
 interface ExecutableSchemaModuleExports<TContext> {
-  executableSchema?: ExecutableSchema<TContext, SchemaDefinition>;
+  executableSchema?:
+    | ExecutableSchema<TContext, SchemaDefinition>
+    | betterResultModule.Result<ExecutableSchema<TContext, SchemaDefinition>, unknown>;
 }
 
 interface ProviderModuleExports<TContext> {
-  dbProvider?: FragmentProviderAdapter<TContext>;
+  dbProvider?: ProviderAdapter<TContext>;
   redisProvider?: ProviderAdapter<TContext>;
 }
 
@@ -108,7 +110,7 @@ interface PlaygroundRuntimeModule {
 interface SandboxProviderRuntime<TContext> {
   tuplModule: TuplRuntimeModule;
   executableSchema: ExecutableSchema<TContext, SchemaDefinition>;
-  dbProvider: FragmentProviderAdapter<TContext>;
+  dbProvider: ProviderAdapter<TContext>;
   redisProvider: ProviderAdapter<TContext>;
   db: PlaygroundRuntimeContext["db"];
   redis: PlaygroundRuntimeContext["redis"];
@@ -150,6 +152,17 @@ function asErrorMessage(error: unknown): string {
   return "Sandbox execution failed.";
 }
 
+function unwrapResult<T, E>(result: import("better-result").Result<T, E>) {
+  if (betterResultModule.Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
+}
+
+function isResultLike<T>(value: unknown): value is betterResultModule.Result<T, unknown> {
+  return typeof value === "object" && value != null && ("value" in value || "error" in value);
+}
+
 async function runSandboxPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -168,9 +181,13 @@ function extractSchemaExport(
       "[SCHEMA_EXPORT_MISSING] Schema module must export `executableSchema` via `export const executableSchema = createExecutableSchema(...)`.",
     );
   }
-  const executableSchema = (
-    exportsRecord as ExecutableSchemaModuleExports<PlaygroundRuntimeContext>
-  ).executableSchema;
+  const exportedSchema = (exportsRecord as ExecutableSchemaModuleExports<PlaygroundRuntimeContext>)
+    .executableSchema;
+  const executableSchema = isResultLike<
+    ExecutableSchema<PlaygroundRuntimeContext, SchemaDefinition>
+  >(exportedSchema)
+    ? unwrapResult(exportedSchema)
+    : exportedSchema;
   if (
     !executableSchema ||
     typeof executableSchema !== "object" ||
@@ -300,7 +317,7 @@ function createProviderRuntime<TContext>(
       PLAYGROUND_DB_PROVIDER_FILE_PATH,
       dbProviderModule,
       "dbProvider",
-    ) as FragmentProviderAdapter<TContext>,
+    ) as ProviderAdapter<TContext>,
     redisProvider: readProviderExportOrThrow<TContext>(
       PLAYGROUND_REDIS_PROVIDER_FILE_PATH,
       redisProviderModule,
@@ -421,15 +438,17 @@ export async function createSandboxSession(
   const runtime = await runSandboxPhase("RUNTIME_INIT", () => getOrCreateProviderRuntime(compiled));
   const runtimeContext = toRuntimeContext(context, runtime);
   const { executableSchema } = runtime;
-  const explain = await runSandboxPhase("EXPLAIN", () =>
-    executableSchema.explain({
-      context: runtimeContext,
-      sql: compiled.sql,
-    }),
+  const explain = await runSandboxPhase("EXPLAIN", async () =>
+    unwrapResult(
+      await executableSchema.explain({
+        context: runtimeContext,
+        sql: compiled.sql,
+      }),
+    ),
   );
 
   const sessionResult = await runSandboxPhase("CREATE_SESSION", async () =>
-    createExecutableSchemaSessionResult(executableSchema, {
+    createExecutableSchemaSession(executableSchema, {
       context: runtimeContext,
       sql: compiled.sql,
       options: {
@@ -439,13 +458,15 @@ export async function createSandboxSession(
     }),
   );
   if (betterResultModule.Result.isError(sessionResult)) {
+    const error = sessionResult.error as {
+      message?: unknown;
+      _tag?: unknown;
+    };
     return {
       ok: false,
       error: {
-        message: sessionResult.error.message,
-        ...("_tag" in sessionResult.error && typeof sessionResult.error._tag === "string"
-          ? { tag: sessionResult.error._tag }
-          : {}),
+        message: typeof error.message === "string" ? error.message : "Sandbox session failed.",
+        ...(typeof error._tag === "string" ? { tag: error._tag } : {}),
       },
     };
   }

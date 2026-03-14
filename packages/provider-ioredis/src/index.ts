@@ -5,7 +5,7 @@ import {
 } from "@tupl/foundation";
 import {
   AdapterResult,
-  bindAdapterEntities,
+  bindProviderEntities,
   collectCapabilityAtomsForRel,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
@@ -483,6 +483,7 @@ function inferEntityHandle<
   return createDataEntityHandle({
     entity: config.entity,
     provider,
+    providerInstance: adapter,
     ...(config.shape
       ? {
           columns: normalizeDataEntityShape(
@@ -490,7 +491,6 @@ function inferEntityHandle<
           ),
         }
       : {}),
-    adapter,
   }) as unknown as DataEntityHandle<
     InferEntityColumns<TConfig>,
     InferEntityRow<TConfig>,
@@ -652,5 +652,5 @@ export function createIoredisProvider<
     entitiesByName.set(config.entity, config as IoredisEntityConfig<TContext, string>);
   }
 
-  return bindAdapterEntities(adapter);
+  return bindProviderEntities(adapter);
 }

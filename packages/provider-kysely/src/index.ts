@@ -66,7 +66,10 @@ export function createKyselyProvider<
     },
     async executeCompiledPlan({ plan, context }) {
       const db = await resolveKyselyDb(options, context);
-      return executeCompiledPlan(db, entityConfigs, plan, context);
+      return AdapterResult.tryPromise({
+        try: () => executeCompiledPlan(db, entityConfigs, plan, context),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
     },
     async lookupMany({ request, context }) {
       const db = await resolveKyselyDb(options, context);

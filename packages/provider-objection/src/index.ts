@@ -65,7 +65,10 @@ export function createObjectionProvider<
     },
     async executeCompiledPlan({ plan, context }) {
       const knex = await resolveKnex(options, context);
-      return executeCompiledPlan(knex, entityConfigs, plan, context);
+      return AdapterResult.tryPromise({
+        try: () => executeCompiledPlan(knex, entityConfigs, plan, context),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
     },
     async lookupMany({ request, context }) {
       const knex = await resolveKnex(options, context);

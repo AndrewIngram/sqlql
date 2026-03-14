@@ -3,7 +3,7 @@ import { Result } from "better-result";
 import { validateTableConstraintRows } from "../constraints";
 import { TuplExecutionError } from "@tupl/foundation";
 import {
-  getDataEntityAdapter,
+  getDataEntityProvider,
   normalizeCapability,
   unwrapProviderOperationResult,
   type ProviderAdapter,
@@ -36,10 +36,10 @@ export async function executeScanResult<TContext>(
   context: RelExecutionContext<TContext>,
 ) {
   const normalizedBinding = getNormalizedTableBinding(context.schema, scan.table);
-  const providerNameResult = tryExecutionStep(
-    "resolve scan provider",
-    () => scan.entity?.provider ?? resolveTableProvider(context.schema, scan.table),
-  );
+  const providerNameSource =
+    scan.entity?.provider ?? resolveTableProvider(context.schema, scan.table);
+  const providerNameResult =
+    typeof providerNameSource === "string" ? Result.ok(providerNameSource) : providerNameSource;
   if (Result.isError(providerNameResult)) {
     return providerNameResult;
   }
@@ -47,7 +47,7 @@ export async function executeScanResult<TContext>(
   const provider =
     context.providers[providerName] ??
     (scan.entity
-      ? (getDataEntityAdapter(scan.entity) as ProviderAdapter<TContext> | undefined)
+      ? (getDataEntityProvider(scan.entity) as ProviderAdapter<TContext> | undefined)
       : undefined);
   if (!provider) {
     return Result.err(

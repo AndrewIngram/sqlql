@@ -272,7 +272,11 @@ export async function buildObjectionWithRelSingleQueryBuilder<TContext>(
           kind: "scan",
           table: body.cteRef.name,
         },
-        config: {},
+        resolved: {
+          entity: body.cteRef.name,
+          table: body.cteRef.name,
+          config: {},
+        },
       },
     ],
   ]);

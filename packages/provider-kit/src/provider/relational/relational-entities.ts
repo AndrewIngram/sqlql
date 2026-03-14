@@ -35,13 +35,13 @@ export function buildRelationalEntityHandles<
       ? createDataEntityHandle({
           entity,
           provider: options.name,
-          adapter,
+          providerInstance: adapter,
           columns,
         })
       : createDataEntityHandle({
           entity,
           provider: options.name,
-          adapter,
+          providerInstance: adapter,
         });
   }
 

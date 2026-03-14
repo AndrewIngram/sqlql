@@ -2,7 +2,7 @@ import type { PhysicalPlan } from "@tupl/planner";
 import type {
   ProviderPlanDescription,
   QueryFallbackPolicy,
-  ProviderMap,
+  ProvidersMap,
   TuplDiagnostic,
 } from "@tupl/provider-kit";
 import type { RelConvention, RelNode, TuplResult } from "@tupl/foundation";
@@ -60,7 +60,7 @@ export const DEFAULT_QUERY_FALLBACK_POLICY: Required<QueryFallbackPolicy> = {
  */
 export interface QueryInput<TContext> {
   schema: SchemaDefinition;
-  providers: ProviderMap<TContext>;
+  providers: ProvidersMap<TContext>;
   context: TContext;
   sql: string;
   queryGuardrails?: Partial<QueryGuardrails>;
@@ -87,7 +87,7 @@ export interface ExecutableSchemaQueryInput<TContext> {
 export interface ExecutableSchema<TContext, TSchema extends SchemaDefinition = SchemaDefinition> {
   schema: TSchema;
   query(input: ExecutableSchemaQueryInput<TContext>): Promise<TuplResult<QueryRow[]>>;
-  explain(input: ExecutableSchemaQueryInput<TContext>): Promise<ExplainResult>;
+  explain(input: ExecutableSchemaQueryInput<TContext>): Promise<TuplResult<ExplainResult>>;
 }
 
 /**

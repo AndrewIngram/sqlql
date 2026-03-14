@@ -1,10 +1,10 @@
 import {
   AdapterResult,
   createRelationalProviderAdapter,
-  type ProviderFragment,
   type QueryRow,
   type RelationalProviderEntityConfig,
 } from "@tupl/provider-kit";
+import { extractSimpleRelScanRequest } from "@tupl/provider-kit/shapes";
 
 import { applyScanRequest, projectRows } from "./row-ops";
 
@@ -39,23 +39,53 @@ export function createUnusualScanLookupFixtureProvider() {
       "lookup.bulk",
     ] as const,
     entities,
-    resolveRelCompileStrategy() {
-      return null;
+    resolveRelCompileStrategy({ rel }) {
+      return extractSimpleRelScanRequest(rel) ? "simple_scan" : null;
+    },
+    buildRelPlanPayload({ rel }) {
+      const request = extractSimpleRelScanRequest(rel);
+      if (!request) {
+        throw new Error("Fixture scan/lookup provider expected a simple scan request.");
+      }
+
+      return {
+        strategy: "simple_scan",
+        request,
+      };
     },
     async executeCompiledPlan({ plan, entities }) {
-      const fragment = plan.payload as ProviderFragment;
-      if (fragment.kind !== "scan") {
+      const payload = plan.payload as { request?: unknown } | null;
+      const request =
+        payload && typeof payload === "object" && payload.request ? payload.request : null;
+      if (!request || typeof request !== "object" || !("table" in request)) {
         return AdapterResult.err(
-          new Error("Fixture scan/lookup provider only executes scan fragments."),
+          new Error("Fixture scan/lookup provider only executes simple scan rel plans."),
         );
       }
 
-      const config = entities[fragment.table];
+      const scanRequest = request as {
+        table: string;
+        select: string[];
+        where?: unknown;
+        orderBy?: unknown;
+        limit?: unknown;
+        offset?: unknown;
+      };
+      const config = entities[scanRequest.table];
       if (!config) {
-        return AdapterResult.err(new Error(`Unknown fixture entity: ${fragment.table}`));
+        return AdapterResult.err(new Error(`Unknown fixture entity: ${scanRequest.table}`));
       }
 
-      return AdapterResult.ok(applyScanRequest(config.rows, fragment.request));
+      return AdapterResult.ok(
+        applyScanRequest(config.rows, {
+          table: scanRequest.table,
+          select: scanRequest.select,
+          ...(Array.isArray(scanRequest.where) ? { where: scanRequest.where } : {}),
+          ...(Array.isArray(scanRequest.orderBy) ? { orderBy: scanRequest.orderBy } : {}),
+          ...(typeof scanRequest.limit === "number" ? { limit: scanRequest.limit } : {}),
+          ...(typeof scanRequest.offset === "number" ? { offset: scanRequest.offset } : {}),
+        }),
+      );
     },
     async lookupMany({ request, entities }) {
       const config = entities[request.table];

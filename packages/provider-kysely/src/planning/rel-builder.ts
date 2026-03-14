@@ -271,7 +271,11 @@ export async function buildKyselyWithRelSingleQueryBuilder<TContext>(
           kind: "scan",
           table: body.cteRef.name,
         },
-        config: {},
+        resolved: {
+          entity: body.cteRef.name,
+          table: body.cteRef.name,
+          config: {},
+        },
       },
     ],
   ]);
