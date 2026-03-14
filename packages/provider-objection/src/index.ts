@@ -2,6 +2,7 @@ import {
   AdapterResult,
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
+  type LookupManyCapableProviderAdapter,
 } from "@tupl/provider-kit";
 
 import { executeCompiledPlan } from "./execution/plan-execution";
@@ -40,6 +41,7 @@ export function createObjectionProvider<
 >(
   options: CreateObjectionProviderOptions<TContext, TEntities>,
 ): FragmentProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
   entities: ObjectionProviderEntities<TEntities>;
 } {
   const providerName = options.name ?? "objection";
@@ -72,9 +74,10 @@ export function createObjectionProvider<
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
-  }) as FragmentProviderAdapter<TContext> & {
-    entities: ObjectionProviderEntities<TEntities>;
-  };
+  }) as FragmentProviderAdapter<TContext> &
+    LookupManyCapableProviderAdapter<TContext> & {
+      entities: ObjectionProviderEntities<TEntities>;
+    };
 }
 
 export async function resolveKnex<TContext>(

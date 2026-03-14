@@ -1,26 +1,23 @@
 # Building a Non-Relational Adapter
 
-This guide covers lookup-first systems such as Redis, KV stores, document stores, and index-backed adapters.
+This guide covers Redis, KV stores, document stores, and index-backed adapters that can expose
+rows relationally but usually support only a narrow pushdown envelope.
 
-Terminology in this guide:
-
-- `provider`: the runtime object registered under a provider name
-- `adapter`: the authoring layer or helper that builds that provider
-- `backend`: the wrapped external store or client library
-
-For a concrete lookup-only Redis implementation, see `@tupl/provider-ioredis` in this repo.
+For a concrete Redis implementation, see `@tupl/provider-ioredis` in this repo.
 To expose those entities in a facade schema, use `createSchemaBuilder(...)` and finish with
 `createExecutableSchema(builder)`.
 
-The key rule is that non-relational adapters do not need to mimic the relational progression exactly.
+The key rule is that non-relational adapters still compile canonical rel subtrees. Their
+non-relational nature shows up in a narrow `canExecute` envelope, not in a separate semantic model.
 
-## Lookup-First Skeleton
+## Narrow-Scan Skeleton
 
-This is the shape to aim for when the backend is naturally keyed and may never offer a rational full scan.
+This is the shape to aim for when the backend is naturally keyed and only supports constrained scans.
 
 ```ts
 import type {
-  Provider,
+  LookupManyCapableProviderAdapter,
+  ProviderAdapter,
   ProviderCapabilityReport,
   ProviderCompiledPlan,
   ProviderLookupManyRequest,
@@ -28,6 +25,7 @@ import type {
   QueryRow,
   TableScanRequest,
 } from "@tupl/provider-kit";
+import { AdapterResult, extractSimpleRelScanRequest } from "@tupl/provider-kit";
 
 type KvContext = {
   namespace: string;
@@ -38,19 +36,16 @@ type KvRecord = {
   value: unknown;
 };
 
-type CompiledKvPlan =
-  | {
-      kind: "scan";
-      request: TableScanRequest;
-    }
-  | {
-      kind: "lookupMany";
-      request: ProviderLookupManyRequest;
-    };
+type CompiledKvPlan = {
+  kind: "scan";
+  request: TableScanRequest;
+};
 
 const declaredAtoms: readonly ProviderCapabilityAtom[] = ["lookup.bulk"];
 
-export function createExampleKvAdapter(rows: KvRecord[]): Provider<KvContext> {
+export function createExampleKvAdapter(
+  rows: KvRecord[],
+): ProviderAdapter<KvContext> & LookupManyCapableProviderAdapter<KvContext> {
   return {
     name: "example-kv",
     capabilityAtoms: [...declaredAtoms],
@@ -60,48 +55,46 @@ export function createExampleKvAdapter(rows: KvRecord[]): Provider<KvContext> {
     },
 
     canExecute(rel): boolean | ProviderCapabilityReport {
-      return {
-        supported: false,
-        routeFamily: rel.kind === "scan" ? "scan" : "rel-core",
-        reason:
-          rel.kind === "scan"
-            ? "This KV adapter is lookup-first and does not support general scan pushdown."
-            : "Complex relational pushdown is not supported for this KV adapter.",
-      };
+      return extractSimpleRelScanRequest(rel)
+        ? true
+        : {
+            supported: false,
+            routeFamily: rel.kind === "scan" ? "scan" : "rel-core",
+            reason: "This KV adapter only supports simple single-entity scan pipelines.",
+          };
     },
 
-    async compile(rel): Promise<ProviderCompiledPlan> {
-      if (rel.kind !== "scan") {
-        throw new Error(`Unsupported rel kind: ${rel.kind}`);
+    async compile(rel) {
+      const request = extractSimpleRelScanRequest(rel);
+      if (!request) {
+        return AdapterResult.err(
+          new Error("This KV adapter only supports simple single-entity scan pipelines."),
+        );
       }
 
-      return {
+      return AdapterResult.ok({
         provider: "example-kv",
-        kind: "scan",
+        kind: "rel",
         payload: {
           kind: "scan",
-          request: {
-            table: rel.table,
-            select: rel.select,
-            ...(rel.where ? { where: rel.where } : {}),
-          },
+          request,
         } satisfies CompiledKvPlan,
-      };
+      } satisfies ProviderCompiledPlan);
     },
 
-    async execute(compiled, _context): Promise<QueryRow[]> {
-      if (compiled.kind !== "scan") {
-        throw new Error(`Unsupported compiled plan kind: ${compiled.kind}`);
+    async execute(compiled, _context) {
+      if (compiled.kind !== "rel") {
+        return AdapterResult.err(new Error(`Unsupported compiled plan kind: ${compiled.kind}`));
       }
 
-      const plan = compiled.payload as Extract<CompiledKvPlan, { kind: "scan" }>;
+      const plan = compiled.payload as CompiledKvPlan;
       const materialized = rows.map(materializeRow);
-      return applyScanRequest(materialized, plan.request);
+      return AdapterResult.ok(applyScanRequest(materialized, plan.request));
     },
 
-    async lookupMany(request, _context): Promise<QueryRow[]> {
+    async lookupMany(request, _context) {
       const keys = new Set(request.keys.map(String));
-      return rows.filter((row) => keys.has(row.key)).map(materializeRow);
+      return AdapterResult.ok(rows.filter((row) => keys.has(row.key)).map(materializeRow));
     },
   };
 }
@@ -138,25 +131,15 @@ function applyScanRequest(rows: QueryRow[], request: TableScanRequest): QueryRow
 }
 ```
 
-That adapter already participates in cross-provider joins through `lookupMany`, even though it rejects `scan` and `rel` pushdown.
+That adapter already participates in cross-provider joins through `lookupMany`, but its primary
+provider contract is still rel compile/execute.
 
 For normal adapter work, `@tupl/provider-kit` is the extension facade. Keep `@tupl/schema-model`
 out of adapter code unless you are intentionally working on lower-level planner/schema internals.
 
-## Route Family Progression
-
-For lookup-first or KV-style backends, the recommended progression is:
-
-1. `lookup`
-2. optional `scan`
-3. optional `aggregate`
-4. selective `rel`
-
-That means a provider can be useful before it supports `scan` at all.
-
 ## Stage 1: Strong Lookup Path
 
-Implement `lookupMany` first when your backend is naturally keyed.
+Implement `lookupMany` only as an optimization when your backend is naturally keyed.
 
 This gives you:
 
@@ -170,7 +153,8 @@ Relevant atom:
 
 If your system is truly key-driven, this is often more valuable than trying to emulate a full table scan.
 
-In practice, `lookupMany` is the first method that should be fast, predictable, and capacity-aware.
+In practice, `lookupMany` is the first optional optimization hook that should be fast, predictable,
+and capacity-aware.
 
 ## Stage 2: Optional Scan
 
@@ -237,7 +221,6 @@ A good KV adapter is usually stricter than a relational one here. Silent fallbac
 
 A healthy KV adapter might declare:
 
-- route families: `lookup`, optionally `scan`
 - atoms:
   - `lookup.bulk`
   - maybe `scan.project`

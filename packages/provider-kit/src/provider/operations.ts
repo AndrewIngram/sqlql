@@ -2,6 +2,7 @@ import { Result, type Result as BetterResult } from "better-result";
 
 import type {
   FragmentProviderAdapter,
+  LookupManyCapableProviderAdapter,
   ProviderAdapter,
   ProviderOperationResult,
 } from "./contracts";
@@ -26,7 +27,6 @@ export function unwrapProviderOperationResult<T, E>(outcome: ProviderOperationRe
 
 export function supportsLookupMany<TContext>(
   provider: ProviderAdapter<TContext>,
-): provider is FragmentProviderAdapter<TContext> &
-  Required<Pick<FragmentProviderAdapter<TContext>, "lookupMany">> {
+): provider is FragmentProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
   return "lookupMany" in provider && typeof provider.lookupMany === "function";
 }

@@ -12,7 +12,9 @@ import {
   bindAdapterEntities,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
+  type LookupManyCapableProviderAdapter,
   type ProviderAdapter,
+  type ProviderLookupManyRequest,
   type ProvidersMap,
 } from "@tupl/provider-kit";
 import {
@@ -68,8 +70,7 @@ type ProviderInput<TContext> = {
   compile?(rel: RelNode, context: TContext): unknown;
   describeCompiledPlan?(plan: unknown, context: TContext): unknown;
   execute?(plan: unknown, context: TContext): unknown;
-  lookupMany?(request: unknown, context: TContext): unknown;
-};
+} & Partial<LookupManyCapableProviderAdapter<TContext>>;
 
 export function finalizeProviders<TContext>(
   providers: Record<string, ProviderInput<TContext>>,
@@ -359,8 +360,8 @@ export function createMethodsProvider<TContext>(
   schema: SchemaDefinition,
   methods: TableMethodsMap<TContext>,
   providerName = "memory",
-): ProviderAdapter<TContext> {
-  const adapter: ProviderAdapter<TContext> = {
+): ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
+  const adapter: ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> = {
     name: providerName,
     entities: {},
     canExecute(rel) {
@@ -415,7 +416,7 @@ export function createMethodsProvider<TContext>(
       }
       return Result.ok(await executePlannedAggregate(method, executable.request, context));
     },
-    async lookupMany(request, context) {
+    async lookupMany(request: ProviderLookupManyRequest, context: TContext) {
       const method = methods[request.table];
       if (!method?.lookup) {
         return Result.ok([]);
@@ -1129,7 +1130,7 @@ function normalizeSqliteValue(value: unknown): unknown {
 
 function createMemoryProvider<TContext>(
   rowsByTable: Record<string, QueryRow[]>,
-): ProviderAdapter<TContext> {
+): ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
   return {
     name: "memory",
     canExecute(rel) {
@@ -1162,7 +1163,7 @@ function createMemoryProvider<TContext>(
       }
       return Result.ok(aggregateArrayRows(rowsByTable[executable.table] ?? [], executable.request));
     },
-    async lookupMany(request) {
+    async lookupMany(request: ProviderLookupManyRequest) {
       const scanRequest: TableScanRequest = {
         table: request.table,
         select: request.select,

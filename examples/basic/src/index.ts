@@ -3,6 +3,7 @@ import {
   bindAdapterEntities,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
+  type LookupManyCapableProviderAdapter,
   type ProviderAdapter,
 } from "@tupl/provider-kit";
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
@@ -19,8 +20,8 @@ import {
 function createMemoryProvider<TContext>(
   schema: SchemaDefinition,
   tables: Record<string, QueryRow[]>,
-): ProviderAdapter<TContext> {
-  const adapter: ProviderAdapter<TContext> = {
+): ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
+  const adapter: ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> = {
     name: "memory",
     entities: {},
     canExecute(rel) {

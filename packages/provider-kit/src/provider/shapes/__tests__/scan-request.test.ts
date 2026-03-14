@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { extractSimpleRelScanRequest } from "@tupl/provider-kit/shapes";
+import { Result } from "better-result";
+
+import {
+  extractSimpleRelScanRequest,
+  validateSimpleRelScanRequest,
+} from "@tupl/provider-kit/shapes";
 import type { RelNode } from "@tupl/foundation";
 
 describe("simple scan request extraction", () => {
@@ -94,5 +99,67 @@ describe("simple scan request extraction", () => {
     };
 
     expect(extractSimpleRelScanRequest(rel)).toBeNull();
+  });
+
+  it("validates field-sensitive simple scan support", () => {
+    const validation = validateSimpleRelScanRequest(
+      {
+        table: "users",
+        select: ["id", "email"],
+        where: [{ op: "eq", column: "org_id", value: "org_1" }],
+        orderBy: [{ column: "email", direction: "asc" }],
+      },
+      {
+        supportsSelectColumn(column) {
+          return column === "id" || column === "email";
+        },
+        supportsFilterClause(clause) {
+          return clause.column === "org_id" && clause.op === "eq";
+        },
+        supportsSortTerm(term) {
+          return term.column === "email";
+        },
+      },
+    );
+
+    expect(Result.isOk(validation)).toBe(true);
+  });
+
+  it("reports unsupported filter and sort fields", () => {
+    const invalidFilter = validateSimpleRelScanRequest(
+      {
+        table: "users",
+        select: ["id"],
+        where: [{ op: "eq", column: "email", value: "ada@example.com" }],
+      },
+      {
+        supportsFilterClause(clause) {
+          return clause.column === "org_id" && clause.op === "eq";
+        },
+      },
+    );
+
+    expect(Result.isError(invalidFilter)).toBe(true);
+    expect(Result.isError(invalidFilter) ? invalidFilter.error.message : "").toContain(
+      "Unsupported filter clause for users: email eq",
+    );
+
+    const invalidSort = validateSimpleRelScanRequest(
+      {
+        table: "users",
+        select: ["id"],
+        orderBy: [{ column: "created_at", direction: "desc" }],
+      },
+      {
+        supportsSortTerm(term) {
+          return term.column === "email";
+        },
+      },
+    );
+
+    expect(Result.isError(invalidSort)).toBe(true);
+    expect(Result.isError(invalidSort) ? invalidSort.error.message : "").toContain(
+      "Unsupported sort column for users: created_at",
+    );
   });
 });

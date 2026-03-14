@@ -101,11 +101,18 @@ export interface FragmentProviderAdapter<TContext = unknown> extends ProviderAda
     plan: ProviderCompiledPlan,
     context: TContext,
   ): MaybePromise<ProviderOperationResult<QueryRow[]>>;
+}
+
+/**
+ * Lookup-many support is a secondary physical optimization used by runtime lookup joins.
+ * It is intentionally separate from the primary rel compile/execute provider contract.
+ */
+export interface LookupManyCapableProviderAdapter<TContext = unknown> {
   /**
-   * Optional batched key lookup used by runtime lookup joins.
+   * Batched key lookup used by runtime lookup joins.
    * This is a provider-local physical optimization, not a separate semantic execution lane.
    */
-  lookupMany?(
+  lookupMany(
     request: ProviderLookupManyRequest,
     context: TContext,
   ): MaybePromise<ProviderOperationResult<QueryRow[]>>;
@@ -113,7 +120,6 @@ export interface FragmentProviderAdapter<TContext = unknown> extends ProviderAda
 
 /**
  * Provider adapters compile and execute canonical relational subtrees.
- * Optional lookup support is an optimization hook layered onto the same adapter contract.
  */
 export type ProviderAdapter<TContext = unknown> = FragmentProviderAdapter<TContext>;
 

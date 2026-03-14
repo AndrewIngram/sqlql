@@ -2,6 +2,7 @@ import type { RelNode } from "@tupl/foundation";
 import type { DataEntityColumnMap, DataEntityHandle, DataEntityShape } from "../entity-handles";
 import type {
   FragmentProviderAdapter,
+  LookupManyCapableProviderAdapter,
   ProviderCompiledPlan,
   ProviderPlanDescription,
   ProviderLookupManyRequest,
@@ -141,6 +142,12 @@ export interface RelationalProviderAdapterOptions<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
+> extends RelationalProviderAdapterOptionsBase<TContext, TEntities, TStrategy> {}
+
+export interface RelationalLookupProviderAdapterOptions<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TStrategy extends RelationalProviderRelCompileStrategy,
 > extends RelationalProviderAdapterOptionsBase<TContext, TEntities, TStrategy> {
   lookupMany?(
     this: void,
@@ -160,3 +167,8 @@ export type RelationalProviderAdapter<
 > = FragmentProviderAdapter<TContext> & {
   entities: RelationalProviderHandles<TEntities>;
 };
+
+export type LookupCapableRelationalProviderAdapter<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+> = RelationalProviderAdapter<TContext, TEntities> & LookupManyCapableProviderAdapter<TContext>;

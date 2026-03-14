@@ -5,13 +5,17 @@ import type { RelNode } from "@tupl/foundation";
 import { createExecutableSchemaResult } from "@tupl/runtime";
 import { createExecutableSchemaSessionResult } from "@tupl/runtime/session";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
-import { createDataEntityHandle, type FragmentProviderAdapter } from "@tupl/provider-kit";
+import {
+  createDataEntityHandle,
+  type FragmentProviderAdapter,
+  type LookupManyCapableProviderAdapter,
+} from "@tupl/provider-kit";
 import { createSchemaBuilder, resolveTableProviderResult } from "@tupl/schema-model";
 import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
 import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";
 
 type TestProvider = Omit<FragmentProviderAdapter, "name"> &
-  Partial<Pick<FragmentProviderAdapter, "lookupMany">>;
+  Partial<LookupManyCapableProviderAdapter>;
 
 function createRowsProvider(rows: QueryRow[] = [{ id: "u1" }]): TestProvider {
   return {

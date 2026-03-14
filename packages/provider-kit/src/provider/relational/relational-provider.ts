@@ -2,6 +2,7 @@ import { bindAdapterEntities } from "../entity-handles";
 import { AdapterResult } from "../operations";
 import type { RelNode } from "@tupl/foundation";
 import type {
+  LookupManyCapableProviderAdapter,
   ProviderCompiledPlan,
   ProviderLookupManyRequest,
   ProviderPlanDescription,
@@ -13,8 +14,10 @@ import {
 import { buildRelationalEntityHandles } from "./relational-entities";
 import { type RelationalProviderCompileRelArgs } from "./relational-adapter-types";
 import type {
+  LookupCapableRelationalProviderAdapter,
   RelationalProviderAdapter,
   RelationalProviderAdapterOptions,
+  RelationalLookupProviderAdapterOptions,
   RelationalProviderEntityConfig,
   RelationalProviderRelCompileStrategy,
 } from "./relational-adapter-types";
@@ -22,6 +25,7 @@ import type {
 const LOOKUP_CAPABILITY_ATOM = "lookup.bulk" as const;
 
 export type {
+  LookupCapableRelationalProviderAdapter,
   RelationalProviderAdapterOptions,
   RelationalProviderCapabilityContext,
   RelationalProviderCompileRelArgs,
@@ -29,6 +33,7 @@ export type {
   RelationalProviderEntityColumnsArgs,
   RelationalProviderEntityConfig,
   RelationalProviderExecuteArgs,
+  RelationalLookupProviderAdapterOptions,
   RelationalProviderLookupArgs,
   RelationalProviderRelCompileStrategy,
   RelationalProviderSupportArgs,
@@ -42,6 +47,22 @@ function getCapabilityAtoms<TAtoms extends readonly string[] | undefined>(
     ...new Set([...(declaredAtoms ?? []), ...(includeLookupAtom ? [LOOKUP_CAPABILITY_ATOM] : [])]),
   ];
   return atoms.length > 0 ? atoms : undefined;
+}
+
+function resolveLookupManyHandler<
+  TContext,
+  TEntities extends Record<string, RelationalProviderEntityConfig>,
+  TStrategy extends RelationalProviderRelCompileStrategy,
+>(
+  options:
+    | RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>
+    | RelationalLookupProviderAdapterOptions<TContext, TEntities, TStrategy>,
+) {
+  if (!("lookupMany" in options) || typeof options.lookupMany !== "function") {
+    return undefined;
+  }
+
+  return options.lookupMany;
 }
 
 function describeRelationalCompiledPlan(
@@ -95,16 +116,19 @@ export function createRelationalProviderAdapter<
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
 >(
-  options: RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>,
-): RelationalProviderAdapter<TContext, TEntities>;
+  options: RelationalLookupProviderAdapterOptions<TContext, TEntities, TStrategy>,
+): LookupCapableRelationalProviderAdapter<TContext, TEntities>;
 export function createRelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
 >(
-  options: RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>,
+  options:
+    | RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>
+    | RelationalLookupProviderAdapterOptions<TContext, TEntities, TStrategy>,
 ): RelationalProviderAdapter<TContext, TEntities> {
-  const hasLookupMany = typeof options.lookupMany === "function";
+  const lookupManyHandler = resolveLookupManyHandler(options);
+  const hasLookupMany = lookupManyHandler != null;
   const capabilityAtoms = getCapabilityAtoms(options.declaredAtoms, hasLookupMany);
   const adapter = {
     name: options.name,
@@ -174,7 +198,6 @@ export function createRelationalProviderAdapter<
   };
 
   const entities = buildRelationalEntityHandles(adapter, options);
-  const lookupManyHandler = options.lookupMany;
   const boundAdapter = {
     ...adapter,
     entities,
@@ -192,5 +215,6 @@ export function createRelationalProviderAdapter<
       : {}),
   };
 
-  return bindAdapterEntities(boundAdapter);
+  return bindAdapterEntities(boundAdapter) as RelationalProviderAdapter<TContext, TEntities> &
+    Partial<LookupManyCapableProviderAdapter<TContext>>;
 }

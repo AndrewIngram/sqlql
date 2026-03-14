@@ -2,6 +2,7 @@ import {
   AdapterResult,
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
+  type LookupManyCapableProviderAdapter,
 } from "@tupl/provider-kit";
 
 import { executeCompiledPlan } from "./execution/plan-execution";
@@ -49,6 +50,7 @@ export function createDrizzleProvider<
 >(
   options: CreateDrizzleProviderOptions<TContext, TTables>,
 ): FragmentProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
   entities: DrizzleProviderEntities<TTables>;
 } {
   const providerName = options.name ?? "drizzle";
@@ -101,7 +103,8 @@ export function createDrizzleProvider<
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
-  }) as FragmentProviderAdapter<TContext> & {
-    entities: DrizzleProviderEntities<TTables>;
-  };
+  }) as FragmentProviderAdapter<TContext> &
+    LookupManyCapableProviderAdapter<TContext> & {
+      entities: DrizzleProviderEntities<TTables>;
+    };
 }

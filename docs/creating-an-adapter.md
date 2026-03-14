@@ -2,12 +2,6 @@
 
 This guide is the practical path for shipping an adapter without implementing a full relational engine up front.
 
-Terminology in this guide:
-
-- `provider`: the runtime object registered under a name and used by planning/runtime
-- `adapter`: the authoring layer or helper that builds that provider
-- `backend`: the wrapped system, driver, or query builder
-
 The core model now has three layers:
 
 - capability atoms: optional coarse metadata for docs and fast prefiltering
@@ -20,13 +14,14 @@ This is the minimum useful shape for a relational adapter. It supports simple `s
 
 ```ts
 import type {
-  Provider,
+  ProviderAdapter,
   ProviderCapabilityAtom,
   ProviderCapabilityReport,
   ProviderCompiledPlan,
   QueryRow,
   TableScanRequest,
 } from "@tupl/provider-kit";
+import { AdapterResult } from "@tupl/provider-kit";
 import type { RelNode } from "@tupl/foundation";
 
 type DbContext = {
@@ -48,7 +43,7 @@ const declaredAtoms: readonly ProviderCapabilityAtom[] = [
   "scan.limit_offset",
 ];
 
-export function createExampleSqlAdapter(): Provider<DbContext> {
+export function createExampleSqlAdapter(): ProviderAdapter<DbContext> {
   return {
     name: "example-sql",
     capabilityAtoms: [...declaredAtoms],
@@ -67,25 +62,25 @@ export function createExampleSqlAdapter(): Provider<DbContext> {
       };
     },
 
-    async compile(rel): Promise<ProviderCompiledPlan> {
+    async compile(rel) {
       if (rel.kind !== "scan") {
-        throw new Error(`Unsupported rel kind: ${rel.kind}`);
+        return AdapterResult.err(new Error(`Unsupported rel kind: ${rel.kind}`));
       }
 
-      return {
+      return AdapterResult.ok({
         provider: "example-sql",
         kind: "query",
         payload: compileScanRequest(toScanRequest(rel)),
-      };
+      } satisfies ProviderCompiledPlan);
     },
 
-    async execute(compiled, context): Promise<QueryRow[]> {
+    async execute(compiled, context) {
       if (compiled.kind !== "query") {
-        throw new Error(`Unsupported compiled plan kind: ${compiled.kind}`);
+        return AdapterResult.err(new Error(`Unsupported compiled plan kind: ${compiled.kind}`));
       }
 
       const plan = compiled.payload as CompiledScanPlan;
-      return runQuery(plan.sql, plan.params, context);
+      return AdapterResult.ok(await runQuery(plan.sql, plan.params, context));
     },
   };
 }
@@ -189,29 +184,27 @@ That adapter is already usable because unsupported joins, aggregates, and comput
 For ordinary adapter authoring, stay on `@tupl/provider-kit` and `@tupl/provider-kit/shapes`.
 You should not need `@tupl/schema-model` unless you are working on unusually deep planner/schema integration.
 
-## Relational Adapters Should Start With `createSqlRelationalProviderAdapter`
+## Relational Adapters Should Start With `createRelationalProviderAdapter`
 
-For ordinary SQL-like backends, the normal path is `createSqlRelationalProviderAdapter(...)` from
-`@tupl/provider-kit`. It owns the repeated adapter plumbing and recursive rel compilation:
+For SQL-like backends, the normal path is `createRelationalProviderAdapter(...)` from
+`@tupl/provider-kit`. It owns the repeated adapter plumbing:
 
 - entity handle creation and binding
 - shape normalization for declared entities
 - default `scan` / `rel` capability reporting
 - route-family inference and required-atom collection
-- strategy resolution for ordinary `basic` / `set_op` / `with` single-query pushdown
 
 Your provider package should keep only backend-specific work:
 
 - entity config details (`table`, `base`, query-scoping hooks)
-- runtime binding resolution
-- backend `planning` hooks for unusual scan/strategy behavior
-- backend `query` hooks for joins, selections, set ops, and CTEs
+- relational strategy resolution
+- fragment compilation
 - compiled-plan execution
 
 Sketch:
 
 ```ts
-import { AdapterResult, createSqlRelationalProviderAdapter } from "@tupl/provider-kit";
+import { AdapterResult, createRelationalProviderAdapter } from "@tupl/provider-kit";
 
 const declaredAtoms = [
   "scan.project",
@@ -227,27 +220,29 @@ const declaredAtoms = [
 export function createExampleRelationalProvider(options: CreateExampleProviderOptions) {
   const entityConfigs = resolveEntityConfigs(options);
 
-  return createSqlRelationalProviderAdapter({
+  return createRelationalProviderAdapter({
     name: "example-sql",
     declaredAtoms,
     entities: options.entities ?? {},
-    resolveEntity({ entity, config }) {
-      return {
-        entity,
-        table: config.table ?? entity,
-        config,
-      };
+    resolveRelCompileStrategy({ rel }) {
+      return resolveExampleStrategy(rel, entityConfigs);
     },
-    backend: exampleSqlBackend,
-    resolveRuntime(context) {
-      return resolveDb(options, context);
+    compileRelFragment({ rel, strategy }) {
+      return AdapterResult.ok({
+        provider: "example-sql",
+        kind: "rel",
+        payload: { strategy, rel },
+      });
     },
-    async executeScan({ runtime, request, context }) {
-      return executeScan(runtime, entityConfigs, request, context);
-    },
-    lookupMany({ runtime, request, context }) {
+    executeCompiledPlan({ plan, context }) {
       return AdapterResult.tryPromise({
-        try: () => lookupManyWithExample(runtime, entityConfigs, request, context),
+        try: () => executeExamplePlan(plan, options, context),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
+    },
+    lookupMany({ request, context }) {
+      return AdapterResult.tryPromise({
+        try: () => lookupManyWithExample(options, request, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
@@ -255,13 +250,8 @@ export function createExampleRelationalProvider(options: CreateExampleProviderOp
 }
 ```
 
-Reach for `createRelationalProviderAdapter(...)` only when an adapter is unusual enough that it
-cannot fit the ordinary SQL-like path cleanly, for example when the backend needs provider-specific
-expression lowering instead of the shared rel compiler.
-
-The key design point is that the public factory takes one entity description and one
-`resolveEntity(...)` callback. The internal resolved-entity map is provider-kit’s job, not adapter
-author boilerplate.
+Reach for `@tupl/provider-kit/shapes` only when you need the advanced relational planning helpers
+that decide whether a `rel` fragment can be compiled as a single downstream query.
 
 ## Wiring the Adapter Into a Facade Schema
 
@@ -381,10 +371,11 @@ A practical implementation usually looks like this:
 
 1. get a scan-only adapter working
 2. make `canExecute` return structured unsupported reports for `rel`
-3. add `lookupMany` if the backend has efficient keyed access
-4. add same-provider `rel` compilation atom-by-atom
+3. add same-provider `rel` compilation atom-by-atom
+4. add `lookupMany` only if the backend has an efficient keyed lookup optimization
 
-That progression keeps the codebase honest: the docs-facing `routeFamilies` are broad, but the implementation work happens in small, testable pieces.
+That progression keeps the codebase honest: `canExecute` stays the source of truth, while
+optional atoms and lookup hooks stay secondary.
 
 ## Recommended Relational Progression
 
@@ -467,7 +458,6 @@ This gives the planner enough information to:
 
 Adapters can optionally declare:
 
-- `routeFamilies`
 - `capabilityAtoms`
 - `fallbackPolicy`
 

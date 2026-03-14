@@ -7,9 +7,11 @@ import {
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
   getDataEntityAdapter,
+  type LookupManyCapableProviderAdapter,
   type QueryRow,
   type ProviderAdapter,
   type ProviderCapabilityAtom,
+  type ProviderLookupManyRequest,
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/provider-kit";
@@ -23,7 +25,7 @@ import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 import { collectCapabilityAtomsForRel } from "../provider/capabilities";
 
 type TestProvider = Omit<FragmentProviderAdapter, "name"> &
-  Partial<Pick<FragmentProviderAdapter, "lookupMany">>;
+  Partial<LookupManyCapableProviderAdapter>;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -860,7 +862,7 @@ describe("query/provider runtime", () => {
           }
           return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           lookupCalls += 1;
           const keys = new Set(request.keys);
           return Result.ok(
@@ -965,7 +967,7 @@ describe("query/provider runtime", () => {
           }
           return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           const keys = new Set(request.keys);
           return Result.ok(usersRows.filter((row) => keys.has(row.id)));
         },
@@ -1053,7 +1055,7 @@ describe("query/provider runtime", () => {
           }
           return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           const keys = new Set(request.keys);
           return Result.ok(
             usersRows
@@ -2051,7 +2053,7 @@ describe("query/provider runtime", () => {
           kvScanExecutions += 1;
           return Result.ok([]);
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           kvLookupCalls += 1;
           return Result.ok(
             request.keys.includes("p1") ? [{ product_id: "p1", view_count: 12 }] : [],

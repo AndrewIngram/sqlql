@@ -1,4 +1,11 @@
-import { isRelProjectColumnMapping, type RelNode, type TableScanRequest } from "@tupl/foundation";
+import { Result } from "better-result";
+import {
+  isRelProjectColumnMapping,
+  type RelNode,
+  type ScanFilterClause,
+  type ScanOrderBy,
+  type TableScanRequest,
+} from "@tupl/foundation";
 
 /**
  * Simple scan extraction owns the narrow "single-source scan pipeline" shape used by providers
@@ -85,4 +92,41 @@ export function extractSimpleRelScanRequest(node: RelNode): TableScanRequest | n
     default:
       return null;
   }
+}
+
+export interface SimpleRelScanSupportPolicy<TColumn extends string = string> {
+  supportsSelectColumn?(column: TColumn): boolean;
+  supportsFilterClause?(clause: ScanFilterClause & { column: TColumn }): boolean;
+  supportsSortTerm?(term: ScanOrderBy & { column: TColumn }): boolean;
+}
+
+/**
+ * Simple scan validation lets providers keep `canExecute` field-sensitive without hand-walking
+ * the rel tree. Providers decide which projected, filtered, and sorted columns are legal.
+ */
+export function validateSimpleRelScanRequest<TColumn extends string = string>(
+  request: TableScanRequest,
+  policy: SimpleRelScanSupportPolicy<TColumn>,
+) {
+  for (const column of request.select) {
+    if (policy.supportsSelectColumn?.(column as TColumn) === false) {
+      return Result.err(new Error(`Unsupported projected column for ${request.table}: ${column}`));
+    }
+  }
+
+  for (const clause of request.where ?? []) {
+    if (policy.supportsFilterClause?.(clause as ScanFilterClause & { column: TColumn }) === false) {
+      return Result.err(
+        new Error(`Unsupported filter clause for ${request.table}: ${clause.column} ${clause.op}`),
+      );
+    }
+  }
+
+  for (const term of request.orderBy ?? []) {
+    if (policy.supportsSortTerm?.(term as ScanOrderBy & { column: TColumn }) === false) {
+      return Result.err(new Error(`Unsupported sort column for ${request.table}: ${term.column}`));
+    }
+  }
+
+  return Result.ok(undefined);
 }

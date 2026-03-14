@@ -2,14 +2,18 @@ import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
 import { type RelNode } from "@tupl/foundation";
-import { type FragmentProviderAdapter } from "@tupl/provider-kit";
+import {
+  type FragmentProviderAdapter,
+  type LookupManyCapableProviderAdapter,
+  type ProviderLookupManyRequest,
+} from "@tupl/provider-kit";
 import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/schema-model";
 import { executeRelWithProvidersResult } from "@tupl/runtime/executor";
 import { finalizeProviders } from "@tupl/test-support/runtime";
 import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
 type TestProvider = Omit<FragmentProviderAdapter, "name"> &
-  Partial<Pick<FragmentProviderAdapter, "lookupMany">>;
+  Partial<LookupManyCapableProviderAdapter>;
 
 function toScanRequest(rel: RelNode): TableScanRequest | null {
   if (rel.kind !== "scan") {
@@ -275,7 +279,7 @@ describe("query/local executor", () => {
           }
           return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           const keys = new Set(request.keys);
           return Result.ok(usersRows.filter((row) => keys.has(row.id)));
         },

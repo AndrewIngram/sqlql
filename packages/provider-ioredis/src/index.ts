@@ -18,6 +18,8 @@ import {
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
+  type ProviderLookupManyRequest,
+  type LookupManyCapableProviderAdapter,
   type ProviderRuntimeBinding,
   type QueryRow,
   type ScanFilterClause,
@@ -28,6 +30,7 @@ import {
   filterLookupRows,
   projectLookupRow,
   validateLookupRequest,
+  validateSimpleRelScanRequest,
 } from "@tupl/provider-kit/shapes";
 
 export interface RedisPipelineResult {
@@ -274,6 +277,27 @@ function buildRelExecutionPayload<TContext>(
 
   return AdapterResult.gen(function* () {
     const entity = yield* getEntityConfigResult(entitiesByName, request.table, provider);
+    const supportedColumns = new Set(entity.columns);
+    const requestValidation = validateSimpleRelScanRequest(request, {
+      supportsSelectColumn(column) {
+        return supportedColumns.has(column);
+      },
+      supportsFilterClause(clause) {
+        return supportedColumns.has(clause.column);
+      },
+      supportsSortTerm(term) {
+        return supportedColumns.has(term.column);
+      },
+    });
+    if (AdapterResult.isError(requestValidation)) {
+      return yield* AdapterResult.err(
+        new TuplExecutionError({
+          operation: "compile redis fragment",
+          message: requestValidation.error.message,
+        }),
+      );
+    }
+
     const keys = inferExactLookupKeys(request.where, entity.lookupKey);
     if (keys === null) {
       return yield* AdapterResult.err(
@@ -480,6 +504,7 @@ export function createIoredisProvider<
 >(
   options: CreateIoredisProviderOptions<TContext, TEntities>,
 ): ProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
   entities: {
     [K in keyof TEntities]: DataEntityHandle<
       InferEntityColumns<TEntities[K]>,
@@ -495,6 +520,7 @@ export function createIoredisProvider<
 >(
   options: CreateIoredisProviderOptions<TContext, TEntities>,
 ): ProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
   entities: {
     [K in keyof TEntities]: DataEntityHandle<
       InferEntityColumns<TEntities[K]>,
@@ -587,7 +613,7 @@ export function createIoredisProvider<
 
       return AdapterResult.ok(applyScanRequest(fetchedRows.value, payload.request));
     },
-    async lookupMany(request, context) {
+    async lookupMany(request: ProviderLookupManyRequest, context: TContext) {
       const fetchedRows = await fetchLookupRowsResult(
         {
           context,
@@ -608,15 +634,16 @@ export function createIoredisProvider<
         ),
       );
     },
-  } satisfies ProviderAdapter<TContext> & {
-    entities: {
-      [K in keyof TEntities]: DataEntityHandle<
-        InferEntityColumns<TEntities[K]>,
-        InferEntityRow<TEntities[K]>,
-        InferEntityShape<TEntities[K]>
-      >;
+  } satisfies ProviderAdapter<TContext> &
+    LookupManyCapableProviderAdapter<TContext> & {
+      entities: {
+        [K in keyof TEntities]: DataEntityHandle<
+          InferEntityColumns<TEntities[K]>,
+          InferEntityRow<TEntities[K]>,
+          InferEntityShape<TEntities[K]>
+        >;
+      };
     };
-  };
 
   for (const [entityKey, config] of Object.entries(options.entities) as Array<
     [keyof TEntities, TEntities[keyof TEntities]]
