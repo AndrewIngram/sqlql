@@ -2,11 +2,11 @@ import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
 import { type RelNode } from "@tupl/foundation";
+import { type FragmentProviderAdapter } from "@tupl/provider-kit";
 import {
-  type FragmentProviderAdapter,
   type LookupManyCapableProviderAdapter,
   type ProviderLookupManyRequest,
-} from "@tupl/provider-kit";
+} from "@tupl/provider-kit/shapes";
 import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/schema-model";
 import { executeRelWithProvidersResult } from "@tupl/runtime/executor";
 import { finalizeProviders } from "@tupl/test-support/runtime";

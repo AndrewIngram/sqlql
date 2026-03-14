@@ -7,11 +7,11 @@ import {
   type RelScanNode,
 } from "@tupl/foundation";
 import {
-  getDataEntityProvider,
-  supportsLookupMany,
+  getDataEntityAdapter,
   unwrapProviderOperationResult,
-  type Provider,
+  type ProviderAdapter,
 } from "@tupl/provider-kit";
+import { supportsLookupMany } from "@tupl/provider-kit/shapes";
 import {
   createPhysicalBindingFromEntity,
   createTableDefinitionFromEntity,
@@ -48,11 +48,11 @@ export async function maybeExecuteLookupJoinResult<TContext>(
 
   const rightBinding = getNormalizedTableBinding(context.schema, rightScan.table);
   const rightProviderName =
-    rightScan.entity?.provider ?? readResolvedTableProvider(context.schema, rightScan.table);
+    rightScan.entity?.provider ?? resolveTableProvider(context.schema, rightScan.table);
   const rightProvider =
     context.providers[rightProviderName] ??
     (rightScan.entity
-      ? (getDataEntityProvider(rightScan.entity) as Provider<TContext> | undefined)
+      ? (getDataEntityAdapter(rightScan.entity) as ProviderAdapter<TContext> | undefined)
       : undefined);
   if (!rightProvider || !supportsLookupMany(rightProvider)) {
     return Result.ok(null);
@@ -261,16 +261,4 @@ function findFirstScan(node: RelNode): RelScanNode | null {
     case "with":
       return findFirstScan(node.body);
   }
-}
-
-function readResolvedTableProvider(
-  schema: RelExecutionContext<unknown>["schema"],
-  table: string,
-): string {
-  const result = resolveTableProvider(schema, table);
-  if (Result.isError(result)) {
-    throw result.error;
-  }
-
-  return result.value;
 }

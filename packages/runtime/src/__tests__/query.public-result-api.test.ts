@@ -5,11 +5,8 @@ import type { RelNode } from "@tupl/foundation";
 import { createExecutableSchemaResult } from "@tupl/runtime";
 import { createExecutableSchemaSessionResult } from "@tupl/runtime/session";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
-import {
-  createDataEntityHandle,
-  type FragmentProviderAdapter,
-  type LookupManyCapableProviderAdapter,
-} from "@tupl/provider-kit";
+import { createDataEntityHandle, type FragmentProviderAdapter } from "@tupl/provider-kit";
+import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 import { createSchemaBuilder, resolveTableProviderResult } from "@tupl/schema-model";
 import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
 import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";

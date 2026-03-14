@@ -3,9 +3,9 @@ import {
   bindAdapterEntities,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
-  type LookupManyCapableProviderAdapter,
   type ProviderAdapter,
 } from "@tupl/provider-kit";
+import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
 import {
   createExecutableSchema,

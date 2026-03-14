@@ -12,11 +12,13 @@ import {
   bindAdapterEntities,
   createDataEntityHandle,
   extractSimpleRelScanRequest,
-  type LookupManyCapableProviderAdapter,
   type ProviderAdapter,
-  type ProviderLookupManyRequest,
   type ProvidersMap,
 } from "@tupl/provider-kit";
+import type {
+  LookupManyCapableProviderAdapter,
+  ProviderLookupManyRequest,
+} from "@tupl/provider-kit/shapes";
 import {
   type ConstraintValidationOptions,
   createExecutableSchema,

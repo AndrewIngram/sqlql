@@ -3,11 +3,11 @@ import { Result } from "better-result";
 import {
   collectCapabilityAtomsForRel,
   inferRouteFamilyForRel,
-  type ProviderLookupManyRequest,
   type ProviderOperationResult,
   type ProviderCapabilityReport,
 } from "..";
 import type { QueryRow, RelNode, ScanFilterClause } from "@tupl/foundation";
+import type { ProviderLookupManyRequest } from "./lookup-optimization";
 
 export interface LookupEntityBinding<TColumns extends string = string> {
   lookupKey: TColumns;

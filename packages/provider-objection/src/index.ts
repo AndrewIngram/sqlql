@@ -2,8 +2,8 @@ import {
   AdapterResult,
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
-  type LookupManyCapableProviderAdapter,
 } from "@tupl/provider-kit";
+import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
 import { executeCompiledPlan } from "./execution/plan-execution";
 import { executeLookupMany } from "./execution/lookup-execution";

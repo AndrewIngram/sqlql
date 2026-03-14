@@ -2,12 +2,14 @@ import type { RelNode } from "@tupl/foundation";
 import type { DataEntityColumnMap, DataEntityHandle, DataEntityShape } from "../entity-handles";
 import type {
   FragmentProviderAdapter,
-  LookupManyCapableProviderAdapter,
   ProviderCompiledPlan,
   ProviderPlanDescription,
-  ProviderLookupManyRequest,
   QueryRow,
 } from "../contracts";
+import type {
+  LookupManyCapableProviderAdapter,
+  ProviderLookupManyRequest,
+} from "../shapes/lookup-optimization";
 import type {
   ProviderCapabilityAtom,
   ProviderCapabilityReport,

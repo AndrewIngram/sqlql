@@ -1,4 +1,5 @@
-import type { ProviderLookupManyRequest, QueryRow, ScanFilterClause } from "@tupl/provider-kit";
+import type { QueryRow, ScanFilterClause } from "@tupl/provider-kit";
+import type { ProviderLookupManyRequest } from "@tupl/provider-kit/shapes";
 
 import type { CreateDrizzleProviderOptions } from "../types";
 import { resolveDrizzleDb } from "../backend/runtime-checks";

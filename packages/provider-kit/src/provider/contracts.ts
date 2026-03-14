@@ -45,19 +45,6 @@ export interface ProviderCompiledPlan {
   payload: unknown;
 }
 
-/**
- * Provider lookup-many requests represent runtime-driven batched key lookups against one entity.
- * They are a provider-facing optimization contract, not part of the public query API.
- */
-export interface ProviderLookupManyRequest {
-  table: string;
-  alias?: string;
-  key: string;
-  keys: unknown[];
-  select: string[];
-  where?: ScanFilterClause[];
-}
-
 export type ProviderOperationResult<T, E = Error> = AdapterResult<T, E>;
 export type { ProviderRuntimeBinding };
 
@@ -99,21 +86,6 @@ export interface FragmentProviderAdapter<TContext = unknown> extends ProviderAda
   ): MaybePromise<ProviderPlanDescription>;
   execute(
     plan: ProviderCompiledPlan,
-    context: TContext,
-  ): MaybePromise<ProviderOperationResult<QueryRow[]>>;
-}
-
-/**
- * Lookup-many support is a secondary physical optimization used by runtime lookup joins.
- * It is intentionally separate from the primary rel compile/execute provider contract.
- */
-export interface LookupManyCapableProviderAdapter<TContext = unknown> {
-  /**
-   * Batched key lookup used by runtime lookup joins.
-   * This is a provider-local physical optimization, not a separate semantic execution lane.
-   */
-  lookupMany(
-    request: ProviderLookupManyRequest,
     context: TContext,
   ): MaybePromise<ProviderOperationResult<QueryRow[]>>;
 }

@@ -1,12 +1,11 @@
 import { bindAdapterEntities } from "../entity-handles";
 import { AdapterResult } from "../operations";
 import type { RelNode } from "@tupl/foundation";
+import type { ProviderCompiledPlan, ProviderPlanDescription } from "../contracts";
 import type {
   LookupManyCapableProviderAdapter,
-  ProviderCompiledPlan,
   ProviderLookupManyRequest,
-  ProviderPlanDescription,
-} from "../contracts";
+} from "../shapes/lookup-optimization";
 import {
   canExecuteRelationalFragment,
   resolveRelationalCapabilityContext,

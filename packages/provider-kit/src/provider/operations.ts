@@ -1,11 +1,6 @@
 import { Result, type Result as BetterResult } from "better-result";
 
-import type {
-  FragmentProviderAdapter,
-  LookupManyCapableProviderAdapter,
-  ProviderAdapter,
-  ProviderOperationResult,
-} from "./contracts";
+import type { ProviderOperationResult } from "./contracts";
 
 /**
  * Provider operations centralize Result handling and capability predicates for adapter contracts.
@@ -23,10 +18,4 @@ export function unwrapProviderOperationResult<T, E>(outcome: ProviderOperationRe
   }
 
   return outcome.value;
-}
-
-export function supportsLookupMany<TContext>(
-  provider: ProviderAdapter<TContext>,
-): provider is FragmentProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
-  return "lookupMany" in provider && typeof provider.lookupMany === "function";
 }

@@ -7,14 +7,16 @@ import {
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
   getDataEntityAdapter,
-  type LookupManyCapableProviderAdapter,
   type QueryRow,
   type ProviderAdapter,
   type ProviderCapabilityAtom,
-  type ProviderLookupManyRequest,
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/provider-kit";
+import type {
+  LookupManyCapableProviderAdapter,
+  ProviderLookupManyRequest,
+} from "@tupl/provider-kit/shapes";
 import { getNormalizedTableBinding, validateProviderBindingsResult } from "@tupl/schema-model";
 import {
   createExecutableSchemaFromProviders,

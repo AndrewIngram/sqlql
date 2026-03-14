@@ -16,16 +16,18 @@ This is the shape to aim for when the backend is naturally keyed and only suppor
 
 ```ts
 import type {
-  LookupManyCapableProviderAdapter,
   ProviderAdapter,
   ProviderCapabilityReport,
   ProviderCompiledPlan,
-  ProviderLookupManyRequest,
   ProviderCapabilityAtom,
   QueryRow,
   TableScanRequest,
 } from "@tupl/provider-kit";
 import { AdapterResult, extractSimpleRelScanRequest } from "@tupl/provider-kit";
+import type {
+  LookupManyCapableProviderAdapter,
+  ProviderLookupManyRequest,
+} from "@tupl/provider-kit/shapes";
 
 type KvContext = {
   namespace: string;

@@ -14,12 +14,10 @@ import {
   type DataEntityHandle,
   type DataEntityShape,
   type InferDataEntityShapeMetadata,
-  type ProviderAdapter,
   type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
-  type ProviderLookupManyRequest,
-  type LookupManyCapableProviderAdapter,
+  type ProviderAdapter,
   type ProviderRuntimeBinding,
   type QueryRow,
   type ScanFilterClause,
@@ -29,6 +27,8 @@ import type { RelNode } from "@tupl/foundation";
 import {
   filterLookupRows,
   projectLookupRow,
+  type ProviderLookupManyRequest,
+  type LookupManyCapableProviderAdapter,
   validateLookupRequest,
   validateSimpleRelScanRequest,
 } from "@tupl/provider-kit/shapes";
