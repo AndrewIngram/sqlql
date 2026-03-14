@@ -19,7 +19,7 @@ import type {
   TableScanRequest,
 } from "@tupl/provider-kit";
 import { AdapterResult } from "@tupl/provider-kit";
-import { checkSimpleRelScanCapability } from "@tupl/provider-kit/shapes";
+import { checkSimpleRelScanCapability, prepareKeyedSimpleRelScan } from "@tupl/provider-kit/shapes";
 
 type KvContext = {
   namespace: string;
@@ -93,6 +93,14 @@ That provider is already useful even though its public surface is only rel compi
 If your backend has a genuinely valuable keyed bulk-fetch path, keep it in the optional helper layer under `@tupl/provider-kit/shapes`, not in the primary provider contract.
 
 That keeps the public authoring model small while still allowing runtime optimizations for specific backends.
+
+For keyed single-entity scans, prefer `prepareKeyedSimpleRelScan(...)` over stitching together:
+
+- simple scan extraction
+- field-sensitive validation
+- lookup-key predicate inference
+- fetch-column collection
+- structured unsupported reports
 
 ## Stage 1: Optional Narrow Scan
 

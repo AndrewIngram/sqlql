@@ -25,10 +25,10 @@ import type { RelNode } from "@tupl/foundation";
 import {
   filterLookupRows,
   checkSimpleRelScanCapability,
-  collectSimpleRelScanReferencedColumns,
   projectLookupRow,
   type ProviderLookupManyRequest,
   type LookupManyCapableProviderAdapter,
+  prepareKeyedSimpleRelScan,
   validateLookupRequest,
 } from "@tupl/provider-kit/shapes";
 
@@ -195,49 +195,6 @@ function getEntityConfigResult<TContext>(
   return AdapterResult.ok(mapping);
 }
 
-function inferExactLookupKeys(
-  where: readonly ScanFilterClause[] | undefined,
-  lookupKey: string,
-): unknown[] | null {
-  let candidateKeys: Set<unknown> | null = null;
-
-  for (const clause of where ?? []) {
-    if (clause.column !== lookupKey) {
-      continue;
-    }
-
-    let clauseKeys: Set<unknown> | null = null;
-    switch (clause.op) {
-      case "eq":
-        clauseKeys = clause.value == null ? new Set() : new Set([clause.value]);
-        break;
-      case "in":
-        clauseKeys = new Set(clause.values.filter((value) => value != null));
-        break;
-      default:
-        return null;
-    }
-    if (!clauseKeys) {
-      return null;
-    }
-
-    if (candidateKeys === null) {
-      candidateKeys = clauseKeys;
-      continue;
-    }
-
-    const intersected = new Set<unknown>();
-    for (const value of candidateKeys) {
-      if (clauseKeys.has(value)) {
-        intersected.add(value);
-      }
-    }
-    candidateKeys = intersected;
-  }
-
-  return candidateKeys ? [...candidateKeys] : null;
-}
-
 function buildRelExecutionPayload<TContext>(
   rel: RelNode,
   entitiesByName: Map<string, IoredisEntityConfig<TContext, string>>,
@@ -259,55 +216,30 @@ function buildRelExecutionPayload<TContext>(
     const request = shapeCapability.value;
     const entity = yield* getEntityConfigResult(entitiesByName, request.table, provider);
     const supportedColumns = new Set(entity.columns);
-    const requestCapability = checkSimpleRelScanCapability(rel, {
+    const keyedCapability = prepareKeyedSimpleRelScan(rel, {
       supportedAtoms: REDIS_CAPABILITY_ATOMS,
+      entity,
+      unsupportedShapeReason: "Ioredis provider only supports simple single-entity scan pipelines.",
       policy: {
-        supportsSelectColumn(column) {
-          return supportedColumns.has(column);
-        },
-        supportsFilterClause(clause) {
-          return supportedColumns.has(clause.column);
-        },
-        supportsSortTerm(term) {
-          return supportedColumns.has(term.column);
-        },
+        supportsSelectColumn: (column) => supportedColumns.has(column),
+        supportsFilterClause: (clause) => supportedColumns.has(clause.column),
+        supportsSortTerm: (term) => supportedColumns.has(term.column),
       },
     });
-    if (AdapterResult.isError(requestCapability)) {
+    if (AdapterResult.isError(keyedCapability)) {
       return yield* AdapterResult.err(
         new TuplExecutionError({
           operation: "compile redis fragment",
-          message: requestCapability.error.reason ?? "Unsupported Redis fragment.",
+          message: keyedCapability.error.reason ?? "Unsupported Redis fragment.",
         }),
       );
     }
-
-    const keys = inferExactLookupKeys(request.where, entity.lookupKey);
-    if (keys === null) {
-      return yield* AdapterResult.err(
-        new TuplExecutionError({
-          operation: "compile redis fragment",
-          message:
-            "Ioredis provider requires an equality or IN predicate on the entity lookup key.",
-        }),
-      );
-    }
-
-    const fetchColumns = collectSimpleRelScanReferencedColumns(request, [entity.lookupKey]);
-    yield* validateLookupRequest(
-      {
-        table: request.table,
-        key: entity.lookupKey,
-        keys,
-        select: fetchColumns,
-      },
-      entity,
-    );
+    const { request: keyedRequest, key, keys, fetchColumns } = keyedCapability.value;
 
     return AdapterResult.ok({
       strategy: "key_lookup_scan",
-      request,
-      key: entity.lookupKey,
+      request: keyedRequest,
+      key,
       keys,
       fetchColumns,
     } satisfies IoredisCompiledRelPayload);
