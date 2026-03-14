@@ -103,6 +103,63 @@ export function buildSimpleSelectJoinTree(
       return null;
     }
 
+    const leftKey = {
+      alias: inFilter.alias,
+      column: inFilter.column,
+    };
+    const rightKey = parseRelColumnRef(rightOutput);
+
+    if (inFilter.negated) {
+      const qualifiedRightOutput = `__anti__.${rightOutput}`;
+      const antiRight = {
+        id: nextRelId("project"),
+        kind: "project" as const,
+        convention: "local" as const,
+        input: subqueryRel,
+        columns: [
+          {
+            kind: "column" as const,
+            source: { column: parseRelColumnRef(rightOutput).column },
+            output: qualifiedRightOutput,
+          },
+        ],
+        output: [{ name: qualifiedRightOutput }],
+      };
+      const qualifiedRightKey = parseRelColumnRef(qualifiedRightOutput);
+      const antiJoin = {
+        id: nextRelId("join"),
+        kind: "join" as const,
+        convention: "local" as const,
+        joinType: "left" as const,
+        left: current,
+        right: antiRight,
+        leftKey,
+        rightKey: qualifiedRightKey,
+        output: [...current.output, ...antiRight.output],
+      };
+
+      const filtered = {
+        id: nextRelId("filter"),
+        kind: "filter" as const,
+        convention: "local" as const,
+        input: antiJoin,
+        expr: {
+          kind: "function" as const,
+          name: "is_null",
+          args: [
+            {
+              kind: "column" as const,
+              ref: qualifiedRightKey,
+            },
+          ],
+        },
+        output: antiJoin.output,
+      };
+
+      current = projectToOutputShape(filtered, current.output);
+      continue;
+    }
+
     current = {
       id: nextRelId("join"),
       kind: "join",
@@ -110,11 +167,8 @@ export function buildSimpleSelectJoinTree(
       joinType: "semi",
       left: current,
       right: subqueryRel,
-      leftKey: {
-        alias: inFilter.alias,
-        column: inFilter.column,
-      },
-      rightKey: parseRelColumnRef(rightOutput),
+      leftKey,
+      rightKey,
       output: current.output,
     };
   }
@@ -147,6 +201,21 @@ export function buildSimpleSelectJoinTree(
   }
 
   return current;
+}
+
+function projectToOutputShape(rel: RelNode, output: RelNode["output"]): RelNode {
+  return {
+    id: nextRelId("project"),
+    kind: "project",
+    convention: "local",
+    input: rel,
+    columns: output.map((column) => ({
+      kind: "column" as const,
+      source: parseRelColumnRef(column.name),
+      output: column.name,
+    })),
+    output,
+  };
 }
 
 function collectRequiredColumns(

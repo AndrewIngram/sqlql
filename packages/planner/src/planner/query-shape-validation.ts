@@ -96,11 +96,6 @@ function findUnsupportedQueryShape(ast: SelectAst, cteNames: Set<string>): strin
 }
 
 function findUnsupportedWindowShape(ast: SelectAst): string | null {
-  const hasWindow = hasWindowExpression(ast.columns);
-  if (hasWindow && (ast.groupby || ast.having)) {
-    return "Window functions cannot be mixed with GROUP BY/HAVING.";
-  }
-
   return findUnsupportedWindowShapeInValue(ast.columns);
 }
 
@@ -171,18 +166,6 @@ function validateSupportedWindowOver(expr: Record<string, unknown>): string | nu
   }
 
   return null;
-}
-
-function hasWindowExpression(rawColumns: unknown): boolean {
-  if (rawColumns === "*") {
-    return false;
-  }
-
-  const columns = Array.isArray(rawColumns) ? rawColumns : [];
-  return columns.some((entry) => {
-    const expr = (entry as { expr?: { over?: unknown } }).expr;
-    return !!expr?.over;
-  });
 }
 
 function findUnsupportedSubqueryShape(

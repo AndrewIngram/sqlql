@@ -942,6 +942,56 @@ describe("query/planning", () => {
     expect(planned.rewrittenRel.input.input.input.joinType).toBe("left");
   });
 
+  it("lowers uncorrelated NOT IN to anti-join emulation instead of a semi-join", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          team_id: "text",
+        },
+      },
+    });
+
+    const lowered = buildLogicalQueryPlan(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE o.user_id NOT IN (
+          SELECT u.id
+          FROM users u
+          WHERE u.team_id = 'team_smb'
+        )
+      `,
+      schema,
+    );
+
+    expect(lowered.rewrittenRel.kind).toBe("project");
+    if (lowered.rewrittenRel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rewrittenRel.input.kind).toBe("project");
+    if (lowered.rewrittenRel.input.kind !== "project") {
+      throw new Error("Expected cleanup project after anti-join emulation.");
+    }
+    expect(lowered.rewrittenRel.input.input.kind).toBe("filter");
+    if (lowered.rewrittenRel.input.input.kind !== "filter") {
+      throw new Error("Expected is-null filter above left join.");
+    }
+    expect(lowered.rewrittenRel.input.input.input.kind).toBe("join");
+    if (lowered.rewrittenRel.input.input.input.kind !== "join") {
+      throw new Error("Expected left join input.");
+    }
+    expect(lowered.rewrittenRel.input.input.input.joinType).toBe("left");
+  });
+
   it("lowers supported correlated scalar aggregate predicates to an explicit correlate node", () => {
     const schema = buildEntitySchema({
       orders: {

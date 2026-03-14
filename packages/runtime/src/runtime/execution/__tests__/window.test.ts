@@ -305,26 +305,31 @@ describe("query/window", () => {
     );
   });
 
-  it("rejects mixing GROUP BY/HAVING with window functions", async () => {
+  it("supports mixing GROUP BY/HAVING with window functions", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                org_id,
-                COUNT(*) AS order_count,
-                ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY org_id) AS rn
-              FROM orders
-              GROUP BY org_id
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Window functions cannot be mixed with GROUP BY/HAVING.");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              org_id,
+              COUNT(*) AS order_count,
+              ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY org_id) AS rn
+            FROM orders
+            GROUP BY org_id
+            ORDER BY org_id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { org_id: "org_1", order_count: 3, rn: 1 },
+          { org_id: "org_2", order_count: 1, rn: 1 },
+        ]);
       },
     );
   });

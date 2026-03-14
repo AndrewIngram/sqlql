@@ -45,6 +45,14 @@ export async function maybeExecuteLookupJoinResult<TContext>(
   if (!leftScan || !rightScan) {
     return Result.ok(null);
   }
+  const leftScanAlias = leftScan.alias ?? leftScan.table;
+  const rightScanAlias = rightScan.alias ?? rightScan.table;
+  if ((join.leftKey.alias ?? join.leftKey.table ?? leftScanAlias) !== leftScanAlias) {
+    return Result.ok(null);
+  }
+  if ((join.rightKey.alias ?? join.rightKey.table ?? rightScanAlias) !== rightScanAlias) {
+    return Result.ok(null);
+  }
 
   const rightBinding = getNormalizedTableBinding(context.schema, rightScan.table);
   const rightProviderName =

@@ -101,6 +101,36 @@ export function parseProjection(
   return out;
 }
 
+export function parseWindowProjections(
+  rawColumns: unknown,
+  bindings: Binding[],
+  aliasToBinding: Map<string, Binding>,
+  windowDefinitions: Map<string, WindowSpecificationAst>,
+  lowerExprContext: SqlExprLoweringContext,
+): SelectWindowProjection[] | null {
+  if (rawColumns === "*") {
+    return [];
+  }
+
+  const columns = Array.isArray(rawColumns) ? (rawColumns as SelectColumnAst[]) : [];
+  const out: SelectWindowProjection[] = [];
+
+  for (const entry of columns) {
+    const projection = parseWindowProjection(
+      entry,
+      bindings,
+      aliasToBinding,
+      windowDefinitions,
+      lowerExprContext,
+    );
+    if (projection) {
+      out.push(projection);
+    }
+  }
+
+  return out;
+}
+
 export function toParsedOrderSource(
   ref: RelColumnRef | null | undefined,
   fallbackColumn: string,

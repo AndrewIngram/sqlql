@@ -40,7 +40,7 @@ export function finalizeSimpleSelectRel(current: RelNode, shape: PreparedSimpleS
     };
   }
 
-  if (!shape.aggregateMode && shape.windowFunctions.length > 0) {
+  if (shape.windowFunctions.length > 0) {
     next = {
       id: nextRelId("window"),
       kind: "window",
@@ -98,7 +98,7 @@ function buildFinalProject(current: RelNode, shape: PreparedSimpleSelect): RelNo
     convention: "local",
     input: current,
     columns: shape.aggregateMode
-      ? shape.safeAggregateProjections.map((projection) =>
+      ? [...shape.safeAggregateProjections, ...shape.aggregateWindowProjections].map((projection) =>
           projection.kind === "group" && projection.source
             ? {
                 kind: "column" as const,
@@ -111,11 +111,17 @@ function buildFinalProject(current: RelNode, shape: PreparedSimpleSelect): RelNo
                   source: { column: projection.metric.as },
                   output: projection.output,
                 }
-              : {
-                  kind: "expr" as const,
-                  expr: projection.expr!,
-                  output: projection.output,
-                },
+              : "function" in projection
+                ? {
+                    kind: "column" as const,
+                    source: { column: projection.function.as },
+                    output: projection.output,
+                  }
+                : {
+                    kind: "expr" as const,
+                    expr: projection.expr!,
+                    output: projection.output,
+                  },
         )
       : shape.safeProjections.map((projection) => ({
           ...(projection.kind === "expr" && !projection.source
@@ -139,10 +145,11 @@ function buildFinalProject(current: RelNode, shape: PreparedSimpleSelect): RelNo
               }),
           output: projection.output,
         })),
-    output: (shape.aggregateMode ? shape.safeAggregateProjections : shape.safeProjections).map(
-      (projection) => ({
-        name: projection.output,
-      }),
-    ),
+    output: (shape.aggregateMode
+      ? [...shape.safeAggregateProjections, ...shape.aggregateWindowProjections]
+      : shape.safeProjections
+    ).map((projection) => ({
+      name: projection.output,
+    })),
   };
 }

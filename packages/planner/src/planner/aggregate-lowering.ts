@@ -12,6 +12,7 @@ import {
   parsePositiveOrdinalLiteral,
   resolveColumnRef,
 } from "./sql-expr-lowering";
+import { parseWindowOver } from "./sql-expr-utils";
 import { lowerHavingExpr } from "./having-lowering";
 import {
   parseOrderBy,
@@ -98,6 +99,10 @@ export function parseAggregateProjections(
   const out: ParsedAggregateProjection[] = [];
 
   for (const entry of columns) {
+    if (isWindowProjection(entry)) {
+      continue;
+    }
+
     const exprType = (entry.expr as { type?: unknown })?.type;
     if (exprType === "aggr_func") {
       const output =
@@ -145,6 +150,15 @@ export function parseAggregateProjections(
   }
 
   return out;
+}
+
+function isWindowProjection(entry: SelectColumnAst): boolean {
+  const expr = entry.expr as { type?: unknown; over?: unknown };
+  if (expr.type !== "function" && expr.type !== "aggr_func") {
+    return false;
+  }
+
+  return parseWindowOver(expr.over, new Map()) != null;
 }
 
 export function parseAggregateMetric(

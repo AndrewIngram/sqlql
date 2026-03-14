@@ -30,6 +30,14 @@ export function resolveSyncLookupJoinCandidate<TContext>(
   if (!leftScan || !rightScan) {
     return null;
   }
+  const leftScanAlias = leftScan.alias ?? leftScan.table;
+  const rightScanAlias = rightScan.alias ?? rightScan.table;
+  if ((join.leftKey.alias ?? join.leftKey.table ?? leftScanAlias) !== leftScanAlias) {
+    return null;
+  }
+  if ((join.rightKey.alias ?? join.rightKey.table ?? rightScanAlias) !== rightScanAlias) {
+    return null;
+  }
   if (
     (!input.schema.tables[leftScan.table] && !leftScan.entity) ||
     (!input.schema.tables[rightScan.table] && !rightScan.entity)

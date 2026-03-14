@@ -26,7 +26,7 @@ Allowed dependency directions:
 Layer invariants:
 
 - `@tupl/foundation` owns the relational vocabulary, diagnostics, and value helpers. Callers may rely on its data model, but must not assume execution or schema-building behavior.
-- `@tupl/provider-kit` owns provider contracts, adapter-authoring helpers, entity handles, capability reporting, provider-shape analysis, and provider testing helpers. Callers may build providers against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
+- `@tupl/provider-kit` owns provider contracts, adapter-authoring helpers, entity handles, optional capability metadata, provider-shape analysis, and provider testing helpers. Callers may build providers against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
 - `@tupl/schema-model` owns logical schema authoring and normalization. Callers may rely on schema DSL behavior and normalized bindings, but must not assume planner or executor internals.
 - `@tupl/planner` owns SQL lowering and physical planning. Callers may rely on relational planning output, but must not assume runtime guardrail policy or provider execution semantics.
 - `@tupl/runtime` owns executable-schema construction, guardrails, query orchestration, and sessions. Callers may rely on execution contracts, but must not depend on planner-internal shapes beyond the published explain surface.
@@ -47,6 +47,8 @@ Consumer guidance:
 
 - Provider implementations should prefer `@tupl/provider-kit`, `@tupl/provider-kit/shapes`, and `@tupl/provider-kit/testing` for ordinary adapter work.
 - Ordinary SQL-like provider adapters should start with `createSqlRelationalProviderAdapter(...)`; lower-level `createRelationalProviderAdapter(...)` remains for unusual adapters that do not fit that shape.
+- The primary provider contract is rel-first: `canExecute(rel)`, `compile(rel)`, optional `describeCompiledPlan(plan)`, and `execute(plan)`.
+- Capability atoms are optional metadata, not the semantic source of truth.
 - `@tupl/foundation` remains available for primitive relational helpers, but it is not the primary extension boundary.
 - Provider implementations should not normally import `@tupl/schema-model`; that package owns schema internals, not the ordinary adapter-authoring surface.
 - Provider conformance belongs on `@tupl/provider-kit/testing`; internal test fixtures do not.

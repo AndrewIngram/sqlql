@@ -60,6 +60,18 @@ const cases: ComplianceCase[] = [
     `,
   },
   {
+    name: "grouped aggregate with window projection",
+    sql: `
+      SELECT
+        o.org_id,
+        COUNT(*) AS org_count,
+        ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY org_id) AS rn
+      FROM orders o
+      GROUP BY o.org_id
+      ORDER BY o.org_id ASC
+    `,
+  },
+  {
     name: "navigation functions LEAD/LAG/FIRST_VALUE",
     sql: `
       SELECT

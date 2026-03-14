@@ -1,14 +1,10 @@
 # Building a Non-Relational Adapter
 
-This guide covers Redis, KV stores, document stores, and index-backed adapters that can expose
-rows relationally but usually support only a narrow pushdown envelope.
+This guide covers Redis, KV stores, document stores, and index-backed providers that can expose rows relationally but usually support only a narrow pushdown envelope.
 
 For a concrete Redis implementation, see `@tupl/provider-ioredis` in this repo.
-To expose those entities in a facade schema, use `createSchemaBuilder(...)` and finish with
-`createExecutableSchema(builder)`.
 
-The key rule is that non-relational adapters still compile canonical rel subtrees. Their
-non-relational nature shows up in a narrow `canExecute` envelope, not in a separate semantic model.
+The key rule is that non-relational providers still compile canonical rel subtrees. Their non-relational nature shows up in a narrow `canExecute` envelope, not in a separate semantic model.
 
 ## Narrow-Scan Skeleton
 
@@ -19,15 +15,10 @@ import type {
   ProviderAdapter,
   ProviderCapabilityReport,
   ProviderCompiledPlan,
-  ProviderCapabilityAtom,
   QueryRow,
   TableScanRequest,
 } from "@tupl/provider-kit";
 import { AdapterResult, extractSimpleRelScanRequest } from "@tupl/provider-kit";
-import type {
-  LookupManyCapableProviderAdapter,
-  ProviderLookupManyRequest,
-} from "@tupl/provider-kit/shapes";
 
 type KvContext = {
   namespace: string;
@@ -39,18 +30,13 @@ type KvRecord = {
 };
 
 type CompiledKvPlan = {
-  kind: "scan";
+  kind: "keyed_scan";
   request: TableScanRequest;
 };
 
-const declaredAtoms: readonly ProviderCapabilityAtom[] = ["lookup.bulk"];
-
-export function createExampleKvAdapter(
-  rows: KvRecord[],
-): ProviderAdapter<KvContext> & LookupManyCapableProviderAdapter<KvContext> {
+export function createExampleKvAdapter(rows: KvRecord[]): ProviderAdapter<KvContext> {
   return {
     name: "example-kv",
-    capabilityAtoms: [...declaredAtoms],
     fallbackPolicy: {
       maxLookupFanout: 1000,
       rejectOnEstimatedCost: true,
@@ -78,7 +64,7 @@ export function createExampleKvAdapter(
         provider: "example-kv",
         kind: "rel",
         payload: {
-          kind: "scan",
+          kind: "keyed_scan",
           request,
         } satisfies CompiledKvPlan,
       } satisfies ProviderCompiledPlan);
@@ -93,76 +79,23 @@ export function createExampleKvAdapter(
       const materialized = rows.map(materializeRow);
       return AdapterResult.ok(applyScanRequest(materialized, plan.request));
     },
-
-    async lookupMany(request, _context) {
-      const keys = new Set(request.keys.map(String));
-      return AdapterResult.ok(rows.filter((row) => keys.has(row.key)).map(materializeRow));
-    },
   };
-}
-
-function materializeRow(row: KvRecord): QueryRow {
-  return {
-    id: row.key,
-    value: row.value,
-  };
-}
-
-function applyScanRequest(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
-  let out = [...rows];
-
-  for (const clause of request.where ?? []) {
-    out = out.filter((row) => {
-      if (clause.op === "eq") {
-        return row[clause.column] === clause.value;
-      }
-      if (clause.op === "in") {
-        return clause.values.includes(row[clause.column]);
-      }
-      return true;
-    });
-  }
-
-  if (request.limit != null) {
-    out = out.slice(0, request.limit);
-  }
-
-  return out.map((row) =>
-    Object.fromEntries(request.select.map((column) => [column, row[column] ?? null])),
-  );
 }
 ```
 
-That adapter already participates in cross-provider joins through `lookupMany`, but its primary
-provider contract is still rel compile/execute.
+That provider is already useful even though its public surface is only rel compile/execute.
 
-For normal adapter work, `@tupl/provider-kit` is the extension facade. Keep `@tupl/schema-model`
-out of adapter code unless you are intentionally working on lower-level planner/schema internals.
+## Optional Lookup Optimization
 
-## Stage 1: Strong Lookup Path
+If your backend has a genuinely valuable keyed bulk-fetch path, keep it in the optional helper layer under `@tupl/provider-kit/shapes`, not in the primary provider contract.
 
-Implement `lookupMany` only as an optimization when your backend is naturally keyed.
+That keeps the public authoring model small while still allowing runtime optimizations for specific backends.
 
-This gives you:
+## Stage 1: Optional Narrow Scan
 
-- efficient keyed fetch
-- cross-provider lookup joins
-- a good baseline for point lookups and fanout joins
+Only add scan support if your backend has a rational way to do it.
 
-Relevant atom:
-
-- `lookup.bulk`
-
-If your system is truly key-driven, this is often more valuable than trying to emulate a full table scan.
-
-In practice, `lookupMany` is the first optional optimization hook that should be fast, predictable,
-and capacity-aware.
-
-## Stage 2: Optional Scan
-
-Only add `scan` if your backend has a rational way to do it.
-
-Typical scan atoms:
+Typical coarse atoms, if you choose to declare them:
 
 - `scan.project`
 - `scan.filter.basic`
@@ -170,29 +103,23 @@ Typical scan atoms:
 - `scan.sort`
 - `scan.limit_offset`
 
-If the backend cannot support these without pathological behavior, leave them unsupported and rely on explicit rejection or carefully controlled fallback.
+If the backend cannot support these without pathological behavior, leave them unsupported and rely on explicit rejection or controlled fallback.
 
-If you do add scan support later, do it as a narrow slice:
-
-- a constrained scan over one entity
-- only the filter operators your indexes actually support
-- explicit rejection for everything else
-
-## Stage 3: Selective Aggregates and Rel Pushdown
+## Stage 2: Selective Aggregates and Broader Rel Pushdown
 
 Do not treat `rel-core` or `rel-advanced` as mandatory milestones.
 
-Instead, add atoms that map cleanly to backend features:
+Instead, add support where it maps cleanly to backend features:
 
 - `aggregate.group_by`
 - `join.inner` only if the backend has a real indexed join-like primitive
 - `set_op.union_all` only if it is natural and reliable
 
-Skip atoms that would force expensive emulation in the provider.
+Skip anything that would force expensive emulation inside the provider.
 
 ## Rejection and Fallback
 
-Non-relational adapters should be explicit about expensive shapes.
+Non-relational providers should be explicit about expensive shapes.
 
 Good reasons to reject:
 
@@ -200,14 +127,6 @@ Good reasons to reject:
 - large local join expansion driven by lookup fanout
 - unsupported aggregate semantics
 - unsupported window or CTE behavior
-
-Use capability diagnostics to explain the decision:
-
-- `missingAtoms`
-- route family
-- estimate fields when available
-
-Default `tupl` behavior allows local fallback with diagnostics, but providers should tighten this when the cost profile is unacceptable.
 
 Useful policy knobs:
 
@@ -217,23 +136,23 @@ Useful policy knobs:
 - `maxLookupFanout`
 - `maxLocalRows`
 
-A good KV adapter is usually stricter than a relational one here. Silent fallback from an accidental broad keyspace access is rarely the right default.
+A good KV provider is usually stricter than a relational one here. Silent fallback from an accidental broad keyspace access is rarely the right default.
 
 ## Practical Capability Shape
 
-A healthy KV adapter might declare:
+A healthy KV provider might declare no atoms at all and still work correctly.
 
-- atoms:
-  - `lookup.bulk`
-  - maybe `scan.project`
-  - maybe `scan.filter.basic`
-  - maybe `scan.limit_offset`
+If it does declare atoms, keep them sparse:
 
-That is already enough to participate in mixed-provider queries.
+- maybe `scan.project`
+- maybe `scan.filter.basic`
+- maybe `scan.limit_offset`
+
+`canExecute(...)` remains the source of truth.
 
 ## Expression Expectations
 
-The core runtime can now execute a first batch of scalar expressions locally. That means a non-relational adapter does not need immediate pushdown support for:
+The runtime can execute a broad batch of scalar expressions locally. That means a non-relational provider does not need immediate pushdown support for:
 
 - `LIKE`
 - `NOT IN`
@@ -241,22 +160,7 @@ The core runtime can now execute a first batch of scalar expressions locally. Th
 - `CASE`
 - basic string and numeric functions
 
-Use that to keep the adapter simple:
+Use that to keep the provider simple:
 
 - return unsupported for computed-expression pushdown
 - let the runtime evaluate those expressions locally when policy allows
-
-## Testing Strategy
-
-Minimum tests:
-
-1. lookupMany correctness
-2. scan correctness, if scan exists
-3. fallback correctness for unsupported relational shapes
-4. rejection tests for expensive keyspace access
-5. diagnostics stability for unsupported atoms
-
-## Related Docs
-
-- [creating-an-adapter.md](./creating-an-adapter.md)
-- [provider-capability-matrix.md](./provider-capability-matrix.md)
