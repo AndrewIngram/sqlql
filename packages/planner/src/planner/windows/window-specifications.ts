@@ -56,38 +56,55 @@ export function parseWindowFrameClause(raw: string | undefined): RelWindowFrame 
   }
 
   const normalized = raw.replace(/\s+/g, " ").trim().toUpperCase();
-  switch (normalized) {
-    case "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW":
-      return {
-        mode: "rows",
-        start: "unbounded_preceding",
-        end: "current_row",
-      };
-    case "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING":
-      return {
-        mode: "rows",
-        start: "unbounded_preceding",
-        end: "unbounded_following",
-      };
-    case "ROWS BETWEEN CURRENT ROW AND CURRENT ROW":
-      return {
-        mode: "rows",
-        start: "current_row",
-        end: "current_row",
-      };
-    case "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW":
-      return {
-        mode: "range",
-        start: "unbounded_preceding",
-        end: "current_row",
-      };
-    case "RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING":
-      return {
-        mode: "range",
-        start: "unbounded_preceding",
-        end: "unbounded_following",
-      };
-    default:
-      return null;
+  const match = normalized.match(/^(ROWS|RANGE|GROUPS) BETWEEN (.+) AND (.+)$/);
+  if (!match) {
+    return null;
   }
+
+  const rawMode = match[1];
+  const rawStart = match[2];
+  const rawEnd = match[3];
+  if (!rawMode || !rawStart || !rawEnd) {
+    return null;
+  }
+  const start = parseWindowFrameBound(rawStart);
+  const end = parseWindowFrameBound(rawEnd);
+  if (!start || !end) {
+    return null;
+  }
+
+  return {
+    mode: rawMode.toLowerCase() as RelWindowFrame["mode"],
+    start,
+    end,
+  };
+}
+
+function parseWindowFrameBound(raw: string): RelWindowFrame["start"] | null {
+  switch (raw) {
+    case "UNBOUNDED PRECEDING":
+      return { kind: "unbounded_preceding" };
+    case "CURRENT ROW":
+      return { kind: "current_row" };
+    case "UNBOUNDED FOLLOWING":
+      return { kind: "unbounded_following" };
+  }
+
+  const preceding = raw.match(/^(\d+) PRECEDING$/);
+  if (preceding) {
+    return {
+      kind: "preceding",
+      offset: Number(preceding[1]),
+    };
+  }
+
+  const following = raw.match(/^(\d+) FOLLOWING$/);
+  if (following) {
+    return {
+      kind: "following",
+      offset: Number(following[1]),
+    };
+  }
+
+  return null;
 }

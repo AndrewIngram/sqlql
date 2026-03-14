@@ -167,14 +167,25 @@ export interface RelCorrelateNode extends RelNodeBase {
         outerCompare: RelColumnRef;
         correlationColumn: string;
         metricColumn: string;
+      }
+    | {
+        kind: "scalar_project";
+        correlationColumn: string;
+        metricColumn: string;
+        outputColumn: string;
       };
 }
 
 /** Rank window functions compute rank-style outputs over one partitioned and ordered input. */
+export interface RelWindowFrameBound {
+  kind: "unbounded_preceding" | "preceding" | "current_row" | "following" | "unbounded_following";
+  offset?: number;
+}
+
 export interface RelWindowFrame {
   mode: "rows" | "range" | "groups";
-  start: "unbounded_preceding" | "current_row";
-  end: "current_row" | "unbounded_following";
+  start: RelWindowFrameBound;
+  end: RelWindowFrameBound;
 }
 
 export interface RelRankWindowFunction {
@@ -202,8 +213,26 @@ export interface RelAggregateWindowFunction {
   frame?: RelWindowFrame;
 }
 
+/** Navigation window functions read ordered values from the current partition without changing row count. */
+export interface RelNavigationWindowFunction {
+  fn: "first_value" | "lag" | "lead";
+  as: string;
+  partitionBy: RelColumnRef[];
+  value: RelExpr;
+  orderBy: Array<{
+    source: RelColumnRef;
+    direction: "asc" | "desc";
+  }>;
+  offset?: number;
+  defaultExpr?: RelExpr;
+  frame?: RelWindowFrame;
+}
+
 /** Relational window functions are the supported local/provider-neutral window calculation forms. */
-export type RelWindowFunction = RelRankWindowFunction | RelAggregateWindowFunction;
+export type RelWindowFunction =
+  | RelRankWindowFunction
+  | RelAggregateWindowFunction
+  | RelNavigationWindowFunction;
 
 /** Window nodes append window-function outputs without changing the underlying input row count. */
 export interface RelWindowNode extends RelNodeBase {

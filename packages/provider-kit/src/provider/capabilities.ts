@@ -143,6 +143,9 @@ function collectCapabilityAtomsForNode(node: RelNode, atoms: Set<ProviderCapabil
       collectCapabilityAtomsForNode(node.input, atoms);
       return;
     case "window":
+      if (node.functions.some((fn) => fn.frame != null)) {
+        atoms.add("window.frame_explicit");
+      }
       if (
         node.functions.some(
           (fn) => fn.fn === "dense_rank" || fn.fn === "rank" || fn.fn === "row_number",
@@ -161,6 +164,11 @@ function collectCapabilityAtomsForNode(node: RelNode, atoms: Set<ProviderCapabil
         )
       ) {
         atoms.add("window.aggregate_default_frame");
+      }
+      if (
+        node.functions.some((fn) => fn.fn === "lead" || fn.fn === "lag" || fn.fn === "first_value")
+      ) {
+        atoms.add("window.navigation");
       }
       collectCapabilityAtomsForNode(node.input, atoms);
       return;

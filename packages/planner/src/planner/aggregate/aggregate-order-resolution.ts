@@ -94,6 +94,9 @@ export function resolveNonAggregateOrderBy(
     if (projection.kind === "window") {
       return { column: projection.function.as };
     }
+    if (projection.kind === "correlated_scalar") {
+      return { column: projection.output };
+    }
 
     const materialization = materializeSelectExprProjection(projection, "order_by");
     if (materialization) {

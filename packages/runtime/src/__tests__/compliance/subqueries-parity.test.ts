@@ -126,6 +126,26 @@ const cases: ComplianceCase[] = [
       { id: "ord_2", max_total: 9900 },
     ],
   },
+  {
+    name: "correlated scalar subquery in SELECT",
+    sql: `
+      SELECT
+        o.id,
+        (
+          SELECT MAX(i.total_cents)
+          FROM orders i
+          WHERE i.user_id = o.user_id
+        ) AS user_max_total
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+    expectedRows: [
+      { id: "ord_1", user_max_total: 1800 },
+      { id: "ord_2", user_max_total: 1800 },
+      { id: "ord_3", user_max_total: 2400 },
+      { id: "ord_4", user_max_total: 9900 },
+    ],
+  },
 ];
 
 registerParityCases(

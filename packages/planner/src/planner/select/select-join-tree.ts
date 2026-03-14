@@ -5,7 +5,10 @@ import { nextRelId } from "../physical/planner-ids";
 import type { PreparedSimpleSelect } from "./select-shape";
 import { appearsInRel, parseRelColumnRef } from "./select-from-lowering";
 import { collectRelExprRefs, isCorrelatedSubquery } from "../sql-expr-lowering";
-import { attachCorrelatedPredicates } from "../subqueries/correlate-lowering";
+import {
+  attachCorrelatedPredicates,
+  attachCorrelatedProjectionSubqueries,
+} from "../subqueries/correlate-lowering";
 import {
   combineAndExprs,
   getPushableWhereAliases,
@@ -122,6 +125,16 @@ export function buildSimpleSelectJoinTree(
   }
   current = correlated;
 
+  const withCorrelatedProjections = attachCorrelatedProjectionSubqueries(
+    current,
+    shape.safeProjections,
+    tryLowerSelect,
+  );
+  if (!withCorrelatedProjections) {
+    return null;
+  }
+  current = withCorrelatedProjections;
+
   if (residualExpr) {
     current = {
       id: nextRelId("filter"),
@@ -203,6 +216,12 @@ function collectRequiredColumns(
         }
         continue;
       }
+      if (projection.kind === "correlated_scalar") {
+        columnsByAlias
+          .get(projection.projection.outerKey.alias)
+          ?.add(projection.projection.outerKey.column);
+        continue;
+      }
       for (const partition of projection.function.partitionBy) {
         if (partition.alias) {
           columnsByAlias.get(partition.alias)?.add(partition.column);
@@ -216,6 +235,20 @@ function collectRequiredColumns(
       for (const orderTerm of projection.function.orderBy) {
         if (orderTerm.source.alias) {
           columnsByAlias.get(orderTerm.source.alias)?.add(orderTerm.source.column);
+        }
+      }
+      if ("value" in projection.function) {
+        for (const ref of collectRelExprRefs(projection.function.value)) {
+          if (ref.alias) {
+            columnsByAlias.get(ref.alias)?.add(ref.column);
+          }
+        }
+      }
+      if ("defaultExpr" in projection.function && projection.function.defaultExpr) {
+        for (const ref of collectRelExprRefs(projection.function.defaultExpr)) {
+          if (ref.alias) {
+            columnsByAlias.get(ref.alias)?.add(ref.column);
+          }
         }
       }
     }

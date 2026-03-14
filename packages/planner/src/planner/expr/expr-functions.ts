@@ -71,7 +71,12 @@ export function readWindowFunctionName(expr: {
     return null;
   }
   const lowered = head.toLowerCase();
-  return lowered === "dense_rank" || lowered === "rank" || lowered === "row_number"
+  return lowered === "dense_rank" ||
+    lowered === "rank" ||
+    lowered === "row_number" ||
+    lowered === "first_value" ||
+    lowered === "lag" ||
+    lowered === "lead"
     ? lowered
     : null;
 }
@@ -85,4 +90,17 @@ export function supportsRankWindowArgs(args: unknown): boolean {
     return true;
   }
   return value.length === 0;
+}
+
+export function readWindowFunctionArgs(args: unknown): unknown[] {
+  if (!args || typeof args !== "object") {
+    return [];
+  }
+
+  const value = (args as { value?: unknown }).value;
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  return value == null ? [] : [value];
 }

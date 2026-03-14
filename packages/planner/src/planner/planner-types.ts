@@ -3,6 +3,7 @@ import type { ScanFilterClause } from "@tupl/foundation";
 import type {
   CorrelatedExistsFilter,
   CorrelatedInSubqueryFilter,
+  CorrelatedScalarAggregateProjection,
   CorrelatedScalarAggregateFilter,
 } from "./subqueries/correlated-predicate-types";
 
@@ -41,10 +42,17 @@ export interface SelectExprProjection {
   source?: RelColumnRef;
 }
 
+export interface SelectCorrelatedScalarProjection {
+  kind: "correlated_scalar";
+  output: string;
+  projection: CorrelatedScalarAggregateProjection;
+}
+
 export type SelectProjection =
   | SelectColumnProjection
   | SelectWindowProjection
-  | SelectExprProjection;
+  | SelectExprProjection
+  | SelectCorrelatedScalarProjection;
 
 export interface ResolvedOrderTerm {
   source: {

@@ -160,4 +160,36 @@ describe("query/unsupported", () => {
       },
     );
   });
+
+  it("supports decorrelatable correlated scalar aggregate projections", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              SELECT
+                o.id,
+                (
+                  SELECT MAX(i.total_cents)
+                  FROM orders i
+                  WHERE i.user_id = o.user_id
+                ) AS user_max_total
+              FROM orders o
+              ORDER BY o.id ASC
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).resolves.toEqual([
+          { id: "ord_1", user_max_total: 1800 },
+          { id: "ord_2", user_max_total: 1800 },
+          { id: "ord_3", user_max_total: 2400 },
+          { id: "ord_4", user_max_total: 9900 },
+        ]);
+      },
+    );
+  });
 });

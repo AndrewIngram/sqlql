@@ -131,9 +131,11 @@ function buildFinalProject(current: RelNode, shape: PreparedSimpleSelect): RelNo
                         ...(projection.source.alias ? { alias: projection.source.alias } : {}),
                         column: projection.source.column,
                       }
-                    : projection.kind === "expr"
-                      ? { column: projection.source!.column }
-                      : { column: projection.function.as },
+                    : projection.kind === "correlated_scalar"
+                      ? { column: projection.output }
+                      : projection.kind === "expr"
+                        ? { column: projection.source!.column }
+                        : { column: projection.function.as },
               }),
           output: projection.output,
         })),

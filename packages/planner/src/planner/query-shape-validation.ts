@@ -6,6 +6,7 @@ import { isCorrelatedSubquery, parseSubqueryAst } from "./sql-expr-lowering";
 import {
   parseSupportedCorrelatedExistsSubquery,
   parseSupportedCorrelatedInSubquery,
+  parseSupportedCorrelatedScalarAggregateProjectionSubquery,
   parseSupportedCorrelatedScalarAggregateSubquery,
 } from "./subqueries/analysis";
 
@@ -157,6 +158,9 @@ function validateSupportedWindowOver(expr: Record<string, unknown>): string | nu
     normalized !== "row_number" &&
     normalized !== "rank" &&
     normalized !== "dense_rank" &&
+    normalized !== "lead" &&
+    normalized !== "lag" &&
+    normalized !== "first_value" &&
     normalized !== "count" &&
     normalized !== "sum" &&
     normalized !== "avg" &&
@@ -202,6 +206,14 @@ function findUnsupportedSubqueryShape(
   );
   if (correlatedScalarAggregate) {
     return findUnsupportedQueryShape(correlatedScalarAggregate.rewrittenSubquery, cteNames);
+  }
+
+  const correlatedScalarProjection = parseSupportedCorrelatedScalarAggregateProjectionSubquery(
+    value,
+    outerAliases,
+  );
+  if (correlatedScalarProjection) {
+    return findUnsupportedQueryShape(correlatedScalarProjection.rewrittenSubquery, cteNames);
   }
 
   const subquery = parseSubqueryAst(value);

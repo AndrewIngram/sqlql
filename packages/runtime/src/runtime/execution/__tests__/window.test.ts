@@ -213,47 +213,94 @@ describe("query/window", () => {
     );
   });
 
-  it("rejects unsupported navigation window functions", async () => {
+  it("supports bounded ROWS frames with sqlite parity", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                o.id,
-                LEAD(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS next_total,
-                LAG(o.total_cents, 1, 0) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS prev_total
-              FROM orders o
-              WHERE o.org_id = 'org_1'
-              ORDER BY o.id ASC
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Unsupported window function: LEAD");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER (
+                PARTITION BY org_id
+                ORDER BY created_at
+                ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+              ) AS bounded_total
+            FROM orders
+            WHERE org_id = 'org_1'
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", bounded_total: 1200 },
+          { id: "ord_2", bounded_total: 3000 },
+          { id: "ord_3", bounded_total: 4200 },
+        ]);
       },
     );
   });
 
-  it("rejects unsupported window functions", async () => {
+  it("supports LEAD and LAG window functions", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT FIRST_VALUE(total_cents) OVER (PARTITION BY org_id ORDER BY created_at) AS first_total
-              FROM orders
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Unsupported window function: FIRST_VALUE");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              o.id,
+              LEAD(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS next_total,
+              LAG(o.total_cents, 1, 0) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS prev_total
+            FROM orders o
+            WHERE o.org_id = 'org_1'
+            ORDER BY o.id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", next_total: 1800, prev_total: 0 },
+          { id: "ord_2", next_total: 2400, prev_total: 1200 },
+          { id: "ord_3", next_total: null, prev_total: 1800 },
+        ]);
+      },
+    );
+  });
+
+  it("supports FIRST_VALUE window functions", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              FIRST_VALUE(total_cents) OVER (PARTITION BY org_id ORDER BY created_at) AS first_total
+            FROM orders
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", first_total: 1200 },
+          { id: "ord_2", first_total: 1200 },
+          { id: "ord_3", first_total: 1200 },
+          { id: "ord_4", first_total: 9900 },
+        ]);
       },
     );
   });

@@ -102,6 +102,21 @@ export interface SupportedCorrelatedScalarAggregateRewrite {
   metricOutput: string;
 }
 
+export interface SupportedCorrelatedScalarAggregateProjectionRewrite {
+  subquery: SelectAst;
+  rewrittenSubquery: SelectAst;
+  outerKey: {
+    alias: string;
+    column: string;
+  };
+  innerKey: {
+    alias: string;
+    column: string;
+  };
+  correlationOutput: string;
+  metricOutput: string;
+}
+
 function parseExistsSubqueryAst(raw: unknown): { negated: boolean; subquery: SelectAst } | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -536,6 +551,109 @@ export function parseSupportedCorrelatedScalarAggregateSubquery(
     return null;
   }
 
+  const rewritten = buildCorrelatedScalarAggregateRewrite(
+    subquery,
+    aggregateColumn,
+    correlation,
+    remainingParts,
+  );
+  if (!rewritten) {
+    return null;
+  }
+
+  return {
+    rewrittenSubquery: rewritten.rewrittenSubquery,
+    outerCompare: {
+      alias: outerCompare.alias,
+      column: outerCompare.column,
+    },
+    outerKey: rewritten.outerKey,
+    innerKey: rewritten.innerKey,
+    operator: expr.operator,
+    correlationOutput: rewritten.correlationOutput,
+    metricOutput: rewritten.metricOutput,
+  };
+}
+
+export function parseSupportedCorrelatedScalarAggregateProjectionSubquery(
+  raw: unknown,
+  outerAliases: Set<string>,
+): SupportedCorrelatedScalarAggregateProjectionRewrite | null {
+  const subquery = parseSubqueryAst(raw);
+  if (!subquery || !isCorrelatedSubquery(subquery, outerAliases)) {
+    return null;
+  }
+
+  if (
+    subquery.groupby ||
+    subquery.having ||
+    subquery.limit ||
+    subquery.window ||
+    subquery.orderby
+  ) {
+    return null;
+  }
+  if (subquery.set_op || subquery._next || subquery.with) {
+    return null;
+  }
+
+  const columns = subquery.columns === "*" ? [] : (subquery.columns ?? []);
+  if (columns.length !== 1) {
+    return null;
+  }
+  const aggregateColumn = columns[0] as SelectColumnAst;
+  if ((aggregateColumn.expr as { type?: unknown }).type !== "aggr_func") {
+    return null;
+  }
+
+  const whereParts = flattenAndParts(subquery.where);
+  if (whereParts == null) {
+    return null;
+  }
+
+  let correlation: {
+    outer: { alias: string; column: string };
+    inner: { alias: string; column: string };
+  } | null = null;
+  const remainingParts: ExpressionAst[] = [];
+
+  for (const part of whereParts) {
+    const maybeCorrelation = parseCorrelationEquality(part, outerAliases);
+    if (maybeCorrelation) {
+      if (correlation) {
+        return null;
+      }
+      correlation = maybeCorrelation;
+      continue;
+    }
+
+    if (containsOuterAlias(part, outerAliases)) {
+      return null;
+    }
+    remainingParts.push(part);
+  }
+
+  if (!correlation) {
+    return null;
+  }
+
+  return buildCorrelatedScalarAggregateRewrite(
+    subquery,
+    aggregateColumn,
+    correlation,
+    remainingParts,
+  );
+}
+
+function buildCorrelatedScalarAggregateRewrite(
+  subquery: SelectAst,
+  aggregateColumn: SelectColumnAst,
+  correlation: {
+    outer: { alias: string; column: string };
+    inner: { alias: string; column: string };
+  },
+  remainingParts: ExpressionAst[],
+): SupportedCorrelatedScalarAggregateProjectionRewrite {
   const correlationOutput = "__tupl_scalar_corr_key";
   const metricOutput = "__tupl_scalar_metric";
   const innerColumnRef: ExpressionAst = {
@@ -546,6 +664,7 @@ export function parseSupportedCorrelatedScalarAggregateSubquery(
   const { where: _ignoredWhere, ...subqueryWithoutWhere } = subquery;
 
   return {
+    subquery,
     rewrittenSubquery:
       remainingParts.length > 0
         ? {
@@ -581,13 +700,8 @@ export function parseSupportedCorrelatedScalarAggregateSubquery(
               columns: [innerColumnRef],
             },
           },
-    outerCompare: {
-      alias: outerCompare.alias,
-      column: outerCompare.column,
-    },
     outerKey: correlation.outer,
     innerKey: correlation.inner,
-    operator: expr.operator,
     correlationOutput,
     metricOutput,
   };

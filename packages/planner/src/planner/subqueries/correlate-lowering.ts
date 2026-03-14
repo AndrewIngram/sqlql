@@ -1,7 +1,7 @@
 import type { RelNode } from "@tupl/foundation";
 
 import { nextRelId } from "../physical/planner-ids";
-import type { ParsedWhereFilters } from "../planner-types";
+import type { ParsedWhereFilters, SelectProjection } from "../planner-types";
 import type { SelectAst } from "../sqlite-parser/ast";
 
 /**
@@ -105,6 +105,52 @@ export function attachCorrelatedPredicates(
         metricColumn: scalarFilter.metricOutput,
       },
       output: current.output,
+    };
+  }
+
+  return current;
+}
+
+export function attachCorrelatedProjectionSubqueries(
+  input: RelNode,
+  projections: SelectProjection[],
+  tryLowerSelect: (ast: SelectAst) => RelNode | null,
+): RelNode | null {
+  let current = input;
+
+  for (const projection of projections) {
+    if (projection.kind !== "correlated_scalar") {
+      continue;
+    }
+
+    const subqueryRel = tryLowerSelect(projection.projection.subquery);
+    if (!subqueryRel || subqueryRel.output.length !== 2) {
+      return null;
+    }
+
+    current = {
+      id: nextRelId("correlate"),
+      kind: "correlate",
+      convention: "logical",
+      left: current,
+      right: subqueryRel,
+      correlation: {
+        outer: {
+          alias: projection.projection.outerKey.alias,
+          column: projection.projection.outerKey.column,
+        },
+        inner: {
+          alias: projection.projection.innerKey.alias,
+          column: projection.projection.innerKey.column,
+        },
+      },
+      apply: {
+        kind: "scalar_project",
+        correlationColumn: projection.projection.correlationOutput,
+        metricColumn: projection.projection.metricOutput,
+        outputColumn: projection.output,
+      },
+      output: [...current.output, { name: projection.output }],
     };
   }
 

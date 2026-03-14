@@ -47,3 +47,17 @@ export interface CorrelatedScalarAggregateFilter {
   correlationOutput: string;
   metricOutput: string;
 }
+
+export interface CorrelatedScalarAggregateProjection {
+  outerKey: {
+    alias: string;
+    column: string;
+  };
+  innerKey: {
+    alias: string;
+    column: string;
+  };
+  subquery: SelectAst;
+  correlationOutput: string;
+  metricOutput: string;
+}

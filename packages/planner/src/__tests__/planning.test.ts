@@ -1028,6 +1028,142 @@ describe("query/planning", () => {
     expect(planned.rewrittenRel.input.input.input.joinType).toBe("inner");
   });
 
+  it("lowers supported correlated scalar aggregate projections to an explicit correlate node", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+          total_cents: "integer",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT
+          o.id,
+          (
+            SELECT MAX(i.total_cents)
+            FROM orders i
+            WHERE i.user_id = o.user_id
+          ) AS user_max_total
+        FROM orders o
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("correlate");
+    if (lowered.rel.input.kind !== "correlate") {
+      throw new Error("Expected correlate input.");
+    }
+    expect(lowered.rel.input.apply).toEqual({
+      kind: "scalar_project",
+      correlationColumn: "__tupl_scalar_corr_key",
+      metricColumn: "__tupl_scalar_metric",
+      outputColumn: "user_max_total",
+    });
+  });
+
+  it("lowers supported correlated scalar aggregate projections to left join plus project after rewrite", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+          total_cents: "integer",
+        },
+      },
+    });
+
+    const planned = buildLogicalQueryPlan(
+      `
+        SELECT
+          o.id,
+          (
+            SELECT MAX(i.total_cents)
+            FROM orders i
+            WHERE i.user_id = o.user_id
+          ) AS user_max_total
+        FROM orders o
+      `,
+      schema,
+    );
+
+    expect(planned.rewrittenRel.kind).toBe("project");
+    if (planned.rewrittenRel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(planned.rewrittenRel.input.kind).toBe("project");
+    if (planned.rewrittenRel.input.kind !== "project") {
+      throw new Error("Expected scalar projection cleanup project.");
+    }
+    expect(planned.rewrittenRel.input.input.kind).toBe("join");
+    if (planned.rewrittenRel.input.input.kind !== "join") {
+      throw new Error("Expected left join input.");
+    }
+    expect(planned.rewrittenRel.input.input.joinType).toBe("left");
+  });
+
+  it("lowers navigation and bounded-frame window projections to a window rel node", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          org_id: "text",
+          total_cents: "integer",
+          created_at: "text",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT
+          id,
+          LEAD(total_cents) OVER (PARTITION BY org_id ORDER BY created_at) AS next_total,
+          FIRST_VALUE(total_cents) OVER (
+            PARTITION BY org_id
+            ORDER BY created_at
+            ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+          ) AS first_total
+        FROM orders
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("window");
+    if (lowered.rel.input.kind !== "window") {
+      throw new Error("Expected window input.");
+    }
+    expect(lowered.rel.input.functions).toMatchObject([
+      {
+        fn: "lead",
+        as: "next_total",
+      },
+      {
+        fn: "first_value",
+        as: "first_total",
+        frame: {
+          mode: "rows",
+          start: { kind: "preceding", offset: 1 },
+          end: { kind: "current_row" },
+        },
+      },
+    ]);
+  });
+
   it("lowers UNION ALL to structured set_op rel", () => {
     const schema = buildEntitySchema({
       a: {

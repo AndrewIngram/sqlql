@@ -178,6 +178,41 @@ function decorrelateCorrelateNode(node: Extract<RelNode, { kind: "correlate" }>)
 
       return projectToOutputShape(filtered, left.output);
     }
+    case "scalar_project": {
+      const joined = {
+        id: nextRelId("join"),
+        kind: "join" as const,
+        convention: "local" as const,
+        joinType: "left" as const,
+        left,
+        right,
+        leftKey: node.correlation.outer,
+        rightKey: parseRelColumnRef(node.apply.correlationColumn),
+        output: [...left.output, ...right.output],
+      };
+
+      return {
+        id: nextRelId("project"),
+        kind: "project",
+        convention: "local",
+        input: joined,
+        columns: [
+          ...left.output.map((column) => ({
+            kind: "column" as const,
+            source: parseRelColumnRef(column.name),
+            output: column.name,
+          })),
+          {
+            kind: "column" as const,
+            source: {
+              column: node.apply.metricColumn,
+            },
+            output: node.apply.outputColumn,
+          },
+        ],
+        output: [...left.output, { name: node.apply.outputColumn }],
+      };
+    }
   }
 }
 

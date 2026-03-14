@@ -22,6 +22,7 @@ export {
 } from "./windows/window-specifications";
 export {
   mapBinaryOperatorToRelFunction,
+  readWindowFunctionArgs,
   readWindowFunctionName,
   supportsRankWindowArgs,
 } from "./expr/expr-functions";

@@ -45,6 +45,32 @@ const cases: ComplianceCase[] = [
       ORDER BY o.id ASC
     `,
   },
+  {
+    name: "bounded ROWS frame",
+    sql: `
+      SELECT
+        o.id,
+        SUM(o.total_cents) OVER (
+          PARTITION BY o.org_id
+          ORDER BY o.created_at ASC
+          ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+        ) AS bounded_total
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+  },
+  {
+    name: "navigation functions LEAD/LAG/FIRST_VALUE",
+    sql: `
+      SELECT
+        o.id,
+        LEAD(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS next_total,
+        LAG(o.total_cents, 1, 0) OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS prev_total,
+        FIRST_VALUE(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at ASC) AS first_total
+      FROM orders o
+      ORDER BY o.id ASC
+    `,
+  },
 ];
 
 registerParityCases(
