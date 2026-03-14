@@ -108,6 +108,33 @@ describe("query/unsupported", () => {
     );
   });
 
+  it("supports decorrelatable correlated NOT IN subqueries", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              SELECT o.id
+              FROM orders o
+              WHERE o.user_id NOT IN (
+                SELECT u.id
+                FROM users u
+                WHERE u.team_id = 'team_smb'
+                  AND u.id = o.user_id
+              )
+              ORDER BY o.id ASC
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).resolves.toEqual([{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_4" }]);
+      },
+    );
+  });
+
   it("supports decorrelatable correlated scalar aggregate predicates", async () => {
     await withQueryHarness(
       {

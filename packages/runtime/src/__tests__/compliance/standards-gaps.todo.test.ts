@@ -7,19 +7,6 @@ interface StandardsGapCase {
 
 const gapCases: StandardsGapCase[] = [
   {
-    name: "correlated NOT IN subquery in WHERE",
-    sql: `
-      SELECT o.id
-      FROM orders o
-      WHERE o.user_id NOT IN (
-        SELECT u.id
-        FROM users u
-        WHERE u.team_id = 'team_smb'
-          AND u.id = o.user_id
-      )
-    `,
-  },
-  {
     name: "correlated scalar subquery in SELECT",
     sql: `
       SELECT

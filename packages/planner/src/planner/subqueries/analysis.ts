@@ -70,6 +70,7 @@ export interface SupportedCorrelatedExistsRewrite {
 }
 
 export interface SupportedCorrelatedInRewrite {
+  negated: boolean;
   subquery: SelectAst;
   rewrittenSubquery: SelectAst;
   outer: {
@@ -362,9 +363,10 @@ export function parseSupportedCorrelatedInSubquery(
     left?: unknown;
     right?: unknown;
   };
-  if (expr.type !== "binary_expr" || expr.operator !== "IN") {
+  if (expr.type !== "binary_expr" || (expr.operator !== "IN" && expr.operator !== "NOT IN")) {
     return null;
   }
+  const negated = expr.operator === "NOT IN";
 
   const outer = readColumnRef(expr.left);
   const subquery = parseSubqueryAst(expr.right);
@@ -432,6 +434,7 @@ export function parseSupportedCorrelatedInSubquery(
   const { where: _ignoredWhere, ...subqueryWithoutWhere } = subquery;
 
   return {
+    negated,
     subquery,
     rewrittenSubquery:
       remainingParts.length > 0

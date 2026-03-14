@@ -844,6 +844,104 @@ describe("query/planning", () => {
     });
   });
 
+  it("lowers supported correlated NOT IN to an explicit correlate node", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          team_id: "text",
+        },
+      },
+    });
+
+    const lowered = lowerSqlToRel(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE o.user_id NOT IN (
+          SELECT u.id
+          FROM users u
+          WHERE u.team_id = 'team_smb'
+            AND u.id = o.user_id
+        )
+      `,
+      schema,
+    );
+
+    expect(lowered.rel.kind).toBe("project");
+    if (lowered.rel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(lowered.rel.input.kind).toBe("correlate");
+    if (lowered.rel.input.kind !== "correlate") {
+      throw new Error("Expected correlate input.");
+    }
+    expect(lowered.rel.input.apply).toEqual({ kind: "anti" });
+    expect(lowered.rel.input.correlation).toEqual({
+      outer: { alias: "o", column: "user_id" },
+      inner: { alias: "u", column: "id" },
+    });
+  });
+
+  it("lowers supported correlated NOT IN to anti-join rewrite shape", () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          user_id: "text",
+        },
+      },
+      users: {
+        provider: "warehouse",
+        columns: {
+          id: "text",
+          team_id: "text",
+        },
+      },
+    });
+
+    const planned = buildLogicalQueryPlan(
+      `
+        SELECT o.id
+        FROM orders o
+        WHERE o.user_id NOT IN (
+          SELECT u.id
+          FROM users u
+          WHERE u.team_id = 'team_smb'
+            AND u.id = o.user_id
+        )
+      `,
+      schema,
+    );
+
+    expect(planned.rewrittenRel.kind).toBe("project");
+    if (planned.rewrittenRel.kind !== "project") {
+      throw new Error("Expected project root.");
+    }
+    expect(planned.rewrittenRel.input.kind).toBe("project");
+    if (planned.rewrittenRel.input.kind !== "project") {
+      throw new Error("Expected cleanup project after anti-join emulation.");
+    }
+    expect(planned.rewrittenRel.input.input.kind).toBe("filter");
+    if (planned.rewrittenRel.input.input.kind !== "filter") {
+      throw new Error("Expected is-null filter above left join.");
+    }
+    expect(planned.rewrittenRel.input.input.input.kind).toBe("join");
+    if (planned.rewrittenRel.input.input.input.kind !== "join") {
+      throw new Error("Expected left join input.");
+    }
+    expect(planned.rewrittenRel.input.input.input.joinType).toBe("left");
+  });
+
   it("lowers supported correlated scalar aggregate predicates to an explicit correlate node", () => {
     const schema = buildEntitySchema({
       orders: {

@@ -37,7 +37,7 @@ export function attachCorrelatedPredicates(
         },
       },
       apply: {
-        kind: "semi",
+        kind: inFilter.negated ? "anti" : "semi",
       },
       output: current.output,
     };

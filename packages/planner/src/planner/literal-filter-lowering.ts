@@ -73,6 +73,7 @@ export function parseWhereFilters(
     const correlatedIn = parseSupportedCorrelatedInSubquery(part, outerAliases);
     if (correlatedIn) {
       correlatedInSubqueries.push({
+        negated: correlatedIn.negated,
         outer: correlatedIn.outer,
         inner: correlatedIn.inner,
         subquery: correlatedIn.rewrittenSubquery,

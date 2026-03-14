@@ -17,6 +17,7 @@ export interface CorrelatedExistsFilter {
 }
 
 export interface CorrelatedInSubqueryFilter {
+  negated: boolean;
   outer: {
     alias: string;
     column: string;

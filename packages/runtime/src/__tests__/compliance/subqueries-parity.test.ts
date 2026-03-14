@@ -76,6 +76,21 @@ const cases: ComplianceCase[] = [
     expectedRows: [{ id: "ord_3" }],
   },
   {
+    name: "correlated NOT IN subquery",
+    sql: `
+      SELECT o.id
+      FROM orders o
+      WHERE o.user_id NOT IN (
+        SELECT u.id
+        FROM users u
+        WHERE u.team_id = 'team_smb'
+          AND u.id = o.user_id
+      )
+      ORDER BY o.id ASC
+    `,
+    expectedRows: [{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_4" }],
+  },
+  {
     name: "correlated scalar aggregate in WHERE",
     sql: `
       SELECT o.id
