@@ -190,7 +190,6 @@ describe("simple scan request extraction", () => {
     expect(Result.isError(capability)).toBe(true);
     expect(Result.isError(capability) ? capability.error : null).toMatchObject({
       supported: false,
-      routeFamily: "scan",
       reason: "Unsupported filter clause for users: email eq",
     });
   });

@@ -731,7 +731,6 @@ describe("drizzle adapter", () => {
     expect(provider.canExecute(unknownScan, {})).toEqual(
       expect.objectContaining({
         supported: false,
-        routeFamily: "scan",
       }),
     );
   });

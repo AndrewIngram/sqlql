@@ -110,9 +110,6 @@ export function buildCapabilityDiagnostics<TContext>(
     provider: provider.name,
     relKind: rel.kind,
   };
-  if (report.routeFamily) {
-    details.routeFamily = report.routeFamily;
-  }
   if (report.estimatedRows != null) {
     details.estimatedRows = report.estimatedRows;
   }

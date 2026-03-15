@@ -265,8 +265,8 @@ describe("query/provider runtime", () => {
       resolveRelCompileStrategy() {
         return null;
       },
-      unsupportedRelReason(args) {
-        return buildCapabilityReport(args.rel, "Rel fragment is not supported for this provider.");
+      unsupportedRelReason() {
+        return buildCapabilityReport("Rel fragment is not supported for this provider.");
       },
       async compileRelFragment() {
         return Result.ok({
@@ -312,16 +312,14 @@ describe("query/provider runtime", () => {
 
     expect(capability).toEqual({
       supported: false,
-      routeFamily: "rel-core",
       reason: "Rel fragment is not supported for this provider.",
     });
   });
 
-  it("passes route family into supported relational capability checks", async () => {
-    const observed: {
-      routeFamily: string;
+  it("passes strategy into supported relational capability checks", async () => {
+    const observed: Array<{
       strategy: string | null;
-    }[] = [];
+    }> = [];
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
       entities: {
@@ -332,7 +330,6 @@ describe("query/provider runtime", () => {
       },
       isRelStrategySupported(args) {
         observed.push({
-          routeFamily: args.routeFamily,
           strategy: args.strategy,
         });
         return true;
@@ -382,7 +379,6 @@ describe("query/provider runtime", () => {
     expect(capability).toBe(true);
     expect(observed).toEqual([
       {
-        routeFamily: "rel-core",
         strategy: "basic",
       },
     ]);
@@ -431,7 +427,6 @@ describe("query/provider runtime", () => {
     ).toEqual(
       expect.objectContaining({
         supported: false,
-        routeFamily: "scan",
       }),
     );
   });

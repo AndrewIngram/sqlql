@@ -66,9 +66,9 @@ These providers usually rely on strategy-based relational helpers instead of nar
 
 Unsupported or expensive shapes should be reported with:
 
-- route family
 - stable `SQLQL_*` diagnostic code
 - SQLSTATE-like class
+- concrete reason tied to the rel shape or field policy
 
 Fallback policy decides whether those diagnostics are:
 

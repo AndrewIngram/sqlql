@@ -136,7 +136,9 @@ describe("ioredis adapter", () => {
       throw new Error("Expected a capability report for unconstrained scans.");
     }
     expect(scanCapability.supported).toBe(false);
-    expect(scanCapability.routeFamily).toBe("lookup");
+    expect(scanCapability.reason).toBe(
+      "Provider requires an equality or IN predicate on product_view_counts.product_id.",
+    );
   });
 
   it("resolves lookupMany against Redis hashes with residual filtering and projection", async () => {

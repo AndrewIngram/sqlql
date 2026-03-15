@@ -1,5 +1,5 @@
 import type { RelNode } from "@tupl/foundation";
-import { inferRouteFamilyForRel, type ProviderCapabilityReport } from "../capabilities";
+import type { ProviderCapabilityReport } from "../capabilities";
 import type { MaybePromise } from "../operations";
 import type {
   RelationalProviderAdapterOptions,
@@ -36,7 +36,6 @@ export async function resolveRelationalCapabilityContext<
   rel: RelNode,
   context: TContext,
 ): Promise<RelationalProviderCapabilityContext<TContext, TEntities, TStrategy>> {
-  const routeFamily = inferRouteFamilyForRel(rel);
   const strategy = await options.resolveRelCompileStrategy({
     context,
     entities: options.entities,
@@ -46,7 +45,6 @@ export async function resolveRelationalCapabilityContext<
     context,
     entities: options.entities,
     rel,
-    routeFamily,
     strategy,
   };
 
@@ -62,7 +60,6 @@ function evaluateRelationalCapability<
   rel: RelNode,
   context: TContext,
 ): MaybePromise<boolean | ProviderCapabilityReport> {
-  const routeFamily = inferRouteFamilyForRel(rel);
   const strategy = options.resolveRelCompileStrategy({
     context,
     entities: options.entities,
@@ -74,7 +71,6 @@ function evaluateRelationalCapability<
         context,
         entities: options.entities,
         rel,
-        routeFamily,
         strategy: resolvedStrategy,
       }),
     );
@@ -84,7 +80,6 @@ function evaluateRelationalCapability<
     context,
     entities: options.entities,
     rel,
-    routeFamily,
     strategy,
   });
 }
@@ -107,7 +102,6 @@ function evaluateRelationalCapabilityWithContext<
     }
     return {
       supported: false,
-      routeFamily: capabilityContext.routeFamily,
       reason: unsupported,
     };
   }
@@ -135,7 +129,6 @@ function normalizeCapabilitySupport<
   if (typeof support === "string") {
     return {
       supported: false,
-      routeFamily: capabilityContext.routeFamily,
       reason: support,
     };
   }

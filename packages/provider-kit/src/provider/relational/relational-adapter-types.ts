@@ -10,11 +10,7 @@ import type {
   LookupManyCapableProviderAdapter,
   ProviderLookupManyRequest,
 } from "../shapes/lookup-optimization";
-import type {
-  ProviderCapabilityReport,
-  ProviderRouteFamily,
-  QueryFallbackPolicy,
-} from "../capabilities";
+import type { ProviderCapabilityReport, QueryFallbackPolicy } from "../capabilities";
 import type { AdapterResult, MaybePromise } from "../operations";
 
 /**
@@ -36,7 +32,6 @@ export interface RelationalProviderCapabilityContext<
   context: TContext;
   entities: TEntities;
   rel: RelNode;
-  routeFamily: ProviderRouteFamily;
   strategy: TStrategy | null;
 }
 

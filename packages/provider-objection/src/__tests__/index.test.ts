@@ -557,7 +557,6 @@ describe("objection adapter", () => {
     expect(result).toEqual(
       expect.objectContaining({
         supported: false,
-        routeFamily: "rel-advanced",
         reason: "Rel fragment is not supported for single-query Objection pushdown.",
       }),
     );

@@ -12,22 +12,11 @@ import {
 
 describe("lookup provider core", () => {
   it("builds a standard unsupported report for non-lookup fragments", () => {
-    const rel: RelNode = {
-      id: "redis:product_view_counts",
-      kind: "scan",
-      convention: "provider:redisProvider",
-      table: "product_view_counts",
-      select: ["product_id", "view_count"],
-      output: [{ name: "product_id" }, { name: "view_count" }],
-    };
-
     const report = buildLookupOnlyUnsupportedReport(
-      rel,
       "Lookup-only providers do not support scan pushdown.",
     );
 
     expect(report.supported).toBe(false);
-    expect(report.routeFamily).toBe("lookup");
     expect(report.reason).toBe("Lookup-only providers do not support scan pushdown.");
   });
 
@@ -123,7 +112,6 @@ describe("lookup provider core", () => {
     expect(Result.isError(prepared)).toBe(true);
     expect(Result.isError(prepared) ? prepared.error : null).toMatchObject({
       supported: false,
-      routeFamily: "scan",
       reason: "Provider requires an equality or IN predicate on product_view_counts.product_id.",
     });
   });

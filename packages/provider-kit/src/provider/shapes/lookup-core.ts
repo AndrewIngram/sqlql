@@ -31,11 +31,8 @@ export interface KeyedSimpleRelScanOptions<TColumn extends string = string> {
   unsupportedShapeReason?: string;
 }
 
-export function buildLookupOnlyUnsupportedReport(
-  rel: RelNode,
-  reason: string,
-): ProviderCapabilityReport {
-  return buildCapabilityReport(rel, reason, { routeFamily: "lookup" });
+export function buildLookupOnlyUnsupportedReport(reason: string): ProviderCapabilityReport {
+  return buildCapabilityReport(reason);
 }
 
 export function validateLookupRequest<TColumns extends string>(
@@ -80,7 +77,6 @@ export function prepareKeyedSimpleRelScan<TColumn extends string = string>(
   if (keys === null) {
     return Result.err(
       buildCapabilityReport(
-        rel,
         `Provider requires an equality or IN predicate on ${request.table}.${options.entity.lookupKey}.`,
       ),
     );
@@ -95,7 +91,7 @@ export function prepareKeyedSimpleRelScan<TColumn extends string = string>(
   } satisfies ProviderLookupManyRequest;
   const validation = validateLookupRequest(lookupRequest, options.entity);
   if (Result.isError(validation)) {
-    return Result.err(buildCapabilityReport(rel, validation.error.message));
+    return Result.err(buildCapabilityReport(validation.error.message));
   }
 
   return Result.ok({

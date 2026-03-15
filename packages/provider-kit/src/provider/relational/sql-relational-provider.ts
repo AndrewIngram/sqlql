@@ -5,11 +5,7 @@ import {
   type RelNode,
 } from "@tupl/foundation";
 
-import type {
-  ProviderCapabilityReport,
-  ProviderRouteFamily,
-  QueryFallbackPolicy,
-} from "../capabilities";
+import type { ProviderCapabilityReport, QueryFallbackPolicy } from "../capabilities";
 import type { TableScanRequest } from "../contracts";
 import type { DataEntityColumnMap } from "../entity-handles";
 import type { ProviderLookupManyRequest } from "../shapes/lookup-optimization";
@@ -234,7 +230,6 @@ export interface SqlRelationalSupportArgs<
   entities: TEntities;
   resolvedEntities: Record<string, TResolvedEntity>;
   rel: RelNode;
-  routeFamily: ProviderRouteFamily;
   strategy: SqlRelationalCompileStrategy | null;
   runtime: TRuntime;
 }
@@ -552,12 +547,10 @@ export function createSqlRelationalProviderAdapter<
             context: TContext;
             entities: TEntities;
             rel: RelNode;
-            routeFamily: ProviderRouteFamily;
             strategy: SqlRelationalCompileStrategy | null;
           }) {
             const toUnsupported = (error: unknown) => ({
               supported: false as const,
-              routeFamily: args.routeFamily,
               reason: error instanceof Error ? error.message : String(error),
             });
 
@@ -571,7 +564,6 @@ export function createSqlRelationalProviderAdapter<
                       entities: options.entities,
                       resolvedEntities,
                       rel: args.rel,
-                      routeFamily: args.routeFamily,
                       strategy: args.strategy as SqlRelationalCompileStrategy | null,
                       runtime: resolvedRuntime,
                     }),
@@ -584,7 +576,6 @@ export function createSqlRelationalProviderAdapter<
                 entities: options.entities,
                 resolvedEntities,
                 rel: args.rel,
-                routeFamily: args.routeFamily,
                 strategy: args.strategy as SqlRelationalCompileStrategy | null,
                 runtime,
               });

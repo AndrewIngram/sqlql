@@ -133,8 +133,8 @@ function isValidRedis(redis: RedisLike | null | undefined): redis is RedisLike {
   return Boolean(redis && typeof redis.pipeline === "function");
 }
 
-function buildUnsupportedCapabilityReport(rel: RelNode, reason: string): ProviderCapabilityReport {
-  return buildCapabilityReport(rel, reason, { routeFamily: "lookup" });
+function buildUnsupportedCapabilityReport(reason: string): ProviderCapabilityReport {
+  return buildCapabilityReport(reason);
 }
 
 function resolveRedisResult<TContext>(
@@ -449,7 +449,7 @@ export function createIoredisProvider<
     canExecute(rel) {
       const payload = buildRelExecutionPayload(rel, entitiesByName, providerName);
       return AdapterResult.isError(payload)
-        ? buildUnsupportedCapabilityReport(rel, payload.error.message)
+        ? buildUnsupportedCapabilityReport(payload.error.message)
         : true;
     },
     async compile(rel) {

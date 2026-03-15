@@ -146,7 +146,6 @@ export function checkSimpleRelScanCapability<TColumn extends string = string>(
   if (!request) {
     return Result.err(
       buildCapabilityReport(
-        rel,
         options.unsupportedShapeReason ??
           "Provider only supports simple single-source scan pipelines.",
       ),
@@ -161,7 +160,6 @@ export function checkSimpleRelScanCapability<TColumn extends string = string>(
   if (Result.isError(validation)) {
     return Result.err(
       buildCapabilityReport(
-        rel,
         options.mapValidationError?.(validation.error, request) ?? validation.error.message,
       ),
     );
