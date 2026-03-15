@@ -12,7 +12,10 @@ import {
 } from "./view-aliases";
 
 /**
- * View node rewriting owns alias-aware recursive rewriting of non-scan relational nodes.
+ * View node rewriting owns alias-aware recursive rewriting of non-scan relational nodes after
+ * view scans have been expanded. Its job is to preserve logical column semantics across the
+ * lowered subtree; it intentionally does not perform planner validation or physical ownership
+ * decisions.
  */
 export function rewriteExpandedViewNode<TContext>(
   node: Exclude<RelNode, { kind: "scan" | "values" | "cte_ref" }>,

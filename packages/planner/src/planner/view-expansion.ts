@@ -8,7 +8,9 @@ import { rewriteExpandedViewNode } from "./views/view-node-rewriting";
 import { expandViewScanNode } from "./views/view-scan-expansion";
 
 /**
- * View expansion owns planner-side lowering of normalized view bindings into ordinary RelNode trees.
+ * View expansion is the planner rewrite boundary where normalized facade views stop existing as
+ * bindings and become ordinary rel subtrees. Execution should never need to understand view
+ * bindings directly once this pass has run.
  */
 export function expandRelViewsResult<TContext>(
   rel: RelNode,

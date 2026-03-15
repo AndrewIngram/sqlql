@@ -23,6 +23,11 @@ export interface ProviderSupportAnalysis {
   byNodeId: Map<string, ProviderSupportDecision>;
 }
 
+/**
+ * Provider support analysis owns bottom-up support discovery for physical planning. It memoizes
+ * one support decision per rel node so fragment cutting can stay maximal-first without repeatedly
+ * probing broad unsupported parents.
+ */
 export async function analyzeProviderSupportResult<TContext>(
   node: RelNode,
   schema: SchemaDefinition,
@@ -90,6 +95,10 @@ export function getProviderSupportDecision(
   return analysis.byNodeId.get(node.id) ?? null;
 }
 
+/**
+ * Child order here is semantic, not scheduler-related: support is discovered bottom-up so every
+ * parent decision sees already-resolved child support state.
+ */
 function getSupportAnalysisChildren(node: RelNode): RelNode[] {
   switch (node.kind) {
     case "values":

@@ -43,6 +43,12 @@ export function resolveScanProviderName(
   return providerNameResult.value;
 }
 
+/**
+ * Single-provider resolution is intentionally conservative. It answers only the ownership
+ * question needed by physical planning: "could one provider own this whole subtree under the
+ * current local/runtime barriers?" It does not imply the subtree is executable; capability checks
+ * happen later against the provider adapter.
+ */
 export function resolveSingleProvider(node: RelNode, schema: SchemaDefinition): string | null {
   const providers = new Set<string>();
 

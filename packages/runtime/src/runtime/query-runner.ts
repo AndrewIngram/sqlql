@@ -23,6 +23,12 @@ import {
   withTimeoutResult,
 } from "./provider/provider-execution";
 
+/**
+ * Query runner owns the honest runtime boundary: SQL enters here together with a prepared runtime
+ * schema artifact whose schema finalization, linked-enum resolution, and provider validation have
+ * already happened. This module is responsible for planning, fallback policy, and execution/explain
+ * orchestration, not for mutating schema state on demand.
+ */
 export async function queryInternalResult<TContext>(
   input: QueryInput<TContext>,
 ): Promise<BetterResult<QueryRow[], TuplError>> {
