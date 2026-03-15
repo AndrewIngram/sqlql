@@ -1,16 +1,17 @@
-import type { QueryRow, ScanFilterClause } from "@tupl/provider-kit";
+import type { QueryRow, ProviderOperationResult, ScanFilterClause } from "@tupl/provider-kit";
+import type { TuplProviderBindingError } from "@tupl/foundation";
 import type { ProviderLookupManyRequest } from "@tupl/provider-kit/shapes";
 
 import type { CreateDrizzleProviderOptions } from "../types";
 import type { DrizzleQueryExecutor } from "../types";
-import { executeScan } from "./scan-execution";
+import { executeScanResult } from "./scan-execution";
 
-export async function executeLookupMany<TContext>(
+export async function executeLookupManyResult<TContext>(
   db: DrizzleQueryExecutor,
   options: CreateDrizzleProviderOptions<TContext>,
   request: ProviderLookupManyRequest,
   context: TContext,
-): Promise<QueryRow[]> {
+): Promise<ProviderOperationResult<QueryRow[], TuplProviderBindingError>> {
   const where: ScanFilterClause[] = [
     ...(request.where ?? []),
     {
@@ -20,7 +21,7 @@ export async function executeLookupMany<TContext>(
     } as ScanFilterClause,
   ];
 
-  return executeScan(
+  return executeScanResult(
     db,
     options,
     {

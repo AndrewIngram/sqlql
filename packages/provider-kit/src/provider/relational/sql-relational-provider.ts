@@ -1,5 +1,6 @@
 import {
   isRelProjectColumnMapping,
+  TuplExecutionError,
   type QueryRow,
   type RelExpr,
   type RelNode,
@@ -313,9 +314,6 @@ interface SqlRelationalProviderOptionsBase<
   isStrategySupported?(
     args: SqlRelationalSupportArgs<TContext, TEntities, TResolvedEntity, TRuntime>,
   ): MaybePromise<true | string | ProviderCapabilityReport>;
-  executeScan(
-    args: SqlRelationalScanArgs<TContext, TEntities, TResolvedEntity, TRuntime>,
-  ): Promise<QueryRow[]>;
 }
 
 interface SqlRelationalCompileHelpers<
@@ -626,7 +624,10 @@ export function createSqlRelationalProviderAdapter<
               return options.queryBackend.executeQuery({ query, context, runtime });
             }
             default:
-              throw new Error(`Unsupported ${options.name} compiled plan kind: ${plan.kind}`);
+              throw new TuplExecutionError({
+                operation: "execute provider compiled plan",
+                message: `Unsupported ${options.name} compiled plan kind: ${plan.kind}`,
+              });
           }
         },
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),

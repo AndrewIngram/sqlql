@@ -1,12 +1,10 @@
 import {
-  AdapterResult,
   createSqlRelationalProviderAdapter,
   type FragmentProviderAdapter,
 } from "@tupl/provider-kit";
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
-import { executeLookupMany } from "./execution/lookup-execution";
-import { executeScan } from "./execution/scan-execution";
+import { executeLookupManyResult } from "./execution/lookup-execution";
 import {
   resolveDrizzleDbMaybeSync,
   inferDrizzleDialect,
@@ -84,9 +82,6 @@ export function createDrizzleProvider<
         return executeDrizzleRelSingleQuery(query.rel, query.strategy, options, context, runtime);
       },
     },
-    async executeScan({ request, context, runtime }) {
-      return executeScan(runtime, options, request, context);
-    },
     resolveEntityColumns({ config }) {
       return deriveEntityColumnsFromTable(config.table);
     },
@@ -102,10 +97,7 @@ export function createDrizzleProvider<
         : `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`;
     },
     async lookupMany({ request, context, runtime }) {
-      return AdapterResult.tryPromise({
-        try: () => executeLookupMany(runtime, options, request, context),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
+      return executeLookupManyResult(runtime, options, request, context);
     },
   }) as FragmentProviderAdapter<TContext> &
     LookupManyCapableProviderAdapter<TContext> & {

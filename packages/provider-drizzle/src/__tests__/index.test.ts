@@ -1029,19 +1029,22 @@ describe("drizzle adapter", () => {
     expect(tokens).toContain("u1");
     expect(tokens).toContain("u3");
 
-    await expect(
-      Promise.resolve(
-        lookupMany(
-          {
-            table: "missing",
-            key: "id",
-            keys: ["u1"],
-            select: ["id"],
-          },
-          {},
-        ),
-      ).then((result) => result.unwrap()),
-    ).rejects.toThrow("Unknown drizzle table config: missing");
+    const missingLookup = await lookupMany(
+      {
+        table: "missing",
+        key: "id",
+        keys: ["u1"],
+        select: ["id"],
+      },
+      {},
+    );
+    expect(Result.isError(missingLookup)).toBe(true);
+    expect(Result.isError(missingLookup) ? missingLookup.error : null).toMatchObject({
+      _tag: "TuplProviderBindingError",
+      provider: "drizzle",
+      table: "missing",
+      message: "Unknown drizzle table config: missing",
+    });
   });
 
   it("infers dialect from table metadata and rejects mixed dialect providers", () => {

@@ -1,9 +1,15 @@
-import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/provider-kit";
+import type {
+  ProviderOperationResult,
+  QueryRow,
+  ScanFilterClause,
+  TableScanRequest,
+} from "@tupl/provider-kit";
+import type { TuplProviderBindingError } from "@tupl/foundation";
 
 import type { KnexLike, ResolvedEntityConfig } from "../types";
-import { executeScan } from "./scan-execution";
+import { executeScanResult } from "./scan-execution";
 
-export async function executeLookupMany<TContext>(
+export async function executeLookupManyResult<TContext>(
   knex: KnexLike,
   entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
   request: {
@@ -14,7 +20,7 @@ export async function executeLookupMany<TContext>(
     where?: ScanFilterClause[];
   },
   context: TContext,
-): Promise<QueryRow[]> {
+): Promise<ProviderOperationResult<QueryRow[], TuplProviderBindingError>> {
   const scanRequest: TableScanRequest = {
     table: request.table,
     select: request.select,
@@ -28,5 +34,5 @@ export async function executeLookupMany<TContext>(
     ],
   };
 
-  return executeScan(knex, entityConfigs, scanRequest, context);
+  return executeScanResult(knex, entityConfigs, scanRequest, context);
 }

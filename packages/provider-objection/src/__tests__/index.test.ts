@@ -426,6 +426,23 @@ describe("objection adapter", () => {
 
     expect(calls.baseContexts).toEqual(["org_1", "org_1"]);
     expect(calls.whereIn.some((entry) => String(entry[0]) === "orders.id")).toBe(true);
+
+    const missingLookup = await provider.lookupMany(
+      {
+        table: "missing",
+        key: "id",
+        keys: ["o1"],
+        select: ["id"],
+      },
+      scanContext,
+    );
+    expect(Result.isError(missingLookup)).toBe(true);
+    expect(Result.isError(missingLookup) ? missingLookup.error : null).toMatchObject({
+      _tag: "TuplProviderBindingError",
+      provider: "objection",
+      table: "missing",
+      message: "Unknown Objection entity config: missing",
+    });
   });
 
   it("fails clearly when a context-resolved knex binding is missing at runtime", async () => {

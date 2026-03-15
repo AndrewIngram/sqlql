@@ -455,6 +455,23 @@ describe("kysely adapter", () => {
     expect(whereColumns).toContain("orders_raw.org_id");
     expect(whereColumns).toContain("orders_raw.user_id");
     expect(whereColumns).toContain("orders_raw.id");
+
+    const missingLookup = await provider.lookupMany(
+      {
+        table: "missing",
+        key: "id",
+        keys: ["o1"],
+        select: ["id"],
+      },
+      scanContext,
+    );
+    expect(Result.isError(missingLookup)).toBe(true);
+    expect(Result.isError(missingLookup) ? missingLookup.error : null).toMatchObject({
+      _tag: "TuplProviderBindingError",
+      provider: "kysely",
+      table: "missing",
+      message: "Unknown Kysely entity config: missing",
+    });
   });
 
   it("fails clearly when a context-resolved db binding is missing at runtime", async () => {

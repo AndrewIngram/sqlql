@@ -1,18 +1,30 @@
-import type { QueryRow, TableScanRequest } from "@tupl/provider-kit";
+import { TuplProviderBindingError } from "@tupl/foundation";
+import {
+  AdapterResult,
+  type ProviderOperationResult,
+  type QueryRow,
+  type TableScanRequest,
+} from "@tupl/provider-kit";
 
 import { applyWhereClause, createBaseQuery, executeQuery } from "../backend/query-helpers";
 import type { ResolvedEntityConfig } from "../types";
 import type { ScanBinding } from "../planning/rel-strategy";
 
-export async function executeScan<TContext>(
+export async function executeScanResult<TContext>(
   knex: import("../types").KnexLike,
   entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
   request: TableScanRequest,
   context: TContext,
-): Promise<QueryRow[]> {
+): Promise<ProviderOperationResult<QueryRow[], TuplProviderBindingError>> {
   const binding = entityConfigs[request.table];
   if (!binding) {
-    throw new Error(`Unknown Objection entity config: ${request.table}`);
+    return AdapterResult.err(
+      new TuplProviderBindingError({
+        provider: "objection",
+        table: request.table,
+        message: `Unknown Objection entity config: ${request.table}`,
+      }),
+    );
   }
 
   const alias = request.alias ?? binding.table;
@@ -60,5 +72,14 @@ export async function executeScan<TContext>(
     query = query.select({ [column]: `${request.alias ?? binding.table}.${column}` });
   }
 
-  return executeQuery(query);
+  return AdapterResult.ok(await executeQuery(query));
+}
+
+export async function executeScan<TContext>(
+  knex: import("../types").KnexLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  request: TableScanRequest,
+  context: TContext,
+): Promise<QueryRow[]> {
+  return (await executeScanResult(knex, entityConfigs, request, context)).unwrap();
 }

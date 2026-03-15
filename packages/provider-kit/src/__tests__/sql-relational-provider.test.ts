@@ -184,9 +184,6 @@ function createFakeProvider() {
     resolveRuntime() {
       return {};
     },
-    async executeScan({ request }) {
-      return request.select.map((column) => ({ [column]: column }));
-    },
   });
 }
 
@@ -226,9 +223,6 @@ describe("sql relational provider factory", () => {
       },
       resolveRuntime() {
         return {};
-      },
-      async executeScan() {
-        return [];
       },
     });
 

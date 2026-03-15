@@ -1,12 +1,10 @@
 import {
-  AdapterResult,
   createSqlRelationalProviderAdapter,
   type FragmentProviderAdapter,
 } from "@tupl/provider-kit";
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
-import { executeLookupMany } from "./execution/lookup-execution";
-import { executeScan } from "./execution/scan-execution";
+import { executeLookupManyResult } from "./execution/lookup-execution";
 import { buildObjectionRelBuilderForStrategy } from "./planning/rel-builder";
 import { resolveObjectionRelCompileStrategy, type ScanBinding } from "./planning/rel-strategy";
 import { resolveKnex } from "./backend/runtime-checks";
@@ -77,17 +75,11 @@ export function createObjectionProvider<
         return executeQuery(query);
       },
     },
-    async executeScan({ request, context, resolvedEntities, runtime }) {
-      return executeScan(runtime, resolvedEntities, request, context);
-    },
     resolveRelCompileStrategy(rel, resolvedEntities) {
       return resolveObjectionRelCompileStrategy(rel, resolvedEntities);
     },
     async lookupMany({ request, context, resolvedEntities, runtime }) {
-      return AdapterResult.tryPromise({
-        try: () => executeLookupMany(runtime, resolvedEntities, request, context),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
+      return executeLookupManyResult(runtime, resolvedEntities, request, context);
     },
   }) as FragmentProviderAdapter<TContext> &
     LookupManyCapableProviderAdapter<TContext> & {

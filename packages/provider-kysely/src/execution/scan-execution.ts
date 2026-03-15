@@ -1,17 +1,29 @@
-import type { QueryRow, TableScanRequest } from "@tupl/provider-kit";
+import { TuplProviderBindingError } from "@tupl/foundation";
+import {
+  AdapterResult,
+  type ProviderOperationResult,
+  type QueryRow,
+  type TableScanRequest,
+} from "@tupl/provider-kit";
 import type { KyselyDatabaseLike, ResolvedEntityConfig } from "../types";
 import { applyBase, applyWhereClause } from "../backend/query-helpers";
 import type { ScanBinding } from "../planning/rel-strategy";
 
-export async function executeScan<TContext>(
+export async function executeScanResult<TContext>(
   db: KyselyDatabaseLike,
   entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
   request: TableScanRequest,
   context: TContext,
-): Promise<QueryRow[]> {
+): Promise<ProviderOperationResult<QueryRow[], TuplProviderBindingError>> {
   const binding = entityConfigs[request.table];
   if (!binding) {
-    throw new Error(`Unknown Kysely entity config: ${request.table}`);
+    return AdapterResult.err(
+      new TuplProviderBindingError({
+        provider: "kysely",
+        table: request.table,
+        message: `Unknown Kysely entity config: ${request.table}`,
+      }),
+    );
   }
 
   const alias = request.alias ?? binding.table;
@@ -61,5 +73,14 @@ export async function executeScan<TContext>(
     request.select.map((column) => eb.ref(`${alias}.${column}`).as(column)),
   );
 
-  return query.execute();
+  return AdapterResult.ok(await query.execute());
+}
+
+export async function executeScan<TContext>(
+  db: KyselyDatabaseLike,
+  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
+  request: TableScanRequest,
+  context: TContext,
+): Promise<QueryRow[]> {
+  return (await executeScanResult(db, entityConfigs, request, context)).unwrap();
 }
