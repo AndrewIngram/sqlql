@@ -24,6 +24,6 @@
     "@tupl/schema-model": "workspace:*",
     "better-result": "^2.7.0",
     "better-sqlite3": "^12.6.2",
-    "vitest": "latest"
+    "vitest": "4.1.0"
   }
 }
