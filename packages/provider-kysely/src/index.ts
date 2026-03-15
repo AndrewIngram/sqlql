@@ -5,8 +5,8 @@ import {
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
 import { executeLookupManyResult } from "./execution/lookup-execution";
-import { buildKyselyRelBuilderForStrategy } from "./planning/rel-builder";
-import { resolveKyselyRelCompileStrategy, type ScanBinding } from "./planning/rel-strategy";
+import { kyselyQueryTranslationBackend } from "./planning/rel-builder";
+import { type ScanBinding } from "./planning/rel-strategy";
 import { resolveKyselyDb } from "./backend/runtime-checks";
 import type {
   CreateKyselyProviderOptions,
@@ -52,7 +52,8 @@ export function createKyselyProvider<
     ResolvedEntityConfig<TContext>,
     ScanBinding<TContext>,
     KyselyDatabaseLike,
-    KyselyQueryBuilderLike
+    KyselyQueryBuilderLike,
+    KyselyProviderEntities<TContext, TDatabase, TEntities>
   >({
     name: providerName,
     entities: entityOptions,
@@ -61,22 +62,9 @@ export function createKyselyProvider<
     },
     unsupportedRelCompileMessage: "Unsupported relational fragment for Kysely provider.",
     unsupportedRelReasonMessage: "Rel fragment is not supported for single-query Kysely pushdown.",
-    queryBackend: {
-      buildQueryForStrategy({ rel, strategy, resolvedEntities, runtime, context }) {
-        return buildKyselyRelBuilderForStrategy(runtime, resolvedEntities, rel, strategy, context);
-      },
-      executeQuery({ query }) {
-        return query.execute();
-      },
-    },
-    resolveRelCompileStrategy(rel, resolvedEntities) {
-      return resolveKyselyRelCompileStrategy(rel, resolvedEntities);
-    },
+    queryBackend: kyselyQueryTranslationBackend,
     async lookupMany({ request, context, resolvedEntities, runtime }) {
       return executeLookupManyResult(runtime, resolvedEntities, request, context);
     },
-  }) as FragmentProviderAdapter<TContext> &
-    LookupManyCapableProviderAdapter<TContext> & {
-      entities: KyselyProviderEntities<TContext, TDatabase, TEntities>;
-    };
+  });
 }

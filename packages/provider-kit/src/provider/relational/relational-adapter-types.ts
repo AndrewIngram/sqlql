@@ -156,11 +156,14 @@ export type RelationalProviderHandles<
 export type RelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
+  THandles extends RelationalProviderHandles<TEntities> = RelationalProviderHandles<TEntities>,
 > = FragmentProviderAdapter<TContext> & {
-  entities: RelationalProviderHandles<TEntities>;
+  entities: THandles;
 };
 
 export type LookupCapableRelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
-> = RelationalProviderAdapter<TContext, TEntities> & LookupManyCapableProviderAdapter<TContext>;
+  THandles extends RelationalProviderHandles<TEntities> = RelationalProviderHandles<TEntities>,
+> = RelationalProviderAdapter<TContext, TEntities, THandles> &
+  LookupManyCapableProviderAdapter<TContext>;

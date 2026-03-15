@@ -12,11 +12,12 @@ import {
 } from "./backend/runtime-checks";
 import { deriveEntityColumnsFromTable } from "./backend/table-columns";
 import { impossibleCondition, runDrizzleScan } from "./backend/query-helpers";
-import { executeDrizzleRelSingleQuery } from "./planning/rel-builder";
+import { drizzleQueryTranslationBackend } from "./planning/rel-builder";
 import {
-  type DrizzleRelCompiledPlan,
   type ScanBinding,
+  buildSingleQueryPlan,
   resolveDrizzleRelCompileStrategy,
+  createScanBinding,
 } from "./planning/rel-strategy";
 import type {
   CreateDrizzleProviderOptions,
@@ -24,6 +25,7 @@ import type {
   DrizzleProviderTableConfig,
   DrizzleQueryExecutor,
 } from "./types";
+import type { DrizzleTranslatedQuery } from "./planning/rel-builder";
 
 export type {
   CreateDrizzleProviderOptions,
@@ -65,7 +67,8 @@ export function createDrizzleProvider<
     },
     ScanBinding<TContext>,
     DrizzleQueryExecutor,
-    DrizzleRelCompiledPlan
+    DrizzleTranslatedQuery,
+    DrizzleProviderEntities<TTables>
   >({
     name: providerName,
     entities: options.tables,
@@ -74,19 +77,16 @@ export function createDrizzleProvider<
     },
     unsupportedRelCompileMessage: "Unsupported relational fragment for drizzle provider.",
     unsupportedRelReasonMessage: "Rel fragment is not supported for single-query drizzle pushdown.",
-    queryBackend: {
-      buildQueryForStrategy({ rel, strategy }) {
-        return { rel, strategy };
-      },
-      executeQuery({ query, context, runtime }) {
-        return executeDrizzleRelSingleQuery(query.rel, query.strategy, options, context, runtime);
-      },
-    },
+    queryBackend: drizzleQueryTranslationBackend,
     resolveEntityColumns({ config }) {
       return deriveEntityColumnsFromTable(config.table);
     },
-    resolveRelCompileStrategy(rel, resolvedEntities) {
-      return resolveDrizzleRelCompileStrategy(rel, resolvedEntities);
+    advanced: {
+      createScanBinding,
+      buildSingleQueryPlan,
+      resolveRelCompileStrategy(rel, resolvedEntities) {
+        return resolveDrizzleRelCompileStrategy(rel, resolvedEntities);
+      },
     },
     isStrategySupported({ strategy, runtime }) {
       if (strategy == null) {
@@ -99,8 +99,5 @@ export function createDrizzleProvider<
     async lookupMany({ request, context, runtime }) {
       return executeLookupManyResult(runtime, options, request, context);
     },
-  }) as FragmentProviderAdapter<TContext> &
-    LookupManyCapableProviderAdapter<TContext> & {
-      entities: DrizzleProviderEntities<TTables>;
-    };
+  });
 }

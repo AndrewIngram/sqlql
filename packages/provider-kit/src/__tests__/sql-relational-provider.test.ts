@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildSqlRelationalQueryForStrategy,
   createSqlRelationalProviderAdapter,
   type QueryRow,
   type RelationalProviderEntityConfig,
@@ -161,25 +160,10 @@ function createFakeProvider() {
   return createSqlRelationalProviderAdapter({
     name: "warehouse",
     entities,
-    queryBackend: {
-      buildQueryForStrategy({ rel, strategy, resolvedEntities, runtime, context, compileOptions }) {
-        return buildSqlRelationalQueryForStrategy(
-          rel,
-          strategy,
-          resolvedEntities,
-          fakeTranslationBackend,
-          runtime,
-          context,
-          {
-            createScanBinding: (scan, resolvedEntities) =>
-              fakePlanning.createScanBinding(scan, resolvedEntities),
-          },
-          compileOptions,
-        );
-      },
-      async executeQuery({ query }) {
-        return fakeTranslationBackend.executeQuery({ query, context: {}, runtime: {} });
-      },
+    queryBackend: fakeTranslationBackend,
+    advanced: {
+      createScanBinding: (scan, resolvedEntities) =>
+        fakePlanning.createScanBinding(scan, resolvedEntities),
     },
     resolveRuntime() {
       return {};
@@ -194,32 +178,10 @@ describe("sql relational provider factory", () => {
       entities: {
         orders: { table: "orders_raw", shape: { id: "text" } },
       },
-      queryBackend: {
-        buildQueryForStrategy({
-          rel,
-          strategy,
-          resolvedEntities,
-          runtime,
-          context,
-          compileOptions,
-        }) {
-          return buildSqlRelationalQueryForStrategy(
-            rel,
-            strategy,
-            resolvedEntities,
-            fakeTranslationBackend,
-            runtime,
-            context,
-            {
-              createScanBinding: (scan, resolvedEntities) =>
-                fakePlanning.createScanBinding(scan, resolvedEntities),
-            },
-            compileOptions,
-          );
-        },
-        async executeQuery({ query }) {
-          return fakeTranslationBackend.executeQuery({ query, context: {}, runtime: {} });
-        },
+      queryBackend: fakeTranslationBackend,
+      advanced: {
+        createScanBinding: (scan, resolvedEntities) =>
+          fakePlanning.createScanBinding(scan, resolvedEntities),
       },
       resolveRuntime() {
         return {};

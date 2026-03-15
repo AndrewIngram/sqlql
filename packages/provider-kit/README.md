@@ -23,11 +23,11 @@ For ordinary SQL-like adapters, the main path is `createSqlRelationalProviderAda
 package root. It keeps provider roots close to the manual provider lifecycle:
 
 - top-level lifecycle/config hooks such as `resolveRuntime(...)`
-- optional strategy and scan-binding overrides
 - one nested `queryBackend` that owns backend query translation and execution
+- optional `advanced` escape hatch for unusual scan-binding or strategy overrides
 
-Adapter authors can usually rely on defaults for resolved entities and scan bindings; lower-level
-planning hooks are only needed for unusual SQL-like backends.
+Adapter authors can usually rely on defaults for resolved entities, scan bindings, and strategy
+selection; `advanced` is only needed for unusual SQL-like backends.
 
 Use `createRelationalProviderAdapter(...)` when an adapter is unusual enough that it cannot fit the
 ordinary SQL-like path cleanly.

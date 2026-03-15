@@ -5,10 +5,9 @@ import {
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
 import { executeLookupManyResult } from "./execution/lookup-execution";
-import { buildObjectionRelBuilderForStrategy } from "./planning/rel-builder";
-import { resolveObjectionRelCompileStrategy, type ScanBinding } from "./planning/rel-strategy";
+import { objectionQueryTranslationBackend } from "./planning/rel-builder";
+import { type ScanBinding } from "./planning/rel-strategy";
 import { resolveKnex } from "./backend/runtime-checks";
-import { executeQuery } from "./backend/query-helpers";
 import type {
   CreateObjectionProviderOptions,
   KnexLike,
@@ -51,7 +50,8 @@ export function createObjectionProvider<
     ResolvedEntityConfig<TContext>,
     ScanBinding<TContext>,
     KnexLike,
-    KnexLikeQueryBuilder
+    KnexLikeQueryBuilder,
+    ObjectionProviderEntities<TEntities>
   >({
     name: providerName,
     entities: entityOptions,
@@ -61,28 +61,9 @@ export function createObjectionProvider<
     unsupportedRelCompileMessage: "Unsupported relational fragment for Objection provider.",
     unsupportedRelReasonMessage:
       "Rel fragment is not supported for single-query Objection pushdown.",
-    queryBackend: {
-      buildQueryForStrategy({ rel, strategy, resolvedEntities, runtime, context }) {
-        return buildObjectionRelBuilderForStrategy(
-          runtime,
-          resolvedEntities,
-          rel,
-          strategy,
-          context,
-        );
-      },
-      executeQuery({ query }) {
-        return executeQuery(query);
-      },
-    },
-    resolveRelCompileStrategy(rel, resolvedEntities) {
-      return resolveObjectionRelCompileStrategy(rel, resolvedEntities);
-    },
+    queryBackend: objectionQueryTranslationBackend,
     async lookupMany({ request, context, resolvedEntities, runtime }) {
       return executeLookupManyResult(runtime, resolvedEntities, request, context);
     },
-  }) as FragmentProviderAdapter<TContext> &
-    LookupManyCapableProviderAdapter<TContext> & {
-      entities: ObjectionProviderEntities<TEntities>;
-    };
+  });
 }

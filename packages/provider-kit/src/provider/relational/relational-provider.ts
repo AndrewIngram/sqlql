@@ -18,9 +18,15 @@ import type {
   RelationalProviderAdapterOptions,
   RelationalLookupProviderAdapterOptions,
   RelationalProviderEntityConfig,
+  RelationalProviderHandles,
   RelationalProviderRelCompileStrategy,
 } from "./relational-adapter-types";
 
+/**
+ * Relational provider adapters own the boundary between canonical rel fragments and provider-owned
+ * compile/execute hooks. Callers can rely on Result-shaped boundary errors and rel-first support
+ * checks; strategy selection and payload construction stay hidden behind the adapter.
+ */
 export type {
   LookupCapableRelationalProviderAdapter,
   RelationalProviderAdapterOptions,
@@ -125,18 +131,20 @@ export function createRelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
+  THandles extends RelationalProviderHandles<TEntities> = RelationalProviderHandles<TEntities>,
 >(
   options: RelationalLookupProviderAdapterOptions<TContext, TEntities, TStrategy>,
-): LookupCapableRelationalProviderAdapter<TContext, TEntities>;
+): LookupCapableRelationalProviderAdapter<TContext, TEntities, THandles>;
 export function createRelationalProviderAdapter<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends RelationalProviderRelCompileStrategy,
+  THandles extends RelationalProviderHandles<TEntities> = RelationalProviderHandles<TEntities>,
 >(
   options:
     | RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>
     | RelationalLookupProviderAdapterOptions<TContext, TEntities, TStrategy>,
-): RelationalProviderAdapter<TContext, TEntities> {
+): RelationalProviderAdapter<TContext, TEntities, THandles> {
   const lookupManyHandler = resolveLookupManyHandler(options);
   const adapter = {
     name: options.name,
@@ -221,7 +229,10 @@ export function createRelationalProviderAdapter<
     },
   };
 
-  const entities = buildRelationalEntityHandles(adapter, options);
+  const entities = buildRelationalEntityHandles<TContext, TEntities, TStrategy, THandles>(
+    adapter,
+    options,
+  );
   const boundAdapter = {
     ...adapter,
     entities,
@@ -245,6 +256,10 @@ export function createRelationalProviderAdapter<
       : {}),
   };
 
-  return bindProviderEntities(boundAdapter) as RelationalProviderAdapter<TContext, TEntities> &
+  return bindProviderEntities(boundAdapter) as RelationalProviderAdapter<
+    TContext,
+    TEntities,
+    THandles
+  > &
     Partial<LookupManyCapableProviderAdapter<TContext>>;
 }

@@ -54,6 +54,8 @@ See [package architecture](./docs/package-architecture.md) for the detailed cont
 - Substantial architectural work should start with a checked-in active execution plan under [`docs/exec-plans/active`](./docs/exec-plans/active/README.md).
 - Completed architectural work should update the relevant durable design docs in the same branch and move the plan to [`docs/exec-plans/completed`](./docs/exec-plans/completed).
 - Mechanical enforcement for “plan coverage by diff” is intentionally deferred for now and tracked in [tech debt](./docs/exec-plans/tech-debt-tracker.md).
+- Be suspicious of casts. They are often a sign that a boundary or helper is failing to preserve the right type information.
+- Keep casts only when they are clearly narrowing something the type system cannot express directly; otherwise prefer fixing the owning type surface.
 
 ## Repo-Local Skills
 

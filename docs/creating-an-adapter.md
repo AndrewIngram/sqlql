@@ -108,15 +108,10 @@ export function createExampleRelationalProvider(options: CreateExampleProviderOp
     resolveRuntime(context) {
       return resolveExampleRuntime(options, context);
     },
-    resolveRelCompileStrategy(rel, resolvedEntities) {
-      return resolveExampleStrategy(rel, resolvedEntities);
-    },
-    queryBackend: {
-      buildQueryForStrategy({ rel, strategy, resolvedEntities, runtime, context }) {
-        return buildExampleQuery(rel, strategy, resolvedEntities, runtime, context);
-      },
-      executeQuery({ query, runtime }) {
-        return query.execute(runtime);
+    queryBackend: exampleQueryBackend,
+    advanced: {
+      resolveRelCompileStrategy(rel, resolvedEntities) {
+        return resolveExampleStrategy(rel, resolvedEntities);
       },
     },
     async lookupMany({ request, context, resolvedEntities, runtime }) {
@@ -132,8 +127,9 @@ export function createExampleRelationalProvider(options: CreateExampleProviderOp
 Defaults:
 
 - `resolveEntity(...)` is optional; the helper uses `config.table ?? entity`
-- `createScanBinding(...)` is optional for ordinary SQL-like adapters
-- `resolveRelCompileStrategy(...)` is optional when the default relational strategy rules are sufficient
+- `advanced.createScanBinding(...)` is optional for ordinary SQL-like adapters
+- `advanced.resolveRelCompileStrategy(...)` is optional when the default relational strategy rules are sufficient
+- most adapters should only supply `queryBackend` plus runtime/entity wiring; `advanced` is the escape hatch, not the normal path
 
 Reach for `createRelationalProviderAdapter(...)` only when the backend does not fit the ordinary SQL-like path cleanly.
 

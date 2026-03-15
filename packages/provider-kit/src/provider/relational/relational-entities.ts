@@ -14,10 +14,11 @@ export function buildRelationalEntityHandles<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
+  THandles extends RelationalProviderHandles<TEntities> = RelationalProviderHandles<TEntities>,
 >(
   adapter: ProviderAdapter<TContext>,
   options: RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>,
-): RelationalProviderHandles<TEntities> {
+): THandles {
   const handles = {} as RelationalProviderHandles<TEntities>;
 
   for (const entity of Object.keys(options.entities) as Array<Extract<keyof TEntities, string>>) {
@@ -45,7 +46,7 @@ export function buildRelationalEntityHandles<
         });
   }
 
-  return handles;
+  return handles as THandles;
 }
 
 function hasColumns(

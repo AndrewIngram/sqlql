@@ -1,458 +1,264 @@
 import { asc, desc, eq, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import type { RelNode } from "@tupl/foundation";
-import { unwrapSetOpRel, unwrapWithBodyRel } from "@tupl/provider-kit/shapes";
-import type { QueryRow, ScanFilterClause } from "@tupl/provider-kit";
-
-import {
-  executeDrizzleQueryBuilder,
-  normalizeScope,
-  toSqlConditionFromSource,
-} from "../backend/query-helpers";
 import type {
-  CreateDrizzleProviderOptions,
+  ScanFilterClause,
+  SqlRelationalOrderTerm,
+  SqlRelationalQueryTranslationBackend,
+  SqlRelationalSelection,
+  SqlRelationalWithSelection,
+} from "@tupl/provider-kit";
+
+import { executeDrizzleQueryBuilder, toSqlConditionFromSource } from "../backend/query-helpers";
+import type {
   DrizzleExecutableBuilder,
   DrizzleProviderTableConfig,
   DrizzleQueryExecutor,
 } from "../types";
 import {
-  buildSingleQueryPlan,
-  requireColumnProjectMapping,
+  buildSqlExpressionFromRelExpr,
   resolveColumnRefFromAliasMap,
-  resolveDrizzleEntityConfigs,
-  resolveDrizzleRelCompileStrategy,
   resolveJoinKeyColumnRefFromAliasMap,
   resolveProjectedSqlExpression,
   toAliasColumnRef,
-  type DrizzleRelCompileStrategy,
   type JoinStep,
   type ScanBinding,
-  type SemiJoinStep,
   type SingleQueryPlan,
   UnsupportedSingleQueryPlanError,
 } from "./rel-strategy";
 
-export async function executeDrizzleRelSingleQuery<TContext>(
-  rel: RelNode,
-  strategy: DrizzleRelCompileStrategy,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<QueryRow[]> {
-  switch (strategy) {
-    case "basic":
-      return executeDrizzleBasicRelSingleQuery(rel, options, context, db);
-    case "set_op":
-      return executeDrizzleSetOpRelSingleQuery(rel, options, context, db);
-    case "with":
-      return executeDrizzleWithRelSingleQuery(rel, options, context, db);
-  }
+/**
+ * Drizzle query translation owns Drizzle-specific builder primitives.
+ * Provider-kit owns recursive rel traversal, strategy dispatch, and shared SQL-relational orchestration.
+ */
+export interface DrizzleTranslatedQuery {
+  builder: DrizzleExecutableBuilder;
+  whereClauses: SQL[];
 }
 
-export async function buildDrizzleRelBuilderForStrategy<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<{ builder: DrizzleExecutableBuilder }> {
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
-  const entityConfigs = resolveDrizzleEntityConfigs(tableConfigs);
-  const strategy = resolveDrizzleRelCompileStrategy(rel, entityConfigs);
-  if (!strategy) {
-    throw new UnsupportedSingleQueryPlanError(
-      `Rel node "${rel.kind}" is not supported in Drizzle single-query pushdown.`,
-    );
-  }
-  switch (strategy) {
-    case "basic":
-      return buildDrizzleBasicRelSingleQueryBuilder(rel, options, context, db);
-    case "set_op":
-      return buildDrizzleSetOpRelSingleQueryBuilder(rel, options, context, db);
-    case "with":
-      return buildDrizzleWithRelSingleQueryBuilder(rel, options, context, db);
-  }
-}
-
-async function executeDrizzleBasicRelSingleQuery<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<QueryRow[]> {
-  const { builder } = await buildDrizzleBasicRelSingleQueryBuilder(rel, options, context, db);
-  return executeDrizzleQueryBuilder(builder, db);
-}
-
-export async function buildDrizzleBasicRelSingleQueryBuilder<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<{ builder: DrizzleExecutableBuilder }> {
-  const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
-  const entityConfigs = resolveDrizzleEntityConfigs(tableConfigs);
-  const plan = buildSingleQueryPlan(rel, entityConfigs);
-  const selection = buildSingleQuerySelection(plan);
-  const preferDistinctSelection =
-    !!plan.pipeline.aggregate &&
-    plan.pipeline.aggregate.metrics.length === 0 &&
-    plan.pipeline.aggregate.groupBy.length > 0;
-  const dbWithSelectDistinct = db as {
-    select: (selection: Record<string, unknown>) => {
-      from: (table: object) => {
-        innerJoin: (table: object, on: SQL) => unknown;
-        leftJoin: (table: object, on: SQL) => unknown;
-        rightJoin: (table: object, on: SQL) => unknown;
-        fullJoin: (table: object, on: SQL) => unknown;
-        where: (condition: SQL) => unknown;
-        groupBy: (...columns: AnyColumn[]) => unknown;
-        orderBy: (...clauses: SQL[]) => unknown;
-        limit: (value: number) => unknown;
-        offset: (value: number) => unknown;
-        execute: () => Promise<QueryRow[]>;
+export const drizzleQueryTranslationBackend: SqlRelationalQueryTranslationBackend<
+  unknown,
+  {
+    entity: string;
+    table: string;
+    config: DrizzleProviderTableConfig<unknown>;
+  },
+  ScanBinding<unknown>,
+  DrizzleQueryExecutor,
+  DrizzleTranslatedQuery
+> = {
+  createRootQuery({ runtime, plan, selection }) {
+    const preferDistinctSelection =
+      !!plan.pipeline.aggregate &&
+      plan.pipeline.aggregate.metrics.length === 0 &&
+      plan.pipeline.aggregate.groupBy.length > 0;
+    const dbWithSelectDistinct = runtime as {
+      select: (selection: Record<string, unknown>) => {
+        from: (table: object) => DrizzleExecutableBuilder;
+      };
+      selectDistinct?: (selection: Record<string, unknown>) => {
+        from: (table: object) => DrizzleExecutableBuilder;
       };
     };
-    selectDistinct?: (selection: Record<string, unknown>) => {
-      from: (table: object) => {
-        innerJoin: (table: object, on: SQL) => unknown;
-        leftJoin: (table: object, on: SQL) => unknown;
-        rightJoin: (table: object, on: SQL) => unknown;
-        fullJoin: (table: object, on: SQL) => unknown;
-        where: (condition: SQL) => unknown;
-        groupBy: (...columns: AnyColumn[]) => unknown;
-        orderBy: (...clauses: SQL[]) => unknown;
-        limit: (value: number) => unknown;
-        offset: (value: number) => unknown;
-        execute: () => Promise<QueryRow[]>;
-      };
+
+    const selectFn =
+      preferDistinctSelection && typeof dbWithSelectDistinct.selectDistinct === "function"
+        ? dbWithSelectDistinct.selectDistinct.bind(dbWithSelectDistinct)
+        : dbWithSelectDistinct.select.bind(dbWithSelectDistinct);
+
+    return {
+      builder: selectFn(buildSelectionRecord(selection, plan.joinPlan.aliases)).from(
+        plan.joinPlan.root.sourceTable,
+      ) as DrizzleExecutableBuilder,
+      whereClauses: [],
     };
-  };
-
-  const selectFn =
-    preferDistinctSelection && typeof dbWithSelectDistinct.selectDistinct === "function"
-      ? dbWithSelectDistinct.selectDistinct.bind(dbWithSelectDistinct)
-      : dbWithSelectDistinct.select.bind(dbWithSelectDistinct);
-
-  let builder = selectFn(selection).from(
-    plan.joinPlan.root.sourceTable,
-  ) as DrizzleExecutableBuilder & {
-    innerJoin: (table: object, on: SQL) => unknown;
-    leftJoin: (table: object, on: SQL) => unknown;
-    rightJoin: (table: object, on: SQL) => unknown;
-    fullJoin: (table: object, on: SQL) => unknown;
-    groupBy: (...columns: AnyColumn[]) => unknown;
-  };
-
-  ensureJoinMethodsAvailable(builder, plan.joinPlan.joins);
-
-  const whereClauses: SQL[] = [];
-  for (const joinStep of plan.joinPlan.joins) {
-    if (joinStep.joinType === "semi") {
-      const leftColumn = resolveJoinKeyColumnRefFromAliasMap(plan.joinPlan.aliases, {
-        alias: joinStep.leftKey.alias,
-        column: joinStep.leftKey.column,
-      });
-      const { subquery } = await buildSemiJoinSubquery(joinStep, options, context, db);
-      whereClauses.push(sql`${leftColumn} in (${asDrizzleSubquerySql(subquery)})`);
-      continue;
-    }
-    const leftColumn = resolveJoinKeyColumnRefFromAliasMap(plan.joinPlan.aliases, {
-      alias: joinStep.leftKey.alias,
-      column: joinStep.leftKey.column,
+  },
+  applyRegularJoin({ query, join, aliases }) {
+    const joinable = query.builder as DrizzleExecutableBuilder & {
+      innerJoin?: (table: object, on: SQL) => unknown;
+      leftJoin?: (table: object, on: SQL) => unknown;
+      rightJoin?: (table: object, on: SQL) => unknown;
+      fullJoin?: (table: object, on: SQL) => unknown;
+    };
+    ensureJoinMethodsAvailable(joinable, [join]);
+    const leftColumn = resolveJoinKeyColumnRefFromAliasMap(aliases, {
+      alias: join.leftKey.alias,
+      column: join.leftKey.column,
     });
-    const rightColumn = resolveJoinKeyColumnRefFromAliasMap(plan.joinPlan.aliases, {
-      alias: joinStep.rightKey.alias,
-      column: joinStep.rightKey.column,
+    const rightColumn = resolveJoinKeyColumnRefFromAliasMap(aliases, {
+      alias: join.rightKey.alias,
+      column: join.rightKey.column,
     });
     const onClause = eq(leftColumn, rightColumn);
-    builder = (
-      joinStep.joinType === "inner"
-        ? builder.innerJoin(joinStep.right.sourceTable, onClause)
-        : joinStep.joinType === "left"
-          ? builder.leftJoin(joinStep.right.sourceTable, onClause)
-          : joinStep.joinType === "right"
-            ? builder.rightJoin(joinStep.right.sourceTable, onClause)
-            : builder.fullJoin(joinStep.right.sourceTable, onClause)
-    ) as typeof builder;
-  }
-
-  for (const binding of plan.joinPlan.aliases.values()) {
-    whereClauses.push(
-      ...normalizeScope(
-        binding.tableConfig.scope ? await binding.tableConfig.scope(context) : undefined,
-      ),
-    );
-    for (const clause of binding.scan.where ?? []) {
-      whereClauses.push(toSqlCondition(clause, binding.scanColumns, binding.tableName));
+    return {
+      ...query,
+      builder: (join.joinType === "inner"
+        ? joinable.innerJoin!(join.right.sourceTable, onClause)
+        : join.joinType === "left"
+          ? joinable.leftJoin!(join.right.sourceTable, onClause)
+          : join.joinType === "right"
+            ? joinable.rightJoin!(join.right.sourceTable, onClause)
+            : joinable.fullJoin!(join.right.sourceTable, onClause)) as DrizzleExecutableBuilder,
+    };
+  },
+  applySemiJoin({ query, leftKey, subquery, aliases }) {
+    const leftColumn = resolveJoinKeyColumnRefFromAliasMap(aliases, leftKey);
+    return {
+      ...query,
+      whereClauses: [
+        ...query.whereClauses,
+        sql`${leftColumn} in (${asDrizzleSubquerySql(subquery.builder)})`,
+      ],
+    };
+  },
+  applyWhereClause({ query, clause, plan }) {
+    const singleQueryPlan = plan as SingleQueryPlan<unknown>;
+    return {
+      ...query,
+      whereClauses: [
+        ...query.whereClauses,
+        toSqlConditionFromRelFilterClause(clause, singleQueryPlan),
+      ],
+    };
+  },
+  applySelection({ query }) {
+    return query;
+  },
+  applyGroupBy({ query, groupBy, aliases }) {
+    const withWhere = ensureWhereApplied(query);
+    const groupable = withWhere.builder as DrizzleExecutableBuilder & {
+      groupBy?: (...columns: AnyColumn[]) => unknown;
+    };
+    if (typeof groupable.groupBy !== "function") {
+      throw new UnsupportedSingleQueryPlanError(
+        "Drizzle query builder does not support GROUP BY on single-query fragments.",
+      );
     }
-  }
-
-  for (const filterNode of plan.pipeline.filters) {
-    for (const clause of filterNode.where ?? []) {
-      whereClauses.push(toSqlConditionFromRelFilterClause(clause, plan));
-    }
-  }
-
-  const where = sql.join(whereClauses, sql` and `);
-  if (whereClauses.length > 0 && typeof builder.where === "function") {
-    builder = builder.where(where) as typeof builder;
-  }
-
-  if (
-    plan.pipeline.aggregate &&
-    plan.pipeline.aggregate.groupBy.length > 0 &&
-    !preferDistinctSelection
-  ) {
-    const groupByColumns = plan.pipeline.aggregate.groupBy.map((columnRef) =>
+    const groupByColumns = groupBy.map((columnRef) =>
       resolveColumnRefFromAliasMap(
-        plan.joinPlan.aliases,
+        aliases,
         toAliasColumnRef(columnRef.alias ?? columnRef.table, columnRef.column),
       ),
     );
-    builder = builder.groupBy(...(groupByColumns as AnyColumn[])) as typeof builder;
-  }
-
-  if (plan.pipeline.sort && typeof builder.orderBy === "function") {
-    const orderBy = plan.pipeline.sort.orderBy.map((term) => {
-      const source = resolveSingleQuerySortSource(term, plan);
+    return {
+      builder: groupable.groupBy(...(groupByColumns as AnyColumn[])) as DrizzleExecutableBuilder,
+      whereClauses: [],
+    };
+  },
+  applyOrderBy({ query, plan, orderBy, aliases }) {
+    const withWhere = ensureWhereApplied(query);
+    if (typeof withWhere.builder.orderBy !== "function") {
+      throw new UnsupportedSingleQueryPlanError(
+        "Drizzle query builder does not support ORDER BY on this fragment.",
+      );
+    }
+    const orderByClauses = orderBy.map((term) => {
+      const source = resolveOrderSource(term, plan, aliases);
       return term.direction === "asc" ? asc(source) : desc(source);
     });
-    if (orderBy.length > 0) {
-      builder = builder.orderBy(...orderBy) as typeof builder;
-    }
-  }
-
-  if (plan.pipeline.limitOffset?.limit != null && typeof builder.limit === "function") {
-    builder = builder.limit(plan.pipeline.limitOffset.limit) as typeof builder;
-  }
-  if (plan.pipeline.limitOffset?.offset != null && typeof builder.offset === "function") {
-    builder = builder.offset(plan.pipeline.limitOffset.offset) as typeof builder;
-  }
-
-  return { builder };
-}
-
-async function executeDrizzleSetOpRelSingleQuery<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<QueryRow[]> {
-  const { builder } = await buildDrizzleSetOpRelSingleQueryBuilder(rel, options, context, db);
-  return executeDrizzleQueryBuilder(builder, db);
-}
-
-async function executeDrizzleWithRelSingleQuery<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<QueryRow[]> {
-  const { builder } = await buildDrizzleWithRelSingleQueryBuilder(rel, options, context, db);
-  return executeDrizzleQueryBuilder(builder, db);
-}
-
-async function buildSemiJoinSubquery<TContext>(
-  joinStep: SemiJoinStep,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<{ subquery: DrizzleExecutableBuilder }> {
-  if (joinStep.right.output.length !== 1) {
-    throw new UnsupportedSingleQueryPlanError(
-      "SEMI join subquery must project exactly one output column.",
-    );
-  }
-  return {
-    subquery: (await buildDrizzleRelBuilderForStrategy(joinStep.right, options, context, db))
-      .builder,
-  };
-}
-
-export async function buildDrizzleSetOpRelSingleQueryBuilder<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<{ builder: DrizzleExecutableBuilder }> {
-  const wrapper = unwrapSetOpRel(rel);
-  if (!wrapper) {
-    throw new UnsupportedSingleQueryPlanError("Expected set-op relational shape.");
-  }
-
-  const left = (await buildDrizzleRelBuilderForStrategy(wrapper.setOp.left, options, context, db))
-    .builder;
-  const right = (await buildDrizzleRelBuilderForStrategy(wrapper.setOp.right, options, context, db))
-    .builder;
-  const methodName =
-    wrapper.setOp.op === "union_all"
-      ? "unionAll"
-      : wrapper.setOp.op === "union"
-        ? "union"
-        : wrapper.setOp.op === "intersect"
-          ? "intersect"
-          : "except";
-  const applySetOp = (left as unknown as Record<string, unknown>)[methodName];
-  if (typeof applySetOp !== "function") {
-    throw new UnsupportedSingleQueryPlanError(
-      `Drizzle query builder does not support ${methodName} for single-query pushdown.`,
-    );
-  }
-  let builder = applySetOp.call(left, right) as DrizzleExecutableBuilder;
-
-  if (wrapper.project) {
-    for (const rawMapping of wrapper.project.columns) {
-      const mapping = requireColumnProjectMapping(rawMapping);
-      if (
-        (mapping.source.alias || mapping.source.table) &&
-        mapping.source.column !== mapping.output
-      ) {
-        throw new UnsupportedSingleQueryPlanError(
-          "Set-op projections with qualified or renamed columns are not supported in single-query pushdown.",
-        );
-      }
-    }
-  }
-
-  if (wrapper.sort) {
-    if (typeof builder.orderBy !== "function") {
+    return orderByClauses.length > 0
+      ? {
+          builder: withWhere.builder.orderBy(...orderByClauses) as DrizzleExecutableBuilder,
+          whereClauses: [],
+        }
+      : withWhere;
+  },
+  applyLimit({ query, limit }) {
+    const withWhere = ensureWhereApplied(query);
+    if (typeof withWhere.builder.limit !== "function") {
       throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support ORDER BY on set-op fragments.",
+        "Drizzle query builder does not support LIMIT on this fragment.",
       );
     }
-    const orderByClauses = wrapper.sort.orderBy.map((term) => {
-      if (term.source.alias || term.source.table) {
-        throw new UnsupportedSingleQueryPlanError(
-          "Set-op ORDER BY columns must be unqualified output columns.",
-        );
-      }
-      const identifier = sql.identifier(term.source.column);
-      return term.direction === "asc" ? asc(identifier) : desc(identifier);
-    });
-    if (orderByClauses.length > 0) {
-      builder = builder.orderBy(...orderByClauses) as DrizzleExecutableBuilder;
-    }
-  }
-
-  if (wrapper.limitOffset?.limit != null) {
-    if (typeof builder.limit !== "function") {
+    return {
+      builder: withWhere.builder.limit(limit) as DrizzleExecutableBuilder,
+      whereClauses: [],
+    };
+  },
+  applyOffset({ query, offset }) {
+    const withWhere = ensureWhereApplied(query);
+    if (typeof withWhere.builder.offset !== "function") {
       throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support LIMIT on set-op fragments.",
+        "Drizzle query builder does not support OFFSET on this fragment.",
       );
     }
-    builder = builder.limit(wrapper.limitOffset.limit) as DrizzleExecutableBuilder;
-  }
-  if (wrapper.limitOffset?.offset != null) {
-    if (typeof builder.offset !== "function") {
+    return {
+      builder: withWhere.builder.offset(offset) as DrizzleExecutableBuilder,
+      whereClauses: [],
+    };
+  },
+  applySetOp({ left, right, wrapper }) {
+    const leftQuery = ensureWhereApplied(left);
+    const rightQuery = ensureWhereApplied(right);
+    const methodName =
+      wrapper.setOp.op === "union_all"
+        ? "unionAll"
+        : wrapper.setOp.op === "union"
+          ? "union"
+          : wrapper.setOp.op === "intersect"
+            ? "intersect"
+            : "except";
+    const applySetOp = (leftQuery.builder as unknown as Record<string, unknown>)[methodName];
+    if (typeof applySetOp !== "function") {
       throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support OFFSET on set-op fragments.",
+        `Drizzle query builder does not support ${methodName} for single-query pushdown.`,
       );
     }
-    builder = builder.offset(wrapper.limitOffset.offset) as DrizzleExecutableBuilder;
-  }
-
-  return { builder };
-}
-
-export async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
-  rel: RelNode,
-  options: CreateDrizzleProviderOptions<TContext>,
-  context: TContext,
-  db: DrizzleQueryExecutor,
-): Promise<{ builder: DrizzleExecutableBuilder }> {
-  if (rel.kind !== "with") {
-    throw new UnsupportedSingleQueryPlanError(`Expected with node, received "${rel.kind}".`);
-  }
-  const dbWithCtes = db as {
-    $with?: (name: string) => { as: (query: DrizzleExecutableBuilder) => unknown };
-    with?: (...ctes: unknown[]) => {
-      select: (selection: Record<string, unknown>) => {
-        from: (source: unknown) => DrizzleExecutableBuilder;
+    return {
+      builder: applySetOp.call(leftQuery.builder, rightQuery.builder) as DrizzleExecutableBuilder,
+      whereClauses: [],
+    };
+  },
+  buildWithQuery({ body, ctes, projection, orderBy, runtime }) {
+    const dbWithCtes = runtime as {
+      $with?: (name: string) => { as: (query: DrizzleExecutableBuilder) => unknown };
+      with?: (...ctes: unknown[]) => {
+        select: (selection: Record<string, unknown>) => {
+          from: (source: unknown) => DrizzleExecutableBuilder;
+        };
       };
     };
-  };
-  if (typeof dbWithCtes.$with !== "function" || typeof dbWithCtes.with !== "function") {
-    throw new UnsupportedSingleQueryPlanError(
-      "Drizzle database instance does not support CTE builders required for WITH pushdown.",
-    );
-  }
-
-  const cteBindings = new Map<string, unknown>();
-  const cteRefs: unknown[] = [];
-  for (const cte of rel.ctes) {
-    const query = (await buildDrizzleRelBuilderForStrategy(cte.query, options, context, db))
-      .builder;
-    const cteRef = dbWithCtes.$with(cte.name).as(query);
-    cteBindings.set(cte.name, cteRef);
-    cteRefs.push(cteRef);
-  }
-
-  const body = unwrapWithBodyRel(rel.body);
-  if (!body) {
-    throw new UnsupportedSingleQueryPlanError(
-      "Unsupported WITH body shape for single-query pushdown.",
-    );
-  }
-  const source = cteBindings.get(body.cteRef.name);
-  if (!source) {
-    throw new UnsupportedSingleQueryPlanError(`Unknown CTE "${body.cteRef.name}" in WITH body.`);
-  }
-  const scanAlias = body.cteRef.alias ?? body.cteRef.name;
-
-  const windowExpressions = new Map<string, unknown>();
-  for (const fn of body.window?.functions ?? []) {
-    windowExpressions.set(
-      fn.as,
-      buildWindowFunctionSql(fn, source as Record<string, unknown>, scanAlias),
-    );
-  }
-
-  const selection: Record<string, unknown> = {};
-  if (body.project) {
-    for (const rawMapping of body.project.columns) {
-      const mapping = requireColumnProjectMapping(rawMapping);
-      selection[mapping.output] = resolveWithBodyProjectionSource(
-        mapping,
-        source as Record<string, unknown>,
-        windowExpressions,
-        scanAlias,
+    if (typeof dbWithCtes.$with !== "function" || typeof dbWithCtes.with !== "function") {
+      throw new UnsupportedSingleQueryPlanError(
+        "Drizzle database instance does not support CTE builders required for WITH pushdown.",
       );
     }
-  } else {
-    for (const column of body.cteRef.select) {
-      selection[column] = resolveWithBodySourceColumn(
-        source as Record<string, unknown>,
-        {
-          alias: scanAlias,
-          column,
-        },
-        scanAlias,
+
+    const cteBindings = new Map<string, unknown>();
+    const cteRefs: unknown[] = [];
+    for (const cte of ctes) {
+      const cteRef = dbWithCtes.$with(cte.name).as(ensureWhereApplied(cte.query).builder);
+      cteBindings.set(cte.name, cteRef);
+      cteRefs.push(cteRef);
+    }
+
+    const source = cteBindings.get(body.cteRef.name);
+    if (!source) {
+      throw new UnsupportedSingleQueryPlanError(`Unknown CTE "${body.cteRef.name}" in WITH body.`);
+    }
+    const scanAlias = body.cteRef.alias ?? body.cteRef.name;
+
+    const windowExpressions = new Map<string, unknown>();
+    for (const fn of body.window?.functions ?? []) {
+      windowExpressions.set(
+        fn.as,
+        buildWindowFunctionSql(fn, source as Record<string, unknown>, scanAlias),
       );
     }
-    for (const [name, exprSql] of windowExpressions.entries()) {
-      selection[name] = exprSql;
-    }
-  }
 
-  let builder = dbWithCtes
-    .with(...cteRefs)
-    .select(selection)
-    .from(source) as DrizzleExecutableBuilder;
-
-  const whereClauses: SQL[] = [];
-  for (const clause of body.cteRef.where ?? []) {
-    whereClauses.push(
-      toSqlConditionFromSource(
-        clause,
-        resolveWithBodySourceColumn(
-          source as Record<string, unknown>,
-          toInlineColumnRef(clause.column),
-          scanAlias,
-        ),
-      ),
+    const selection = buildWithSelectionRecord(
+      projection,
+      source as Record<string, unknown>,
+      windowExpressions,
+      scanAlias,
     );
-  }
-  for (const filter of body.filters) {
-    for (const clause of filter.where ?? []) {
+
+    let builder = dbWithCtes
+      .with(...cteRefs)
+      .select(selection)
+      .from(source) as DrizzleExecutableBuilder;
+
+    const whereClauses: SQL[] = [];
+    for (const clause of body.cteRef.where ?? []) {
       whereClauses.push(
         toSqlConditionFromSource(
           clause,
@@ -464,83 +270,176 @@ export async function buildDrizzleWithRelSingleQueryBuilder<TContext>(
         ),
       );
     }
-  }
-
-  if (whereClauses.length > 0) {
-    if (typeof builder.where !== "function") {
-      throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support WHERE on WITH fragments.",
-      );
+    for (const filter of body.filters) {
+      for (const clause of filter.where ?? []) {
+        whereClauses.push(
+          toSqlConditionFromSource(
+            clause,
+            resolveWithBodySourceColumn(
+              source as Record<string, unknown>,
+              toInlineColumnRef(clause.column),
+              scanAlias,
+            ),
+          ),
+        );
+      }
     }
-    builder = builder.where(sql.join(whereClauses, sql` and `)) as DrizzleExecutableBuilder;
-  }
 
-  if (body.sort) {
-    if (typeof builder.orderBy !== "function") {
-      throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support ORDER BY on WITH fragments.",
-      );
+    if (whereClauses.length > 0) {
+      if (typeof builder.where !== "function") {
+        throw new UnsupportedSingleQueryPlanError(
+          "Drizzle query builder does not support WHERE on WITH fragments.",
+        );
+      }
+      builder = builder.where(sql.join(whereClauses, sql` and `)) as DrizzleExecutableBuilder;
     }
-    const orderBy = body.sort.orderBy.map((term) => {
-      const sourceColumn = windowExpressions.has(term.source.column)
-        ? sql.identifier(term.source.column)
-        : resolveWithBodySourceColumn(source as Record<string, unknown>, term.source, scanAlias);
-      return term.direction === "asc" ? asc(sourceColumn) : desc(sourceColumn);
-    });
+
     if (orderBy.length > 0) {
-      builder = builder.orderBy(...orderBy) as DrizzleExecutableBuilder;
+      if (typeof builder.orderBy !== "function") {
+        throw new UnsupportedSingleQueryPlanError(
+          "Drizzle query builder does not support ORDER BY on WITH fragments.",
+        );
+      }
+      const orderByClauses = orderBy.map((term) => {
+        const sourceColumn =
+          term.kind === "qualified"
+            ? resolveWithBodySourceColumn(source as Record<string, unknown>, term.source, scanAlias)
+            : windowExpressions.has(term.column)
+              ? sql`${sql.identifier(term.column)}`
+              : sql`${sql.identifier(term.column)}`;
+        return term.direction === "asc" ? asc(sourceColumn) : desc(sourceColumn);
+      });
+      builder = builder.orderBy(...orderByClauses) as DrizzleExecutableBuilder;
     }
+
+    return {
+      builder,
+      whereClauses: [],
+    };
+  },
+  async executeQuery({ query, runtime }) {
+    return executeDrizzleQueryBuilder(ensureWhereApplied(query).builder, runtime);
+  },
+};
+
+function ensureWhereApplied(query: DrizzleTranslatedQuery): DrizzleTranslatedQuery {
+  if (query.whereClauses.length === 0) {
+    return query;
   }
 
-  if (body.limitOffset?.limit != null) {
-    if (typeof builder.limit !== "function") {
-      throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support LIMIT on WITH fragments.",
-      );
-    }
-    builder = builder.limit(body.limitOffset.limit) as DrizzleExecutableBuilder;
-  }
-  if (body.limitOffset?.offset != null) {
-    if (typeof builder.offset !== "function") {
-      throw new UnsupportedSingleQueryPlanError(
-        "Drizzle query builder does not support OFFSET on WITH fragments.",
-      );
-    }
-    builder = builder.offset(body.limitOffset.offset) as DrizzleExecutableBuilder;
+  if (typeof query.builder.where !== "function") {
+    throw new UnsupportedSingleQueryPlanError(
+      "Drizzle query builder does not support WHERE on single-query fragments.",
+    );
   }
 
-  return { builder };
+  return {
+    builder: query.builder.where(
+      sql.join(query.whereClauses, sql` and `),
+    ) as DrizzleExecutableBuilder,
+    whereClauses: [],
+  };
 }
 
-function resolveWithBodyProjectionSource(
-  rawMapping: Extract<RelNode, { kind: "project" }>["columns"][number],
+function buildSelectionRecord<TContext>(
+  selection: SqlRelationalSelection[],
+  aliases: Map<string, ScanBinding<TContext>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+
+  for (const entry of selection) {
+    switch (entry.kind) {
+      case "column":
+        out[entry.output] = resolveColumnRefFromAliasMap(
+          aliases,
+          toAliasColumnRef(entry.source.alias ?? entry.source.table, entry.source.column),
+        );
+        break;
+      case "metric":
+        out[entry.output] = buildAggregateMetricSql(entry.metric, aliases);
+        break;
+      case "expr":
+        out[entry.output] = buildSqlExpressionFromRelExpr(entry.expr, aliases);
+        break;
+    }
+  }
+
+  return out;
+}
+
+function buildWithSelectionRecord(
+  projection: SqlRelationalWithSelection[],
   source: Record<string, unknown>,
   windowExpressions: Map<string, unknown>,
   scanAlias: string,
-): unknown {
-  const mapping = requireColumnProjectMapping(rawMapping);
-  if (windowExpressions.has(mapping.source.column)) {
-    return windowExpressions.get(mapping.source.column)!;
+): Record<string, unknown> {
+  const selection: Record<string, unknown> = {};
+
+  for (const entry of projection) {
+    if (entry.kind === "window") {
+      selection[entry.output] =
+        windowExpressions.get(entry.window.as) ?? windowExpressions.get(entry.output);
+      continue;
+    }
+
+    if (windowExpressions.has(entry.source.column)) {
+      selection[entry.output] = windowExpressions.get(entry.source.column)!;
+      continue;
+    }
+
+    selection[entry.output] = resolveWithBodySourceColumn(source, entry.source, scanAlias);
   }
-  return resolveWithBodySourceColumn(source, mapping.source, scanAlias);
+
+  return selection;
 }
 
-function resolveWithBodySourceColumn(
-  source: Record<string, unknown>,
-  ref: { alias?: string; table?: string; column: string },
-  scanAlias: string,
-): AnyColumn {
-  const refAlias = ref.alias ?? ref.table;
-  if (refAlias && refAlias !== scanAlias) {
-    throw new UnsupportedSingleQueryPlanError(
-      `WITH body column "${refAlias}.${ref.column}" must reference alias "${scanAlias}".`,
+function resolveOrderSource<TContext>(
+  term: SqlRelationalOrderTerm,
+  plan: SingleQueryPlan<TContext> | object,
+  aliases: Map<string, ScanBinding<TContext>>,
+): AnyColumn | SQL {
+  if (term.kind === "qualified") {
+    const alias = term.source.alias ?? term.source.table;
+    if (!alias) {
+      throw new UnsupportedSingleQueryPlanError(
+        `Qualified ORDER BY column "${term.source.column}" is missing an alias.`,
+      );
+    }
+    return resolveColumnRefFromAliasMap(aliases, {
+      alias,
+      column: term.source.column,
+    });
+  }
+
+  if (!("pipeline" in plan)) {
+    return sql`${sql.identifier(term.column)}`;
+  }
+
+  if (!plan.pipeline.aggregate) {
+    const projected = resolveProjectedSelectionSource(term.column, plan);
+    if (projected) {
+      return projected;
+    }
+    return sql`${sql.identifier(term.column)}`;
+  }
+
+  const metric = plan.pipeline.aggregate.metrics.find((entry) => entry.as === term.column);
+  if (metric) {
+    return buildAggregateMetricSql(metric, aliases);
+  }
+
+  const groupBy = plan.pipeline.aggregate.groupBy.find((entry, index) => {
+    const outputName = plan.pipeline.aggregate!.output[index]?.name ?? entry.column;
+    return outputName === term.column || entry.column === term.column;
+  });
+  if (groupBy) {
+    return resolveColumnRefFromAliasMap(
+      aliases,
+      toAliasColumnRef(groupBy.alias ?? groupBy.table, groupBy.column),
     );
   }
-  const column = source[ref.column];
-  if (!column || typeof column !== "object") {
-    throw new UnsupportedSingleQueryPlanError(`Unknown WITH body column "${ref.column}".`);
-  }
-  return column as AnyColumn;
+
+  return sql`${sql.identifier(term.column)}`;
 }
 
 function buildWindowFunctionSql(
@@ -567,47 +466,22 @@ function buildWindowFunctionSql(
   return sql`${call} over (${sql.join(overParts, sql` `)})`.as(fn.as);
 }
 
-function resolveSingleQuerySortSource<TContext>(
-  term: Extract<RelNode, { kind: "sort" }>["orderBy"][number],
-  plan: SingleQueryPlan<TContext>,
-): AnyColumn | SQL {
-  const alias = term.source.alias ?? term.source.table;
-  if (alias) {
-    return resolveColumnRefFromAliasMap(plan.joinPlan.aliases, {
-      alias,
-      column: term.source.column,
-    });
-  }
-
-  if (!plan.pipeline.aggregate) {
-    const projected = resolveProjectedSelectionSource(term.source.column, plan);
-    if (projected) {
-      return projected;
-    }
-    return resolveColumnRefFromAliasMap(plan.joinPlan.aliases, {
-      column: term.source.column,
-    });
-  }
-
-  const metric = plan.pipeline.aggregate.metrics.find((entry) => entry.as === term.source.column);
-  if (metric) {
-    return buildAggregateMetricSql(metric, plan.joinPlan.aliases);
-  }
-
-  const groupBy = plan.pipeline.aggregate.groupBy.find((entry, index) => {
-    const outputName = plan.pipeline.aggregate!.output[index]?.name ?? entry.column;
-    return outputName === term.source.column || entry.column === term.source.column;
-  });
-  if (groupBy) {
-    return resolveColumnRefFromAliasMap(
-      plan.joinPlan.aliases,
-      toAliasColumnRef(groupBy.alias ?? groupBy.table, groupBy.column),
+function resolveWithBodySourceColumn(
+  source: Record<string, unknown>,
+  ref: { alias?: string; table?: string; column: string },
+  scanAlias: string,
+): AnyColumn {
+  const refAlias = ref.alias ?? ref.table;
+  if (refAlias && refAlias !== scanAlias) {
+    throw new UnsupportedSingleQueryPlanError(
+      `WITH body column "${refAlias}.${ref.column}" must reference alias "${scanAlias}".`,
     );
   }
-
-  throw new UnsupportedSingleQueryPlanError(
-    `Unsupported ORDER BY reference "${term.source.column}" in aggregate rel fragment.`,
-  );
+  const column = source[ref.column];
+  if (!column || typeof column !== "object") {
+    throw new UnsupportedSingleQueryPlanError(`Unknown WITH body column "${ref.column}".`);
+  }
+  return column as AnyColumn;
 }
 
 function ensureJoinMethodsAvailable<TContext>(
@@ -638,107 +512,6 @@ function ensureJoinMethodsAvailable<TContext>(
       );
     }
   }
-}
-
-function buildSingleQuerySelection<TContext>(
-  plan: SingleQueryPlan<TContext>,
-): Record<string, unknown> {
-  const selection: Record<string, unknown> = {};
-
-  if (plan.pipeline.aggregate) {
-    const groupSources = new Map<string, AnyColumn | SQL>();
-    const groupSourcesByKey = new Map<string, AnyColumn | SQL>();
-    plan.pipeline.aggregate.groupBy.forEach((groupBy, index) => {
-      const source = resolveColumnRefFromAliasMap(
-        plan.joinPlan.aliases,
-        toAliasColumnRef(groupBy.alias ?? groupBy.table, groupBy.column),
-      );
-      const outputName = plan.pipeline.aggregate!.output[index]?.name ?? groupBy.column;
-      groupSources.set(outputName, source);
-      groupSources.set(groupBy.column, source);
-      const keyAlias = groupBy.alias ?? groupBy.table ?? "";
-      groupSourcesByKey.set(`${keyAlias}.${groupBy.column}`, source);
-    });
-
-    const metricSources = new Map<string, SQL>();
-    plan.pipeline.aggregate.metrics.forEach((metric, index) => {
-      const outputName =
-        plan.pipeline.aggregate!.output[plan.pipeline.aggregate!.groupBy.length + index]?.name ??
-        metric.as;
-      const source = buildAggregateMetricSql(metric, plan.joinPlan.aliases);
-      metricSources.set(outputName, source);
-      metricSources.set(metric.as, source);
-    });
-
-    if (plan.pipeline.project) {
-      for (const rawMapping of plan.pipeline.project.columns) {
-        const mapping = requireColumnProjectMapping(rawMapping);
-        const metricSource = metricSources.get(mapping.source.column);
-        if (metricSource) {
-          selection[mapping.output] = metricSource.as(mapping.output);
-          continue;
-        }
-        const qualifiedSource = mapping.source.alias ?? mapping.source.table;
-        if (qualifiedSource) {
-          const groupSource = groupSourcesByKey.get(`${qualifiedSource}.${mapping.source.column}`);
-          if (groupSource) {
-            selection[mapping.output] = sql`${groupSource}`.as(mapping.output);
-            continue;
-          }
-        }
-        const groupSource = groupSources.get(mapping.source.column);
-        if (groupSource) {
-          selection[mapping.output] = sql`${groupSource}`.as(mapping.output);
-          continue;
-        }
-        throw new UnsupportedSingleQueryPlanError(
-          `Aggregate projection source "${mapping.source.column}" is not available in grouped output.`,
-        );
-      }
-      return selection;
-    }
-
-    plan.pipeline.aggregate.groupBy.forEach((groupBy, index) => {
-      const outputName = plan.pipeline.aggregate!.output[index]?.name ?? groupBy.column;
-      const source = groupSources.get(outputName);
-      if (source) {
-        selection[outputName] = source;
-      }
-    });
-    plan.pipeline.aggregate.metrics.forEach((metric, index) => {
-      const outputName =
-        plan.pipeline.aggregate!.output[plan.pipeline.aggregate!.groupBy.length + index]?.name ??
-        metric.as;
-      const metricSource = metricSources.get(outputName);
-      if (metricSource) {
-        selection[outputName] = metricSource.as(outputName);
-      }
-    });
-    return selection;
-  }
-
-  if (plan.pipeline.project) {
-    for (const rawMapping of plan.pipeline.project.columns) {
-      const resolved = resolveProjectedSqlExpression(rawMapping, plan.joinPlan.aliases, true);
-      selection[rawMapping.output] =
-        "source" in rawMapping ? resolved : (resolved as SQL).as(rawMapping.output);
-    }
-    return selection;
-  }
-
-  for (const binding of plan.joinPlan.aliases.values()) {
-    for (const column of binding.outputColumns) {
-      selection[`${binding.alias}.${column}`] = resolveColumnRefFromAliasMap(
-        plan.joinPlan.aliases,
-        {
-          alias: binding.alias,
-          column,
-        },
-      );
-    }
-  }
-
-  return selection;
 }
 
 function buildAggregateMetricSql<TContext>(
@@ -802,20 +575,6 @@ function toSqlConditionFromRelFilterClause<TContext>(
   plan: SingleQueryPlan<TContext>,
 ): SQL {
   const source = resolveFilterSource(clause.column, plan);
-  return toSqlConditionFromSource(clause, source);
-}
-
-function toSqlCondition<TColumn extends string>(
-  clause: ScanFilterClause<TColumn>,
-  columns: import("../types").DrizzleColumnMap<TColumn>,
-  tableName: string,
-): SQL {
-  const source = columns[clause.column as TColumn];
-  if (!source) {
-    throw new UnsupportedSingleQueryPlanError(
-      `Unsupported filter column "${clause.column}" for table "${tableName}".`,
-    );
-  }
   return toSqlConditionFromSource(clause, source);
 }
 

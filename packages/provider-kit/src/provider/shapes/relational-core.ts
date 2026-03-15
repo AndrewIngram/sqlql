@@ -1,5 +1,10 @@
 import { isRelProjectColumnMapping, type RelNode } from "@tupl/foundation";
 
+/**
+ * Relational-core owns the backend-neutral shapes that SQL-like providers reason about:
+ * single-query pipelines, set-op wrappers, and WITH-body wrappers. Providers may rely on these
+ * derived shapes, but not on planner/runtime ownership or execution policy.
+ */
 export class UnsupportedRelationalPlanError extends Error {
   constructor(message: string) {
     super(message);

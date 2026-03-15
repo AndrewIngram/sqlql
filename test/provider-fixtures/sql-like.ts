@@ -1,5 +1,4 @@
 import {
-  buildSqlRelationalQueryForStrategy,
   createSqlRelationalProviderAdapter,
   type QueryRow,
   type RelationalProviderEntityConfig,
@@ -108,25 +107,10 @@ export function createSqlLikeFixtureProvider() {
   return createSqlRelationalProviderAdapter({
     name: "fixture_sql_like",
     entities,
-    queryBackend: {
-      buildQueryForStrategy({ rel, strategy, resolvedEntities, runtime, context, compileOptions }) {
-        return buildSqlRelationalQueryForStrategy(
-          rel,
-          strategy,
-          resolvedEntities,
-          queryTranslationBackend,
-          runtime,
-          context,
-          {
-            createScanBinding: (scan, resolvedEntities) =>
-              planning.createScanBinding(scan, resolvedEntities),
-          },
-          compileOptions,
-        );
-      },
-      async executeQuery({ query }) {
-        return query.rows;
-      },
+    queryBackend: queryTranslationBackend,
+    advanced: {
+      createScanBinding: (scan, resolvedEntities) =>
+        planning.createScanBinding(scan, resolvedEntities),
     },
     resolveRuntime() {
       return {};

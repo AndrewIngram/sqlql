@@ -44,6 +44,6 @@ Compiled plans are provider-specific payloads. `tupl` does not assume SQL text i
 - Ordinary SQL-like adapters should start with `createSqlRelationalProviderAdapter(...)`.
 - The helper should feel like manual provider authoring:
   - top-level lifecycle/config fields
-  - optional strategy overrides
   - one nested `queryBackend` for backend-specific query translation
+  - optional `advanced` overrides only for real backend exceptions
 - `createRelationalProviderAdapter(...)` remains the lower-level escape hatch for unusual adapters.

@@ -208,7 +208,7 @@ Execution behavior notes:
 - unsupported provider pushdown shapes can fall back to local logical execution
 - providers can explicitly reject shapes (`canExecute`) for deterministic behavior
 - cross-provider joins can use keyed helper surfaces when available, but those helpers are optional optimization layers
-- ordinary SQL-like adapters should start with `createSqlRelationalProviderAdapter(...)`, which keeps provider roots close to the manual provider lifecycle (`resolveRuntime`, `canExecute`, compile strategy, query backend, execute)
+- ordinary SQL-like adapters should start with `createSqlRelationalProviderAdapter(...)`, which keeps provider roots close to the manual provider lifecycle (`resolveRuntime`, `canExecute`, query backend, execute) and reserves `advanced` for real backend exceptions
 
 ## Adapter support matrix
 

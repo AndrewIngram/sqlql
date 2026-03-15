@@ -113,7 +113,6 @@ const STRUCTURAL_LINE_BUDGETS = {
   "packages/planner/src/planner/physical/remote-fragment-planning.ts": 300,
   "packages/planner/src/planner/physical/physical-plan-state.ts": 100,
   "packages/runtime/src/runtime/execution/local-execution.ts": 300,
-  "packages/runtime/src/runtime/plan-graph.ts": 50,
   "packages/runtime/src/runtime/execution/execution-plan-builder.ts": 200,
   "packages/runtime/src/runtime/execution/execution-graph.ts": 600,
   "packages/runtime/src/runtime/execution/explain-shaping.ts": 300,
