@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import * as foundation from "@tupl/foundation";
 import * as providerKit from "@tupl/provider-kit";
+import * as providerKitRelationalSql from "@tupl/provider-kit/relational-sql";
 import * as providerKitShapes from "@tupl/provider-kit/shapes";
 import * as providerKitTesting from "@tupl/provider-kit/testing";
 import * as providerDrizzle from "@tupl/provider-drizzle";
@@ -26,12 +27,12 @@ import type {
   RelationalProviderRelCompileStrategy as ProviderRelationalProviderRelCompileStrategy,
   ScanFilterClause as ProviderScanFilterClause,
   ScanOrderBy as ProviderScanOrderBy,
-  SqlRelationalProviderOptions as ProviderSqlRelationalProviderOptions,
   TableAggregateMetric as ProviderTableAggregateMetric,
   TableAggregateRequest as ProviderTableAggregateRequest,
   TableLookupRequest as ProviderTableLookupRequest,
   TableScanRequest as ProviderTableScanRequest,
 } from "@tupl/provider-kit";
+import type { SqlRelationalProviderOptions as ProviderSqlRelationalProviderOptions } from "@tupl/provider-kit/relational-sql";
 
 declare const providerQueryRow: ProviderQueryRow;
 declare const providerRelationalProviderOptions: ProviderRelationalProviderOptions<
@@ -117,11 +118,13 @@ describe("public package imports", () => {
     expect(typeof providerKit.createDataEntityHandle).toBe("function");
     expect(typeof providerKit.createRelationalProviderAdapter).toBe("function");
     expect(typeof providerKit.createSqlRelationalProviderAdapter).toBe("function");
+    expect("UnsupportedSqlRelationalPlanError" in providerKit).toBe(false);
     expect(typeof providerKit.AdapterResult.ok).toBe("function");
   });
 
   it("resolves canonical public subpaths directly", () => {
     expect(typeof providerKitShapes.buildScanUnsupportedReport).toBe("function");
+    expect(typeof providerKitRelationalSql.UnsupportedSqlRelationalPlanError).toBe("function");
     expect("hasSqlNode" in providerKitShapes).toBe(false);
     expect(typeof runtimeExecutor.executeRelWithProvidersResult).toBe("function");
     expect(typeof runtimeSession.createExecutableSchemaSession).toBe("function");

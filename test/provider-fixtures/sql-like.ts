@@ -3,11 +3,13 @@ import {
   type QueryRow,
   type RelationalProviderEntityConfig,
   type ScanFilterClause,
-  type SqlRelationalOrderTerm,
-  type SqlRelationalQueryTranslationBackend,
-  type SqlRelationalSelection,
   type TableScanRequest,
 } from "@tupl/provider-kit";
+import type {
+  SqlRelationalOrderTerm,
+  SqlRelationalQueryTranslationBackend,
+  SqlRelationalSelection,
+} from "@tupl/provider-kit/relational-sql";
 
 import { applyScanRequest, compareRows, matchesFilters } from "./row-ops";
 

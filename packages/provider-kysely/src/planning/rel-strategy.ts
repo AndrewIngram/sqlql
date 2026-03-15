@@ -1,5 +1,5 @@
 import { isRelProjectColumnMapping, type RelNode } from "@tupl/foundation";
-import { UnsupportedSqlRelationalPlanError } from "@tupl/provider-kit";
+import { UnsupportedSqlRelationalPlanError } from "@tupl/provider-kit/relational-sql";
 import {
   buildSingleQueryPlan as buildRelationalSingleQueryPlan,
   canCompileBasicRel,

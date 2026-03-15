@@ -14,6 +14,7 @@ Use this package when authoring custom providers or adapter-style integrations.
 Stable provider/adapter authoring surfaces:
 
 - `@tupl/provider-kit`: provider contracts, request/row types, entity handles, capability helpers
+- `@tupl/provider-kit/relational-sql`: advanced SQL-relational translation types and helper internals
 - `@tupl/provider-kit/shapes`: reusable provider-shape analysis and relational pushdown helpers
 - `@tupl/provider-kit/testing`: framework-neutral adapter conformance cases
 
@@ -27,7 +28,9 @@ package root. It keeps provider roots close to the manual provider lifecycle:
 - optional `advanced` escape hatch for unusual scan-binding or strategy overrides
 
 Adapter authors can usually rely on defaults for resolved entities, scan bindings, and strategy
-selection; `advanced` is only needed for unusual SQL-like backends.
+selection; `advanced` is only needed for unusual SQL-like backends. If an adapter needs the
+backend translation contracts themselves, import those from `@tupl/provider-kit/relational-sql`
+rather than widening the package root surface.
 
 Use `createRelationalProviderAdapter(...)` when an adapter is unusual enough that it cannot fit the
 ordinary SQL-like path cleanly.

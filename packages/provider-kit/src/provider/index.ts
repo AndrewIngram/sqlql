@@ -7,4 +7,4 @@ export * from "./operations";
 export * from "./capabilities";
 export * from "./contracts";
 export * from "./relational/relational-provider";
-export * from "./relational/sql-relational-provider";
+export { createSqlRelationalProviderAdapter } from "./relational/sql-relational-provider";

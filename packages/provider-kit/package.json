@@ -16,6 +16,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./relational-sql": "./src/relational-sql.ts",
     "./shapes": "./src/provider/shapes/index.ts",
     "./testing": "./src/testing.ts"
   },

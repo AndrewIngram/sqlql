@@ -4,9 +4,9 @@ import {
   createSqlRelationalProviderAdapter,
   type QueryRow,
   type RelationalProviderEntityConfig,
-  type SqlRelationalQueryTranslationBackend,
   unwrapProviderOperationResult,
 } from "@tupl/provider-kit";
+import type { SqlRelationalQueryTranslationBackend } from "@tupl/provider-kit/relational-sql";
 
 type FakeEntityConfig = RelationalProviderEntityConfig & { table?: string };
 type FakeQuery = { steps: string[] };

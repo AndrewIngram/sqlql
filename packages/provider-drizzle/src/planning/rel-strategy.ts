@@ -2,7 +2,7 @@ import { isRelProjectColumnMapping, type RelExpr, type RelNode } from "@tupl/fou
 import {
   UnsupportedSqlRelationalPlanError,
   type SqlRelationalScanBinding,
-} from "@tupl/provider-kit";
+} from "@tupl/provider-kit/relational-sql";
 import {
   canCompileBasicRel,
   canCompileSetOpRel,

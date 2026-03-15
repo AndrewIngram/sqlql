@@ -3,7 +3,7 @@ import type {
   SqlRelationalOrderTerm,
   SqlRelationalQueryTranslationBackend,
   SqlRelationalSelection,
-} from "@tupl/provider-kit";
+} from "@tupl/provider-kit/relational-sql";
 
 import {
   applyWhereClause,

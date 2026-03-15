@@ -1,12 +1,12 @@
 import { asc, desc, eq, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import type { RelNode } from "@tupl/foundation";
+import type { ScanFilterClause } from "@tupl/provider-kit";
 import type {
-  ScanFilterClause,
   SqlRelationalOrderTerm,
   SqlRelationalQueryTranslationBackend,
   SqlRelationalSelection,
   SqlRelationalWithSelection,
-} from "@tupl/provider-kit";
+} from "@tupl/provider-kit/relational-sql";
 
 import { executeDrizzleQueryBuilder, toSqlConditionFromSource } from "../backend/query-helpers";
 import type {
