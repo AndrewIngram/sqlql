@@ -177,7 +177,6 @@ describe("simple scan request extraction", () => {
     };
 
     const capability = checkSimpleRelScanCapability(rel, {
-      supportedAtoms: ["scan.project", "scan.filter.basic"],
       policy: {
         supportsSelectColumn(column) {
           return column === "id";

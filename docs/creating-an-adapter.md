@@ -9,7 +9,7 @@ The core contract is intentionally small:
 - `describeCompiledPlan?(plan)`: optional explain/debug surface
 - `execute(plan)`: runs the provider-specific plan and returns canonical rows
 
-Capability atoms are optional helper vocabulary only. If they are useful, use provider-kit helpers inside `canExecute(...)` to collect required atoms or build structured unsupported reports. They are not declared adapter metadata.
+Provider-kit helpers should work directly with canonical rel shapes and field policies. Provider authors should not need a second capability language to describe supported subtrees.
 
 ## Minimal Adapter Skeleton
 
@@ -42,16 +42,12 @@ export function createExampleSqlAdapter(): ProviderAdapter<DbContext> {
     name: "example-sql",
 
     canExecute(rel): boolean | ProviderCapabilityReport {
-      const capability = checkSimpleRelScanCapability(rel, {
-        supportedAtoms: ["scan.project", "scan.filter.basic", "scan.sort", "scan.limit_offset"],
-      });
+      const capability = checkSimpleRelScanCapability(rel);
       return capability.isOk() ? true : capability.error;
     },
 
     async compile(rel) {
-      const capability = checkSimpleRelScanCapability(rel, {
-        supportedAtoms: ["scan.project", "scan.filter.basic", "scan.sort", "scan.limit_offset"],
-      });
+      const capability = checkSimpleRelScanCapability(rel);
       if (capability.isError()) {
         return AdapterResult.err(
           new Error(capability.error.reason ?? "Unsupported simple scan pipeline."),
@@ -140,19 +136,17 @@ Use it when it materially simplifies provider code:
 
 If a provider never needs these helpers, that is fine.
 
-## Optional Capability Helpers
+## Unsupported Reports
 
-Atoms are coarse helper vocabulary only.
+Use provider-kit report builders from shape helpers instead of inventing provider-local error shapes.
 
-They are useful for:
+The preferred pattern is:
 
-- explain diagnostics
-- cheap first-pass checks inside `canExecute(...)`
-- documenting broad provider intent in provider-local code
+- extract a supported rel shape
+- validate backend-specific field rules
+- return the helper-produced unsupported report when that fails
 
-They should stay broad. If support depends on entity, field, operator, or operator combination, that logic belongs in `canExecute(...)`.
-
-If they help, prefer helper calls such as `checkRequiredCapabilities(rel, supportedAtoms)` or `buildCapabilityReport(rel, supportedAtoms, reason)` instead of exposing separate adapter metadata.
+That keeps `canExecute(...)` as the source of truth without introducing extra metadata layers.
 
 ## Wiring the Adapter Into a Facade Schema
 

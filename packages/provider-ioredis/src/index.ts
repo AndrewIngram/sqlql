@@ -12,7 +12,6 @@ import {
   type DataEntityHandle,
   type DataEntityShape,
   type InferDataEntityShapeMetadata,
-  type ProviderCapabilityAtom,
   type ProviderCapabilityReport,
   type ProviderCompiledPlan,
   type ProviderAdapter,
@@ -124,15 +123,6 @@ interface IoredisCompiledRelPayload {
   strategy: "key_lookup_scan";
 }
 
-const REDIS_CAPABILITY_ATOMS: readonly ProviderCapabilityAtom[] = [
-  "lookup.bulk",
-  "scan.project",
-  "scan.filter.basic",
-  "scan.filter.set_membership",
-  "scan.limit_offset",
-  "scan.sort",
-] as const;
-
 function isRuntimeBindingResolver<TContext, TValue>(
   binding: ProviderRuntimeBinding<TContext, TValue>,
 ): binding is (context: TContext) => TValue | PromiseLike<TValue> {
@@ -144,7 +134,7 @@ function isValidRedis(redis: RedisLike | null | undefined): redis is RedisLike {
 }
 
 function buildUnsupportedCapabilityReport(rel: RelNode, reason: string): ProviderCapabilityReport {
-  return buildCapabilityReport(rel, REDIS_CAPABILITY_ATOMS, reason);
+  return buildCapabilityReport(rel, reason, { routeFamily: "lookup" });
 }
 
 function resolveRedisResult<TContext>(
@@ -202,7 +192,6 @@ function buildRelExecutionPayload<TContext>(
 ) {
   return AdapterResult.gen(function* () {
     const shapeCapability = checkSimpleRelScanCapability(rel, {
-      supportedAtoms: REDIS_CAPABILITY_ATOMS,
       unsupportedShapeReason: "Ioredis provider only supports simple single-entity scan pipelines.",
     });
     if (AdapterResult.isError(shapeCapability)) {
@@ -217,7 +206,6 @@ function buildRelExecutionPayload<TContext>(
     const entity = yield* getEntityConfigResult(entitiesByName, request.table, provider);
     const supportedColumns = new Set(entity.columns);
     const keyedCapability = prepareKeyedSimpleRelScan(rel, {
-      supportedAtoms: REDIS_CAPABILITY_ATOMS,
       entity,
       unsupportedShapeReason: "Ioredis provider only supports simple single-entity scan pipelines.",
       policy: {

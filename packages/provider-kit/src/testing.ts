@@ -116,9 +116,6 @@ function describeCapability(capability: boolean | ProviderCapabilityReport): str
   if (capability.reason) {
     return capability.reason;
   }
-  if (capability.missingAtoms?.length) {
-    return `missing atoms ${capability.missingAtoms.join(", ")}`;
-  }
   return "unsupported";
 }
 

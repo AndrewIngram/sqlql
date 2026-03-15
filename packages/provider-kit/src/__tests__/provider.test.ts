@@ -4,14 +4,12 @@ import type { RelNode } from "@tupl/foundation";
 
 import {
   buildCapabilityReport,
-  checkRequiredCapabilities,
   createDataEntityHandle,
   createRelationalProviderAdapter,
   type FragmentProviderAdapter,
   getDataEntityProvider,
   type QueryRow,
   type ProviderAdapter,
-  type ProviderCapabilityAtom,
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/provider-kit";
@@ -25,8 +23,6 @@ import {
   createSessionFromExecutableSchema,
 } from "@tupl/test-support/runtime";
 import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
-
-import { collectCapabilityAtomsForRel } from "../provider/capabilities";
 
 type TestProvider = Omit<FragmentProviderAdapter, "name"> &
   Partial<LookupManyCapableProviderAdapter>;
@@ -258,23 +254,16 @@ describe("query/provider runtime", () => {
   });
 
   it("returns structured capability reports for unsupported relational fragments", async () => {
-    const requiredAtomsByCheck: ProviderCapabilityAtom[][] = [];
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
       entities: {
         orders: {},
       },
-      resolveRelCompileStrategy({ rel }) {
-        const requirements = checkRequiredCapabilities(rel, ["scan.project"]);
-        requiredAtomsByCheck.push(requirements.requiredAtoms);
+      resolveRelCompileStrategy() {
         return null;
       },
       unsupportedRelReason(args) {
-        return buildCapabilityReport(
-          args.rel,
-          ["scan.project"],
-          "Rel fragment is not supported for this provider.",
-        );
+        return buildCapabilityReport(args.rel, "Rel fragment is not supported for this provider.");
       },
       async compileRelFragment() {
         return Result.ok({
@@ -318,21 +307,16 @@ describe("query/provider runtime", () => {
       {},
     );
 
-    expect(requiredAtomsByCheck).toEqual([["join.inner", "scan.project"]]);
     expect(capability).toEqual({
       supported: false,
       routeFamily: "rel-core",
-      requiredAtoms: ["join.inner", "scan.project"],
-      missingAtoms: ["join.inner"],
       reason: "Rel fragment is not supported for this provider.",
     });
   });
 
-  it("passes route family and required atoms into supported relational capability checks", async () => {
+  it("passes route family into supported relational capability checks", async () => {
     const observed: {
       routeFamily: string;
-      requiredAtoms: ProviderCapabilityAtom[];
-      missingAtoms: ProviderCapabilityAtom[];
       strategy: string | null;
     }[] = [];
     const adapter = createRelationalProviderAdapter({
@@ -344,11 +328,8 @@ describe("query/provider runtime", () => {
         return "basic";
       },
       isRelStrategySupported(args) {
-        const requirements = checkRequiredCapabilities(args.rel, ["scan.project", "join.inner"]);
         observed.push({
           routeFamily: args.routeFamily,
-          requiredAtoms: requirements.requiredAtoms,
-          missingAtoms: requirements.missingAtoms,
           strategy: args.strategy,
         });
         return true;
@@ -399,8 +380,6 @@ describe("query/provider runtime", () => {
     expect(observed).toEqual([
       {
         routeFamily: "rel-core",
-        requiredAtoms: ["join.inner", "scan.project"],
-        missingAtoms: [],
         strategy: "basic",
       },
     ]);
@@ -510,39 +489,6 @@ describe("query/provider runtime", () => {
         {},
       ),
     ).resolves.toEqual(Result.ok([{ id: "o1" }]));
-  });
-
-  it("does not require expr.null_distinct for is_null and is_not_null scan filters", () => {
-    const isNullAtoms = collectCapabilityAtomsForRel(
-      createScanFragment({
-        provider: "warehouse",
-        table: "orders",
-        select: ["id"],
-        where: [{ column: "org_id", op: "is_null" }],
-      }),
-    );
-    const isNotNullAtoms = collectCapabilityAtomsForRel(
-      createScanFragment({
-        provider: "warehouse",
-        table: "orders",
-        select: ["id"],
-        where: [{ column: "org_id", op: "is_not_null" }],
-      }),
-    );
-    const distinctAtoms = collectCapabilityAtomsForRel(
-      createScanFragment({
-        provider: "warehouse",
-        table: "orders",
-        select: ["id"],
-        where: [{ column: "org_id", op: "is_distinct_from", value: null }],
-      }),
-    );
-
-    expect(isNullAtoms).toContain("scan.filter.basic");
-    expect(isNotNullAtoms).toContain("scan.filter.basic");
-    expect(isNullAtoms).not.toContain("expr.null_distinct");
-    expect(isNotNullAtoms).not.toContain("expr.null_distinct");
-    expect(distinctAtoms).toContain("expr.null_distinct");
   });
 
   it("routes same-provider queries through rel fragments", async () => {
@@ -2356,7 +2302,7 @@ describe("query/provider runtime", () => {
       executableSchema.query({
         context: {},
         fallbackPolicy: {
-          rejectOnMissingAtom: true,
+          allowFallback: false,
         },
         sql: `
         SELECT o.id, u.email

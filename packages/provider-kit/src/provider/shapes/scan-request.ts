@@ -6,7 +6,7 @@ import {
   type ScanOrderBy,
   type TableScanRequest,
 } from "@tupl/foundation";
-import { buildCapabilityReport, type ProviderCapabilityAtom } from "../capabilities";
+import { buildCapabilityReport } from "../capabilities";
 
 /**
  * Simple scan extraction owns the narrow "single-source scan pipeline" shape used by providers
@@ -102,7 +102,6 @@ export interface SimpleRelScanSupportPolicy<TColumn extends string = string> {
 }
 
 export interface SimpleRelScanCapabilityOptions<TColumn extends string = string> {
-  supportedAtoms: readonly ProviderCapabilityAtom[];
   policy?: SimpleRelScanSupportPolicy<TColumn>;
   unsupportedShapeReason?: string;
   mapValidationError?(error: Error, request: TableScanRequest): string;
@@ -148,7 +147,6 @@ export function checkSimpleRelScanCapability<TColumn extends string = string>(
     return Result.err(
       buildCapabilityReport(
         rel,
-        options.supportedAtoms,
         options.unsupportedShapeReason ??
           "Provider only supports simple single-source scan pipelines.",
       ),
@@ -164,7 +162,6 @@ export function checkSimpleRelScanCapability<TColumn extends string = string>(
     return Result.err(
       buildCapabilityReport(
         rel,
-        options.supportedAtoms,
         options.mapValidationError?.(validation.error, request) ?? validation.error.message,
       ),
     );

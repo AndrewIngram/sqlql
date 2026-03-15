@@ -91,9 +91,6 @@ export function summarizeCapabilityReason(report: ProviderCapabilityReport | nul
   if (report.reason && report.reason.length > 0) {
     return report.reason;
   }
-  if (report.missingAtoms && report.missingAtoms.length > 0) {
-    return `Missing provider capability atoms: ${report.missingAtoms.join(", ")}.`;
-  }
   return "Provider pushdown is not available for this query shape.";
 }
 
@@ -115,12 +112,6 @@ export function buildCapabilityDiagnostics<TContext>(
   };
   if (report.routeFamily) {
     details.routeFamily = report.routeFamily;
-  }
-  if (report.requiredAtoms?.length) {
-    details.requiredAtoms = report.requiredAtoms;
-  }
-  if (report.missingAtoms?.length) {
-    details.missingAtoms = report.missingAtoms;
   }
   if (report.estimatedRows != null) {
     details.estimatedRows = report.estimatedRows;

@@ -2,7 +2,6 @@ import { Result } from "better-result";
 
 import {
   buildCapabilityReport,
-  type ProviderCapabilityAtom,
   type ProviderOperationResult,
   type ProviderCapabilityReport,
 } from "..";
@@ -27,7 +26,6 @@ export interface KeyedSimpleRelScan<TColumn extends string = string> {
 }
 
 export interface KeyedSimpleRelScanOptions<TColumn extends string = string> {
-  supportedAtoms: readonly ProviderCapabilityAtom[];
   entity: LookupEntityBinding<TColumn>;
   policy?: SimpleRelScanSupportPolicy<TColumn>;
   unsupportedShapeReason?: string;
@@ -36,9 +34,8 @@ export interface KeyedSimpleRelScanOptions<TColumn extends string = string> {
 export function buildLookupOnlyUnsupportedReport(
   rel: RelNode,
   reason: string,
-  supportedAtoms: readonly ProviderCapabilityAtom[] = ["lookup.bulk"],
 ): ProviderCapabilityReport {
-  return buildCapabilityReport(rel, supportedAtoms, reason);
+  return buildCapabilityReport(rel, reason, { routeFamily: "lookup" });
 }
 
 export function validateLookupRequest<TColumns extends string>(
@@ -70,7 +67,6 @@ export function prepareKeyedSimpleRelScan<TColumn extends string = string>(
   options: KeyedSimpleRelScanOptions<TColumn>,
 ): Result<KeyedSimpleRelScan<TColumn>, ProviderCapabilityReport> {
   const capability = checkSimpleRelScanCapability(rel, {
-    supportedAtoms: options.supportedAtoms,
     unsupportedShapeReason:
       options.unsupportedShapeReason ?? "Provider only supports keyed simple scan pipelines.",
     ...(options.policy ? { policy: options.policy } : {}),
@@ -85,7 +81,6 @@ export function prepareKeyedSimpleRelScan<TColumn extends string = string>(
     return Result.err(
       buildCapabilityReport(
         rel,
-        options.supportedAtoms,
         `Provider requires an equality or IN predicate on ${request.table}.${options.entity.lookupKey}.`,
       ),
     );
@@ -100,7 +95,7 @@ export function prepareKeyedSimpleRelScan<TColumn extends string = string>(
   } satisfies ProviderLookupManyRequest;
   const validation = validateLookupRequest(lookupRequest, options.entity);
   if (Result.isError(validation)) {
-    return Result.err(buildCapabilityReport(rel, options.supportedAtoms, validation.error.message));
+    return Result.err(buildCapabilityReport(rel, validation.error.message));
   }
 
   return Result.ok({

@@ -45,7 +45,6 @@ export function createExampleKvAdapter(rows: KvRecord[]): ProviderAdapter<KvCont
 
     canExecute(rel): boolean | ProviderCapabilityReport {
       const capability = checkSimpleRelScanCapability(rel, {
-        supportedAtoms: ["scan.project", "scan.filter.basic", "scan.limit_offset"],
         unsupportedShapeReason:
           "This KV adapter only supports simple single-entity scan pipelines.",
       });
@@ -54,7 +53,6 @@ export function createExampleKvAdapter(rows: KvRecord[]): ProviderAdapter<KvCont
 
     async compile(rel) {
       const capability = checkSimpleRelScanCapability(rel, {
-        supportedAtoms: ["scan.project", "scan.filter.basic", "scan.limit_offset"],
         unsupportedShapeReason:
           "This KV adapter only supports simple single-entity scan pipelines.",
       });
@@ -106,15 +104,13 @@ For keyed single-entity scans, prefer `prepareKeyedSimpleRelScan(...)` over stit
 
 Only add scan support if your backend has a rational way to do it.
 
-Typical coarse atoms, if you choose to use helper-based checks inside `canExecute(...)`:
+The preferred implementation is:
 
-- `scan.project`
-- `scan.filter.basic`
-- `scan.filter.set_membership`
-- `scan.sort`
-- `scan.limit_offset`
+- extract a simple single-source scan pipeline
+- validate projected, filtered, and sorted fields
+- reject unsupported shapes explicitly with a structured helper report
 
-If the backend cannot support these without pathological behavior, leave them unsupported and rely on explicit rejection or controlled fallback.
+If the backend cannot support that without pathological behavior, leave it unsupported and rely on explicit rejection or controlled fallback.
 
 ## Stage 2: Selective Aggregates and Broader Rel Pushdown
 
@@ -142,7 +138,6 @@ Good reasons to reject:
 Useful policy knobs:
 
 - `allowFallback`
-- `rejectOnMissingAtom`
 - `rejectOnEstimatedCost`
 - `maxLookupFanout`
 - `maxLocalRows`
@@ -151,13 +146,11 @@ A good KV provider is usually stricter than a relational one here. Silent fallba
 
 ## Practical Capability Shape
 
-A healthy KV provider might use no atoms at all and still work correctly.
+A healthy KV provider should only need:
 
-If it does use atom helpers, keep them sparse:
-
-- maybe `scan.project`
-- maybe `scan.filter.basic`
-- maybe `scan.limit_offset`
+- rel-shape extraction helpers
+- field-policy validation
+- structured unsupported reports
 
 `canExecute(...)` remains the source of truth.
 

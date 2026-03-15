@@ -17,24 +17,12 @@ describe("scan provider core", () => {
       limit: 10,
     };
 
-    const report = buildScanUnsupportedReport(
-      rel,
-      ["scan.project", "scan.filter.basic"],
-      "Scan providers do not support sort pushdown.",
-    );
+    const report = buildScanUnsupportedReport(rel, "Scan providers do not support sort pushdown.");
 
     expect(report).toMatchObject({
       supported: false,
       reason: "Scan providers do not support sort pushdown.",
       routeFamily: "scan",
     });
-    expect(report.requiredAtoms).toEqual([
-      "scan.project",
-      "scan.filter.basic",
-      "expr.compare_basic",
-      "scan.sort",
-      "scan.limit_offset",
-    ]);
-    expect(report.missingAtoms).toEqual(["expr.compare_basic", "scan.sort", "scan.limit_offset"]);
   });
 });

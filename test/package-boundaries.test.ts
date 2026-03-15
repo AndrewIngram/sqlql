@@ -489,7 +489,6 @@ describe("package boundaries", () => {
     ];
     const disallowedPrimitives = [
       "bindProviderEntities",
-      "collectCapabilityAtomsForRel",
       "createDataEntityHandle",
       "inferRouteFamilyForRel",
       "normalizeDataEntityShape",

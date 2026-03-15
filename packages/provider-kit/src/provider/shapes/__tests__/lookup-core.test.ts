@@ -27,8 +27,8 @@ describe("lookup provider core", () => {
     );
 
     expect(report.supported).toBe(false);
-    expect(report.routeFamily).toBe("scan");
-    expect(report.missingAtoms).toContain("scan.project");
+    expect(report.routeFamily).toBe("lookup");
+    expect(report.reason).toBe("Lookup-only providers do not support scan pushdown.");
   });
 
   it("shares lookup validation, filtering, and projection", () => {
@@ -72,7 +72,6 @@ describe("lookup provider core", () => {
     };
 
     const prepared = prepareKeyedSimpleRelScan(rel, {
-      supportedAtoms: ["lookup.bulk", "scan.project", "scan.filter.basic", "scan.sort"],
       entity: {
         lookupKey: "product_id",
         columns: ["product_id", "view_count"] as const,
@@ -115,7 +114,6 @@ describe("lookup provider core", () => {
     };
 
     const prepared = prepareKeyedSimpleRelScan(rel, {
-      supportedAtoms: ["lookup.bulk", "scan.project"],
       entity: {
         lookupKey: "product_id",
         columns: ["product_id", "view_count"] as const,

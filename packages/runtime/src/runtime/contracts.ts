@@ -47,7 +47,6 @@ export const DEFAULT_QUERY_GUARDRAILS: QueryGuardrails = {
 export const DEFAULT_QUERY_FALLBACK_POLICY: Required<QueryFallbackPolicy> = {
   allowFallback: true,
   warnOnFallback: true,
-  rejectOnMissingAtom: false,
   rejectOnEstimatedCost: false,
   maxLocalRows: Number.POSITIVE_INFINITY,
   maxLookupFanout: Number.POSITIVE_INFINITY,
