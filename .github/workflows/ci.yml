@@ -61,6 +61,10 @@ jobs:
   test-fast:
     name: Test (Fast)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -87,18 +91,22 @@ jobs:
             ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Run fast tests
-        run: pnpm test:fast:ci
+        run: pnpm test:fast:ci --shard=${{ matrix.shard }}/2 --outputFile.blob=.vitest-reports/test-fast-${{ matrix.shard }}-of-2.json
 
       - name: Upload fast Vitest blob report
         uses: actions/upload-artifact@v4
         with:
-          name: vitest-blob-fast
-          path: .vitest-reports/test-fast.json
+          name: vitest-blob-fast-${{ matrix.shard }}-of-2
+          path: .vitest-reports/test-fast-${{ matrix.shard }}-of-2.json
           if-no-files-found: error
 
   test-playground-slow:
     name: Test (Playground Slow)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -125,13 +133,13 @@ jobs:
             ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Run slow playground tests
-        run: pnpm test:playground:slow:ci
+        run: pnpm test:playground:slow:ci --shard=${{ matrix.shard }}/2 --outputFile.blob=.vitest-reports/test-playground-slow-${{ matrix.shard }}-of-2.json
 
       - name: Upload slow Vitest blob report
         uses: actions/upload-artifact@v4
         with:
-          name: vitest-blob-playground-slow
-          path: .vitest-reports/test-playground-slow.json
+          name: vitest-blob-playground-slow-${{ matrix.shard }}-of-2
+          path: .vitest-reports/test-playground-slow-${{ matrix.shard }}-of-2.json
           if-no-files-found: error
 
   coverage-report:
@@ -164,13 +172,25 @@ jobs:
       - name: Download fast Vitest blob report
         uses: actions/download-artifact@v4
         with:
-          name: vitest-blob-fast
+          name: vitest-blob-fast-1-of-2
+          path: .vitest-reports
+
+      - name: Download fast Vitest blob report (shard 2)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-blob-fast-2-of-2
           path: .vitest-reports
 
       - name: Download slow Vitest blob report
         uses: actions/download-artifact@v4
         with:
-          name: vitest-blob-playground-slow
+          name: vitest-blob-playground-slow-1-of-2
+          path: .vitest-reports
+
+      - name: Download slow Vitest blob report (shard 2)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-blob-playground-slow-2-of-2
           path: .vitest-reports
 
       - name: Merge reports and generate coverage output
