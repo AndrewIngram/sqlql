@@ -11,4 +11,4 @@ export {
   type SqlRelationalScanBinding,
   type SqlRelationalSelection,
   type SqlRelationalWithSelection,
-} from "./provider/relational/sql-relational-provider";
+} from "./provider/relational/sql-relational/types";

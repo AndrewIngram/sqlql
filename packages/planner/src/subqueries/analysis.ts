@@ -1,7 +1,10 @@
 import type { ExpressionAst, SelectAst, SelectColumnAst } from "../sqlite-parser/ast";
 
 /**
- * Subquery analysis owns correlated-subquery shape detection and supported rewrite extraction.
+ * Subquery analysis owns correlated-subquery shape detection and the narrow rewrite contracts that
+ * later decorrelation relies on. It intentionally rejects arbitrary correlated AST shapes here so
+ * later planner passes can work from a small set of proven EXISTS/IN rewrites instead of
+ * rediscovering those invariants from raw SQL parser output.
  */
 export function parseSubqueryAst(raw: unknown): SelectAst | null {
   if (!raw || typeof raw !== "object") {

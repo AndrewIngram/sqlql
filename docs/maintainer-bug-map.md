@@ -21,11 +21,11 @@ This guide is the fastest route to the owning module when a bug report lands.
 - Scan or keyed-helper execution bug inside one provider:
   start in that provider package `execution/`
 - SQL lowering bug for joins, pushed filters, or semi-joins:
-  start in `packages/planner/src/planner/select/select-join-tree.ts`
+  start in `packages/planner/src/select/select-join-tree.ts`
 - SQL lowering bug for expressions, subqueries, or literal filters:
-  start in `packages/planner/src/planner/sql-expr-lowering.ts` and `packages/planner/src/planner/where-lowering.ts`
+  start in `packages/planner/src/sql-expr-lowering.ts` and `packages/planner/src/where-lowering.ts`
 - View expansion or normalized schema/view mismatch:
-  start in `packages/planner/src/planner/view-expansion.ts` and `packages/schema-model/src/normalization`
+  start in `packages/planner/src/view-expansion.ts` and `packages/schema-model/src/normalization`
 - Runtime fallback, provider-fragment preference, or guardrail behavior:
   start in `packages/runtime/src/runtime/query-runner.ts` and `packages/runtime/src/runtime/provider/`
 - Session/explain output bug:

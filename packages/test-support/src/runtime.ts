@@ -34,16 +34,9 @@ import {
 import {
   createSchemaBuilder,
   toSqlDDL,
-  type AggregatePlanDecision,
-  type LookupPlanDecision,
-  type NormalizedColumnBinding,
-  type PlannedAggregateRequest,
-  type PlannedLookupRequest,
-  type PlannedScanRequest,
   type QueryRow,
   type ScanFilterClause,
   type ScanOrderBy,
-  type ScanPlanDecision,
   type SchemaColumnLensDefinition,
   type SchemaDefinition,
   type TableAggregateMetric,
@@ -51,11 +44,19 @@ import {
   type TableColumnDefinition,
   type TableLookupRequest,
   type TableMethodsMap,
-  type TableName,
   type TableScanRequest,
 } from "@tupl/schema-model";
 import { isNormalizedSourceColumnBinding } from "@tupl/schema-model/mapping";
+import type { NormalizedColumnBinding, TableName } from "@tupl/schema-model/normalized";
 import { getNormalizedTableBinding } from "@tupl/schema-model/normalization";
+import type {
+  AggregatePlanDecision,
+  LookupPlanDecision,
+  PlannedAggregateRequest,
+  PlannedLookupRequest,
+  PlannedScanRequest,
+  ScanPlanDecision,
+} from "@tupl/schema-model/planning";
 
 import { aggregateArrayRows, scanArrayRows } from "./methods";
 

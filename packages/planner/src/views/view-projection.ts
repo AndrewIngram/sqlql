@@ -1,6 +1,6 @@
 import type { RelExpr, RelNode } from "@tupl/foundation";
-import { type NormalizedColumnBinding } from "@tupl/schema-model";
 import { isNormalizedSourceColumnBinding } from "@tupl/schema-model/mapping";
+import type { NormalizedColumnBinding } from "@tupl/schema-model/normalized";
 import { getNormalizedColumnBindings } from "@tupl/schema-model/normalization";
 
 import { nextRelId } from "../physical/planner-ids";

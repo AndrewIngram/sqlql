@@ -8,13 +8,9 @@ import {
   unwrapProviderOperationResult,
   type ProviderAdapter,
 } from "@tupl/provider-kit";
-import {
-  type NormalizedPhysicalTableBinding,
-  type QueryRow,
-  type ScanFilterClause,
-  type TableScanRequest,
-} from "@tupl/schema-model";
+import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/schema-model";
 import { mapProviderRowsToLogical } from "@tupl/schema-model/mapping";
+import type { NormalizedPhysicalTableBinding } from "@tupl/schema-model/normalized";
 import {
   createPhysicalBindingFromEntity,
   createTableDefinitionFromEntity,

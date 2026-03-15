@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 
 import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";
 
-import { normalizeRelForProvider } from "../planner/provider/provider-rel-normalization";
-import { normalizeRelForSnapshot } from "../planner/translation-normalization";
-import { rewriteExpandedViewNode } from "../planner/views/view-node-rewriting";
+import { normalizeRelForProvider } from "../provider/provider-rel-normalization";
+import { normalizeRelForSnapshot } from "../translation-normalization";
+import { rewriteExpandedViewNode } from "../views/view-node-rewriting";
 
 function buildWindowNode(alias: string): Extract<RelNode, { kind: "window" }> {
   return {

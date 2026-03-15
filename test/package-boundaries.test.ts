@@ -83,35 +83,35 @@ const DISALLOWED_WRAPPER_TARGETS = [
 ] as const;
 
 const STRUCTURAL_LINE_BUDGETS = {
-  "packages/planner/src/planner/planning.ts": 200,
-  "packages/planner/src/planner/sql-lowering.ts": 250,
-  "packages/planner/src/planner/query-shape-validation.ts": 1200,
-  "packages/planner/src/planner/structured-select-lowering.ts": 1200,
-  "packages/planner/src/planner/simple-select-lowering.ts": 200,
-  "packages/planner/src/planner/select-shape.ts": 400,
-  "packages/planner/src/planner/select-join-tree.ts": 400,
-  "packages/planner/src/planner/select-project.ts": 300,
-  "packages/planner/src/planner/select-projections.ts": 800,
-  "packages/planner/src/planner/select-from-lowering.ts": 400,
-  "packages/planner/src/planner/where-lowering.ts": 1200,
-  "packages/planner/src/planner/sql-expr-lowering.ts": 1200,
-  "packages/planner/src/planner/sql-expr-utils.ts": 200,
-  "packages/planner/src/planner/expr-literals.ts": 300,
-  "packages/planner/src/planner/expr-column-refs.ts": 300,
-  "packages/planner/src/planner/expr-subqueries.ts": 300,
-  "packages/planner/src/planner/expr-functions.ts": 300,
-  "packages/planner/src/planner/aggregate-lowering.ts": 1200,
-  "packages/planner/src/planner/aggregate-ordering.ts": 200,
-  "packages/planner/src/planner/group-by-resolution.ts": 300,
-  "packages/planner/src/planner/aggregate-order-resolution.ts": 400,
-  "packages/planner/src/planner/having-lowering.ts": 800,
-  "packages/planner/src/planner/view-expansion.ts": 1200,
-  "packages/planner/src/planner/provider-fragments.ts": 1200,
-  "packages/planner/src/planner/provider/conventions.ts": 1200,
-  "packages/planner/src/planner/physical-planning.ts": 200,
-  "packages/planner/src/planner/physical/local-step-planning.ts": 800,
-  "packages/planner/src/planner/physical/remote-fragment-planning.ts": 300,
-  "packages/planner/src/planner/physical/physical-plan-state.ts": 100,
+  "packages/planner/src/planning.ts": 200,
+  "packages/planner/src/sql-lowering.ts": 250,
+  "packages/planner/src/query-shape-validation.ts": 1200,
+  "packages/planner/src/structured-select-lowering.ts": 1200,
+  "packages/planner/src/simple-select-lowering.ts": 200,
+  "packages/planner/src/select/select-shape.ts": 400,
+  "packages/planner/src/select/select-join-tree.ts": 400,
+  "packages/planner/src/select/select-project.ts": 300,
+  "packages/planner/src/select/select-projections.ts": 800,
+  "packages/planner/src/select/select-from-lowering.ts": 400,
+  "packages/planner/src/where-lowering.ts": 1200,
+  "packages/planner/src/sql-expr-lowering.ts": 1200,
+  "packages/planner/src/sql-expr-utils.ts": 200,
+  "packages/planner/src/expr/expr-literals.ts": 300,
+  "packages/planner/src/expr/expr-column-refs.ts": 300,
+  "packages/planner/src/subqueries/expr-subquery-lowering.ts": 300,
+  "packages/planner/src/expr/expr-functions.ts": 300,
+  "packages/planner/src/aggregate-lowering.ts": 1200,
+  "packages/planner/src/aggregate-ordering.ts": 200,
+  "packages/planner/src/aggregate/group-by-resolution.ts": 300,
+  "packages/planner/src/aggregate/aggregate-order-resolution.ts": 400,
+  "packages/planner/src/having-lowering.ts": 800,
+  "packages/planner/src/view-expansion.ts": 1200,
+  "packages/planner/src/provider-fragments.ts": 1200,
+  "packages/planner/src/provider/conventions.ts": 1200,
+  "packages/planner/src/physical-planning.ts": 200,
+  "packages/planner/src/physical/local-step-planning.ts": 800,
+  "packages/planner/src/physical/remote-fragment-planning.ts": 300,
+  "packages/planner/src/physical/physical-plan-state.ts": 100,
   "packages/runtime/src/runtime/execution/local-execution.ts": 300,
   "packages/runtime/src/runtime/execution/execution-plan-builder.ts": 200,
   "packages/runtime/src/runtime/execution/execution-graph.ts": 600,
@@ -132,7 +132,7 @@ const STRUCTURAL_LINE_BUDGETS = {
   "packages/runtime/src/runtime/execution/expression-eval.ts": 800,
   "packages/runtime/src/runtime/execution/subquery-preparation.ts": 800,
   "packages/runtime/src/runtime/execution/row-ops.ts": 800,
-  "packages/planner/src/planner/views/view-lowering.ts": 800,
+  "packages/planner/src/views/view-lowering.ts": 800,
   "packages/schema-model/src/types.ts": 150,
   "packages/schema-model/src/normalization.ts": 150,
   "packages/schema-model/src/normalization/schema-finalization.ts": 150,
@@ -568,12 +568,8 @@ describe("package boundaries", () => {
     expect(() =>
       statSync(join(REPO_ROOT, "packages/runtime/src/runtime/query-runner-core.ts")),
     ).toThrow();
-    expect(() =>
-      statSync(join(REPO_ROOT, "packages/planner/src/planner/query-runner-core.ts")),
-    ).toThrow();
-    expect(() =>
-      statSync(join(REPO_ROOT, "packages/planner/src/planner/sql-lowering-core.ts")),
-    ).toThrow();
+    expect(() => statSync(join(REPO_ROOT, "packages/planner/src/query-runner-core.ts"))).toThrow();
+    expect(() => statSync(join(REPO_ROOT, "packages/planner/src/sql-lowering-core.ts"))).toThrow();
   });
 
   it("keeps runtime free of schema-view lowering logic", () => {

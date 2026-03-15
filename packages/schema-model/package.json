@@ -21,6 +21,8 @@
     "./definition": "./src/definition.ts",
     "./enums": "./src/enums.ts",
     "./mapping": "./src/mapping/index.ts",
+    "./normalized": "./src/normalized.ts",
+    "./planning": "./src/planning.ts",
     "./normalization": "./src/normalization.ts"
   },
   "publishConfig": {
