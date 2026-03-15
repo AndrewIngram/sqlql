@@ -1,15 +1,9 @@
-import { Result, type Result as BetterResult } from "better-result";
+import type { Result as BetterResult } from "better-result";
 
 import type { ConstraintValidationOptions } from "./constraints";
 import { executeRelLocallyResult, type RelExecutionContext } from "./execution/local-execution";
-import { expandRelViewsResult } from "@tupl/planner";
-import {
-  TuplExecutionError,
-  TuplGuardrailError,
-  type TuplPlanningError,
-  type RelNode,
-} from "@tupl/foundation";
-import type { ProviderMap } from "@tupl/provider-kit";
+import { type RelNode, type TuplError } from "@tupl/foundation";
+import type { ProvidersMap } from "@tupl/provider-kit";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
 
 /**
@@ -25,13 +19,13 @@ export interface RelExecutionGuardrails {
 export async function executeRelWithProvidersResult<TContext>(
   rel: RelNode,
   schema: SchemaDefinition,
-  providers: ProviderMap<TContext>,
+  providers: ProvidersMap<TContext>,
   context: TContext,
   guardrails: RelExecutionGuardrails,
   options: {
     constraintValidation?: ConstraintValidationOptions;
   } = {},
-): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
+): Promise<BetterResult<QueryRow[], TuplError>> {
   const executionContext: RelExecutionContext<TContext> = {
     schema,
     providers,
@@ -43,10 +37,5 @@ export async function executeRelWithProvidersResult<TContext>(
     subqueryResults: new Map<string, unknown>(),
   };
 
-  const expandedRelResult = expandRelViewsResult(rel, schema, context);
-  if (Result.isError(expandedRelResult)) {
-    return expandedRelResult;
-  }
-
-  return executeRelLocallyResult(expandedRelResult.value, executionContext);
+  return executeRelLocallyResult(rel, executionContext);
 }

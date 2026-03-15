@@ -1,13 +1,15 @@
 import {
   createSqlRelationalProviderAdapter,
-  type ProviderFragment,
   type QueryRow,
   type RelationalProviderEntityConfig,
   type ScanFilterClause,
-  type SqlRelationalOrderTerm,
-  type SqlRelationalSelection,
   type TableScanRequest,
 } from "@tupl/provider-kit";
+import type {
+  SqlRelationalOrderTerm,
+  SqlRelationalQueryTranslationBackend,
+  SqlRelationalSelection,
+} from "@tupl/provider-kit/relational-sql";
 
 import { applyScanRequest, compareRows, matchesFilters } from "./row-ops";
 
@@ -35,78 +37,82 @@ const entities = {
 } satisfies Record<string, FixtureEntityConfig>;
 
 export function createSqlLikeFixtureProvider() {
+  const planning = {
+    createScanBinding(scan: Extract<any, { kind: "scan" }>, resolvedEntities: Record<string, any>) {
+      const resolved = resolvedEntities[scan.table];
+      if (!resolved) {
+        throw new Error(`Unknown fixture entity: ${scan.table}`);
+      }
+
+      return {
+        alias: scan.alias ?? resolved.table,
+        entity: resolved.entity,
+        table: resolved.table,
+        scan,
+        resolved,
+      };
+    },
+  };
+
+  const queryTranslationBackend: SqlRelationalQueryTranslationBackend<
+    unknown,
+    any,
+    any,
+    unknown,
+    FixtureQuery
+  > = {
+    createRootQuery({ root }) {
+      return {
+        rows: [...root.resolved.config.rows],
+      };
+    },
+    applyRegularJoin() {
+      throw new Error("Fixture SQL-like provider does not model joins.");
+    },
+    applySemiJoin() {
+      throw new Error("Fixture SQL-like provider does not model semi-joins.");
+    },
+    applyWhereClause({ query, clause }) {
+      return applyFilterClause(query, clause);
+    },
+    applySelection({ query, selection }) {
+      return {
+        rows: applySelection(query.rows, selection),
+      };
+    },
+    applyGroupBy({ query }) {
+      return query;
+    },
+    applyOrderBy({ query, orderBy }) {
+      const rows = [...query.rows].sort((left, right) =>
+        compareRows(left, right, orderTermsToScanOrderBy(orderBy)),
+      );
+      return { rows };
+    },
+    applyLimit({ query, limit }) {
+      return { rows: query.rows.slice(0, limit) };
+    },
+    applyOffset({ query, offset }) {
+      return { rows: query.rows.slice(offset) };
+    },
+    applySetOp() {
+      throw new Error("Fixture SQL-like provider does not model set operations.");
+    },
+    buildWithQuery() {
+      throw new Error("Fixture SQL-like provider does not model CTEs.");
+    },
+    async executeQuery({ query }) {
+      return query.rows;
+    },
+  };
+
   return createSqlRelationalProviderAdapter({
     name: "fixture_sql_like",
     entities,
-    resolveEntity({ entity, config }) {
-      return {
-        entity,
-        table: entity,
-        config,
-      };
-    },
-    backend: {
-      planning: {
-        createScanBinding(scan, resolvedEntities) {
-          const resolved = resolvedEntities[scan.table];
-          if (!resolved) {
-            throw new Error(`Unknown fixture entity: ${scan.table}`);
-          }
-
-          return {
-            alias: scan.alias ?? resolved.table,
-            entity: resolved.entity,
-            table: resolved.table,
-            scan,
-            resolved,
-          };
-        },
-      },
-      query: {
-        createRootQuery({ root }) {
-          return {
-            rows: [...root.resolved.config.rows],
-          };
-        },
-        applyRegularJoin() {
-          throw new Error("Fixture SQL-like provider does not model joins.");
-        },
-        applySemiJoin() {
-          throw new Error("Fixture SQL-like provider does not model semi-joins.");
-        },
-        applyWhereClause({ query, clause }) {
-          return applyFilterClause(query, clause);
-        },
-        applySelection({ query, selection }) {
-          return {
-            rows: applySelection(query.rows, selection),
-          };
-        },
-        applyGroupBy({ query }) {
-          return query;
-        },
-        applyOrderBy({ query, orderBy }) {
-          const rows = [...query.rows].sort((left, right) =>
-            compareRows(left, right, orderTermsToScanOrderBy(orderBy)),
-          );
-          return { rows };
-        },
-        applyLimit({ query, limit }) {
-          return { rows: query.rows.slice(0, limit) };
-        },
-        applyOffset({ query, offset }) {
-          return { rows: query.rows.slice(offset) };
-        },
-        applySetOp() {
-          throw new Error("Fixture SQL-like provider does not model set operations.");
-        },
-        buildWithQuery() {
-          throw new Error("Fixture SQL-like provider does not model CTEs.");
-        },
-        async executeQuery({ query }) {
-          return query.rows;
-        },
-      },
+    queryBackend: queryTranslationBackend,
+    advanced: {
+      createScanBinding: (scan, resolvedEntities) =>
+        planning.createScanBinding(scan, resolvedEntities),
     },
     resolveRuntime() {
       return {};
@@ -126,64 +132,45 @@ export function createSqlLikeConformanceOptions() {
   return {
     provider: createSqlLikeFixtureProvider(),
     context: {},
-    scan: {
-      fragment: {
-        kind: "scan",
-        provider: "fixture_sql_like",
-        table: "orders",
-        request: {
-          table: "orders",
-          select: ["id", "total_cents"],
-          where: [{ column: "customer_id", op: "eq", value: "c1" }],
-          orderBy: [{ column: "total_cents", direction: "desc" }],
-          limit: 1,
-        },
-      } satisfies Extract<ProviderFragment, { kind: "scan" }>,
-      expectedRows: [{ id: "o2", total_cents: 1800 }],
-    },
     rel: {
-      fragment: {
-        kind: "rel",
-        provider: "fixture_sql_like",
-        rel: {
-          id: "limit_orders",
-          kind: "limit_offset",
+      node: {
+        id: "limit_orders",
+        kind: "limit_offset",
+        convention: "local",
+        limit: 1,
+        input: {
+          id: "sort_orders",
+          kind: "sort",
           convention: "local",
-          limit: 1,
+          orderBy: [{ source: { alias: "orders", column: "total_cents" }, direction: "desc" }],
           input: {
-            id: "sort_orders",
-            kind: "sort",
+            id: "project_orders",
+            kind: "project",
             convention: "local",
-            orderBy: [{ source: { alias: "orders", column: "total_cents" }, direction: "desc" }],
+            columns: [
+              { source: { alias: "orders", column: "id" }, output: "id" },
+              { source: { alias: "orders", column: "total_cents" }, output: "total_cents" },
+            ],
             input: {
-              id: "project_orders",
-              kind: "project",
+              id: "scan_orders",
+              kind: "scan",
               convention: "local",
-              columns: [
-                { source: { alias: "orders", column: "id" }, output: "id" },
-                { source: { alias: "orders", column: "total_cents" }, output: "total_cents" },
+              table: "orders",
+              alias: "orders",
+              select: ["id", "total_cents", "customer_id"],
+              where: [{ column: "customer_id", op: "eq", value: "c1" }],
+              output: [
+                { name: "orders.id" },
+                { name: "orders.total_cents" },
+                { name: "orders.customer_id" },
               ],
-              input: {
-                id: "scan_orders",
-                kind: "scan",
-                convention: "local",
-                table: "orders",
-                alias: "orders",
-                select: ["id", "total_cents", "customer_id"],
-                where: [{ column: "customer_id", op: "eq", value: "c1" }],
-                output: [
-                  { name: "orders.id" },
-                  { name: "orders.total_cents" },
-                  { name: "orders.customer_id" },
-                ],
-              },
-              output: [{ name: "id" }, { name: "total_cents" }],
             },
             output: [{ name: "id" }, { name: "total_cents" }],
           },
           output: [{ name: "id" }, { name: "total_cents" }],
         },
-      } satisfies Extract<ProviderFragment, { kind: "rel" }>,
+        output: [{ name: "id" }, { name: "total_cents" }],
+      },
       expectedRows: [{ id: "o2", total_cents: 1800 }],
     },
   };

@@ -6,13 +6,15 @@ import {
   executeFilterResult,
   executeJoinResult,
   executeLimitOffsetResult,
+  executeRepeatUnionResult,
   executeProjectResult,
   executeSetOpResult,
   executeSortResult,
+  executeValuesResult,
   executeWithResult,
 } from "./local-operators";
 import { tryExecuteRemoteSubtreeResult } from "./remote-subtree";
-import { executeScanResult } from "./scan-execution";
+import { executeCteRefResult, executeScanResult } from "./scan-execution";
 import { prepareSubqueryResultsResult } from "./subquery-preparation";
 import { executeWindowResult } from "./window-execution";
 import type { InternalRow } from "./row-ops";
@@ -20,9 +22,9 @@ import {
   TuplExecutionError,
   TuplGuardrailError,
   type RelNode,
-  type TuplPlanningError,
+  type TuplError,
 } from "@tupl/foundation";
-import type { ProviderMap } from "@tupl/provider-kit";
+import type { ProvidersMap } from "@tupl/provider-kit";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
 
 export interface RelExecutionGuardrails {
@@ -33,7 +35,7 @@ export interface RelExecutionGuardrails {
 
 export interface RelExecutionContext<TContext> {
   schema: SchemaDefinition;
-  providers: ProviderMap<TContext>;
+  providers: ProvidersMap<TContext>;
   context: TContext;
   guardrails: RelExecutionGuardrails;
   constraintValidation?: ConstraintValidationOptions;
@@ -42,15 +44,9 @@ export interface RelExecutionContext<TContext> {
   subqueryResults: Map<string, unknown>;
 }
 
-export type RelExecutionResult = BetterResult<
-  QueryRow[] | InternalRow[],
-  TuplPlanningError | TuplExecutionError | TuplGuardrailError
->;
+export type RelExecutionResult = BetterResult<QueryRow[] | InternalRow[], TuplError>;
 
-export type RemoteExecutionResult = BetterResult<
-  QueryRow[] | null,
-  TuplPlanningError | TuplExecutionError | TuplGuardrailError
->;
+export type RemoteExecutionResult = BetterResult<QueryRow[] | null, TuplError>;
 
 function toTuplExecutionError(error: unknown, operation: string) {
   if (TuplExecutionError.is(error) || TuplGuardrailError.is(error)) {
@@ -81,7 +77,7 @@ export async function tryExecutionStepAsync<T>(operation: string, fn: () => Prom
 export async function executeRelLocallyResult<TContext>(
   rel: RelNode,
   executionContext: RelExecutionContext<TContext>,
-): Promise<BetterResult<QueryRow[], TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
+): Promise<BetterResult<QueryRow[], TuplError>> {
   // Scalar and EXISTS subqueries are prepared once up front so downstream node execution can treat
   // them as memoized inputs instead of recursively re-running subtrees at each expression use site.
   const subqueryPrepResult = await prepareSubqueryResultsResult(rel, executionContext);
@@ -126,6 +122,17 @@ export async function executeRelNodeResult<TContext>(
   switch (node.kind) {
     case "scan":
       return executeScanResult(node, context);
+    case "values":
+      return executeValuesResult(node);
+    case "cte_ref":
+      return executeCteRefResult(node, context);
+    case "correlate":
+      return Result.err(
+        new TuplExecutionError({
+          operation: "execute relational node",
+          message: "Correlate nodes must be decorrelated before execution.",
+        }),
+      );
     case "join":
       return executeJoinResult(node, context);
     case "filter":
@@ -144,12 +151,7 @@ export async function executeRelNodeResult<TContext>(
       return executeSetOpResult(node, context);
     case "with":
       return executeWithResult(node, context);
-    case "sql":
-      return Result.err(
-        new TuplExecutionError({
-          operation: "execute relational node",
-          message: "SQL-shaped rel nodes are not executable in the current provider runtime.",
-        }),
-      );
+    case "repeat_union":
+      return executeRepeatUnionResult(node, context);
   }
 }

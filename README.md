@@ -15,7 +15,7 @@ The facade stays relational (`SELECT` over tables/views), while providers can be
 
 Terminology used in this repo:
 
-- `provider`: the runtime object registered under a name and asked to `canExecute`, `compile`, `execute`, or `lookupMany`
+- `provider`: the runtime object registered under a name and asked to `canExecute`, `compile`, `execute`, and optionally `describeCompiledPlan`
 - `adapter`: the authoring layer or helper that builds a provider
 - `backend`: the wrapped system or query builder, such as Drizzle, Kysely, Objection, or Redis
 
@@ -199,25 +199,26 @@ const executableSchema = createExecutableSchema(builder);
 Current limitations/non-goals:
 
 - write statements are not supported (`INSERT`, `UPDATE`, `DELETE`)
-- recursive CTEs are not supported
-- correlated subqueries are not supported
-- subqueries in `FROM` are not supported
-- some advanced window SQL shapes are still partial
+- provider pushdown breadth is still adapter-specific
+- provider planning is greedy rather than cost-based
+- keyed helper surfaces such as `lookupMany` remain optional optimizations, not part of the primary provider contract
 
 Execution behavior notes:
 
 - unsupported provider pushdown shapes can fall back to local logical execution
 - providers can explicitly reject shapes (`canExecute`) for deterministic behavior
-- cross-provider joins generally depend on `lookupMany` availability
+- cross-provider joins can use keyed helper surfaces when available, but those helpers are optional optimization layers
+- ordinary SQL-like adapters should start with `createSqlRelationalProviderAdapter(...)`, which keeps provider roots close to the manual provider lifecycle (`resolveRuntime`, `canExecute`, query backend, execute) and reserves `advanced` for real backend exceptions
 
 ## Adapter support matrix
 
-| Adapter                    | scan/filter/sort/limit | lookupMany | single-query rel pushdown (core join/aggregate) | advanced rel pushdown (with/set-op/window) | local fallback when unsupported | explicit shape rejection |
-| -------------------------- | ---------------------- | ---------- | ----------------------------------------------- | ------------------------------------------ | ------------------------------- | ------------------------ |
-| `@tupl/provider-drizzle`   | Yes                    | Yes        | Yes                                             | Partial                                    | Yes                             | Yes                      |
-| `@tupl/provider-kysely`    | Yes                    | Yes        | Yes                                             | Partial                                    | Yes                             | Yes                      |
-| `@tupl/provider-objection` | Yes                    | Yes        | Yes                                             | Partial                                    | Yes                             | Yes                      |
-| Custom non-relational      | Custom                 | Custom     | Custom                                          | Custom                                     | Yes                             | Yes                      |
+| Adapter                    | rel-first pushdown | optional keyed helper | advanced rel pushdown (`WITH`/set-op/window) | local fallback when unsupported | explicit shape rejection |
+| -------------------------- | ------------------ | --------------------- | -------------------------------------------- | ------------------------------- | ------------------------ |
+| `@tupl/provider-drizzle`   | Yes                | Yes                   | Partial                                      | Yes                             | Yes                      |
+| `@tupl/provider-kysely`    | Yes                | Yes                   | Partial                                      | Yes                             | Yes                      |
+| `@tupl/provider-objection` | Yes                | Yes                   | Partial                                      | Yes                             | Yes                      |
+| `@tupl/provider-ioredis`   | Narrow             | Yes                   | No                                           | Yes                             | Yes                      |
+| Custom non-relational      | Custom             | Custom                | Custom                                       | Yes                             | Yes                      |
 
 ## Guides
 

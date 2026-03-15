@@ -42,11 +42,11 @@ Implemented:
   - ranking: `ROW_NUMBER`, `RANK`, `DENSE_RANK`
   - aggregate windows: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
   - `PARTITION BY` + `ORDER BY` with default frame behavior
-- Provider capability atoms and route-family metadata for pushdown/rejection decisions
+- Provider capability helper vocabulary and route-family diagnostics for pushdown/rejection decisions
 - Structured fallback diagnostics with SQLSTATE-like classes
 - Query/runtime fallback policy controls for unsupported or expensive provider pushdown
-- Aggregate route (`aggregate(...)`) with local fallback when route is unavailable
-- Join-aware dependency pushdown via `scan(...)` and optional `lookup(...)`
+- Rel-first provider compilation with local fallback when a provider rejects a subtree
+- Optional keyed lookup helpers for targeted execution optimizations
 - Dependency-aware parallel execution for independent branches:
   - set-op branches
   - independent CTE branches
@@ -54,7 +54,6 @@ Implemented:
 - Opt-in step execution sessions via `executableSchema.createSession(...)`
 - Schema constraint metadata: `PRIMARY KEY`, `UNIQUE`, `FOREIGN KEY`
 - Structured `CHECK` metadata (`kind: "in"`) and enum-derived checks
-- Optional adapter planner hooks (`planScan`, `planLookup`, `planAggregate`) for pushdown partitioning
 - Optional query-time constraint validation modes: `off`, `warn`, `error`
   - runtime checks: `NOT NULL`, primary-key uniqueness, unique-key uniqueness, enum/CHECK validation
   - foreign-key runtime checks are not implemented
@@ -62,11 +61,9 @@ Implemented:
 Unsupported:
 
 - Computed-expression pushdown is still partial and adapter-specific
-- Correlated subqueries
-- Subqueries in `FROM`
-- Recursive CTEs
-- Advanced window frame clauses (beyond `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`)
-- Some navigation/value window functions (`FIRST_VALUE`, `LAST_VALUE`, ...)
+- Cost-based physical planning
+- Some provider-specific advanced rel pushdown shapes
+- Writes (`INSERT`, `UPDATE`, `DELETE`)
 
 Target direction:
 
@@ -130,13 +127,12 @@ Execution contract impact:
 
 Goal: improve expressiveness while keeping execution safe.
 
-Status: partial. Uncorrelated `IN`, `EXISTS`, and scalar subqueries are implemented.
-Correlated subqueries and `FROM` subqueries remain pending.
+Status: complete for the current read-query target, including correlated forms in the supported decorrelatable subset and derived tables in `FROM`.
 
 Execution contract impact:
 
 - No new public methods.
-- Planner lowers supported subqueries to existing join/filter/aggregate steps.
+- Planner lowers supported subqueries into canonical rel plus decorrelation rewrites.
 
 ## Writes (Explicit Non-Goal)
 
@@ -153,7 +149,7 @@ Design reservation only:
 Performance is important but not the primary goal.
 
 - `tupl` should avoid obvious inefficiencies and over-fetching.
-- It should exploit available capabilities in underlying methods (`scan`, `lookup`, `aggregate`) for practical efficiency.
+- It should exploit available provider subtree pushdown and optional helper-level optimizations for practical efficiency.
 - It is not intended to compete with database engines on optimizer sophistication.
 - If a workload needs deep cost-based optimization, push computation to the backing store or specialized engine.
 
@@ -167,30 +163,18 @@ Performance is important but not the primary goal.
 
 ## Compatibility Matrix
 
-| Feature                             | Parser              | Planner             | Executor              | Resolver method             |
-| ----------------------------------- | ------------------- | ------------------- | --------------------- | --------------------------- |
-| Basic select/join/filter            | done                | done                | done                  | `scan`, optional `lookup`   |
-| Offset/null checks                  | done                | done                | done                  | `scan`                      |
-| Aggregates/group by                 | done                | done                | done                  | `aggregate` (preferred)     |
-| Non-recursive CTE                   | done                | done                | done                  | none new                    |
-| OR/NOT                              | done                | done                | done                  | `scan`                      |
-| HAVING                              | done                | done                | done                  | `aggregate`/local           |
-| Set ops (`UNION ALL`/`UNION`)       | done                | done                | done                  | none new                    |
-| Set ops (`INTERSECT`/`EXCEPT`)      | done                | done                | done                  | none new                    |
-| DISTINCT                            | done                | done                | done                  | none new                    |
-| Outer joins (`LEFT`/`RIGHT`/`FULL`) | done                | done                | done                  | none new                    |
-| Subqueries (uncorrelated)           | done                | done                | done                  | none new                    |
-| Subqueries (correlated/from)        | planned             | planned             | planned               | none new                    |
-| Window functions (core set)         | done                | done                | done                  | none new                    |
-| Branch-level parallel execution     | n/a                 | done                | done                  | none new                    |
-| Step-by-step query session API      | n/a                 | done                | done                  | none new                    |
-| Schema PK/FK/UNIQUE metadata        | done                | n/a                 | done (DDL)            | none new                    |
-| Schema CHECK/enum metadata          | done                | n/a                 | done (DDL)            | none new                    |
-| Column capability/pushdown hints    | deferred            | deferred            | deferred              | none                        |
-| Planner pushdown hooks              | n/a                 | done                | done                  | `planScan/Lookup/Aggregate` |
-| Constraint runtime validation       | n/a                 | n/a                 | done (off/warn/error) | none new                    |
-| Index metadata/planning hints       | deferred            | deferred            | deferred              | none                        |
-| Writes (`INSERT/UPDATE/DELETE`)     | explicit no-support | explicit no-support | explicit no-support   | none                        |
+| Feature                                  | Parser              | Planner | Executor | Provider contract impact    |
+| ---------------------------------------- | ------------------- | ------- | -------- | --------------------------- |
+| Basic select/join/filter                 | done                | done    | done     | rel subtree compile/execute |
+| Aggregates/group by/having               | done                | done    | done     | rel subtree compile/execute |
+| Non-recursive and recursive CTE          | done                | done    | done     | none new                    |
+| Set ops (`UNION`/`INTERSECT`/`EXCEPT`)   | done                | done    | done     | none new                    |
+| Derived tables and correlated subqueries | done                | done    | done     | none new                    |
+| Window functions (current supported set) | done                | done    | done     | none new                    |
+| Branch-level parallel execution          | n/a                 | done    | done     | none new                    |
+| Step-by-step query session API           | n/a                 | done    | done     | none new                    |
+| Constraint runtime validation            | n/a                 | n/a     | done     | none new                    |
+| Writes (`INSERT/UPDATE/DELETE`)          | explicit no-support | n/a     | n/a      | none                        |
 
 ## Release Gate for Each Milestone
 

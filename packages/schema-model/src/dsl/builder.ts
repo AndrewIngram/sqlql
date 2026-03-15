@@ -6,6 +6,10 @@ import type {
   TableMethodsForSchema,
   TableMethodsMap,
 } from "../types";
+import type {
+  TablePlanningMethodsForSchema,
+  TablePlanningMethodsMap,
+} from "../contracts/table-planning-contracts";
 import {
   buildColumnExprHelpers as buildColumnExprHelpersInternal,
   buildSchemaColumnsColHelper as buildSchemaColumnsColHelperInternal,
@@ -127,7 +131,15 @@ export function isSchemaBuilder<TContext = unknown>(
   return !!value && typeof value === "object" && schemaBuilderState.has(value as object);
 }
 
+/**
+ * `defineTableMethods(...)` preserves whichever contract the caller opts into:
+ * root-visible scan/lookup/aggregate behavior for ordinary schema code, or the explicit
+ * table-planning extension contract for runtimes and advanced tests.
+ */
 export function defineTableMethods<TContext, TMethods extends TableMethodsMap<TContext>>(
+  methods: TMethods,
+): TMethods;
+export function defineTableMethods<TContext, TMethods extends TablePlanningMethodsMap<TContext>>(
   methods: TMethods,
 ): TMethods;
 
@@ -135,6 +147,10 @@ export function defineTableMethods<TSchema extends SchemaDefinition, TContext>(
   schema: TSchema,
   methods: TableMethodsForSchema<TSchema, TContext>,
 ): TableMethodsForSchema<TSchema, TContext>;
+export function defineTableMethods<TSchema extends SchemaDefinition, TContext>(
+  schema: TSchema,
+  methods: TablePlanningMethodsForSchema<TSchema, TContext>,
+): TablePlanningMethodsForSchema<TSchema, TContext>;
 
 export function defineTableMethods(...args: unknown[]): unknown {
   if (args.length === 1) {

@@ -1,11 +1,10 @@
-import {
-  createSqlRelationalScanBinding,
-  UnsupportedSqlRelationalPlanError,
-  type SqlRelationalBackend,
-  type SqlRelationalOrderTerm,
-  type SqlRelationalScanBinding,
-} from "@tupl/provider-kit";
 import type { RelNode } from "@tupl/foundation";
+import {
+  SqlRelationalOrderTerm,
+  SqlRelationalQueryTranslationBackend,
+  SqlRelationalSelection,
+  UnsupportedSqlRelationalPlanError,
+} from "@tupl/provider-kit/relational-sql";
 
 import {
   applyBase,
@@ -13,199 +12,217 @@ import {
   resolveQualifiedColumnRef,
   toRef,
 } from "../backend/query-helpers";
-import type { KyselyDatabaseLike, KyselyQueryBuilderLike, ResolvedEntityConfig } from "../types";
+import type {
+  KyselyDatabaseLike,
+  KyselyQueryBuilderLike,
+  ResolvedEntityConfig,
+  ScanBinding,
+} from "../types";
 
-class UnsupportedSingleQueryPlanError extends UnsupportedSqlRelationalPlanError {}
-
-export type ScanBinding<TContext> = SqlRelationalScanBinding<ResolvedEntityConfig<TContext>>;
-
-function createScanBinding<TContext>(
-  scan: Extract<RelNode, { kind: "scan" }>,
-  entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
-): ScanBinding<TContext> {
-  return createSqlRelationalScanBinding(scan, entityConfigs);
-}
+type SelectionEntry = {
+  output: string;
+  toExpression: (eb: any) => unknown;
+};
 
 /**
- * Kysely backend hooks describe only query-builder differences.
- * Shared rel compilation now lives in provider-kit.
+ * Kysely query translation owns only Kysely-specific query-builder operations.
+ * Provider-kit owns strategy selection, recursion, set-op/CTE traversal, and filter replay.
  */
-export const kyselySqlRelationalBackend: SqlRelationalBackend<
-  any,
-  ResolvedEntityConfig<any>,
-  ScanBinding<any>,
+export const kyselyQueryTranslationBackend: SqlRelationalQueryTranslationBackend<
+  unknown,
+  ResolvedEntityConfig<unknown>,
+  ScanBinding<unknown>,
   KyselyDatabaseLike,
   KyselyQueryBuilderLike
 > = {
-  planning: {
-    createScanBinding,
+  async createRootQuery({ runtime, root, context }) {
+    const rootFrom = `${root.table} as ${root.alias}`;
+    let query = runtime.selectFrom(rootFrom);
+    query = await applyBase(query, runtime, root, context, root.alias);
+    return query;
   },
-  query: {
-    async createRootQuery({ runtime, root, context }) {
-      const from = `${root.table} as ${root.alias}`;
-      const query = runtime.selectFrom(from);
-      return applyBase(query, runtime, root.resolved, context, root.alias);
-    },
-    async applyRegularJoin({ query, join, context, runtime }) {
-      const joinMethod =
-        join.joinType === "inner"
-          ? "innerJoin"
-          : join.joinType === "left"
-            ? "leftJoin"
-            : join.joinType === "right"
-              ? "rightJoin"
-              : "fullJoin";
+  async applyRegularJoin({ query, join, context, runtime }) {
+    const joinMethod =
+      join.joinType === "inner"
+        ? "innerJoin"
+        : join.joinType === "left"
+          ? "leftJoin"
+          : join.joinType === "right"
+            ? "rightJoin"
+            : "fullJoin";
 
-      const fn = (query as unknown as Record<string, unknown>)[joinMethod];
-      if (typeof fn !== "function") {
-        throw new UnsupportedSingleQueryPlanError(
-          `Kysely query builder does not support ${joinMethod} in this dialect.`,
-        );
-      }
-
-      const joined = (fn as (...args: unknown[]) => KyselyQueryBuilderLike).call(
-        query,
-        `${join.right.table} as ${join.right.alias}`,
-        `${join.leftKey.alias}.${join.leftKey.column}`,
-        `${join.rightKey.alias}.${join.rightKey.column}`,
+    const fn = (query as unknown as Record<string, unknown>)[joinMethod];
+    if (typeof fn !== "function") {
+      throw new UnsupportedSqlRelationalPlanError(
+        `Kysely query builder does not support ${joinMethod} in this dialect.`,
       );
+    }
 
-      return applyBase(joined, runtime, join.right.resolved, context, join.right.alias);
-    },
-    applySemiJoin({ query, leftKey, subquery }) {
-      return query.where(`${leftKey.alias}.${leftKey.column}`, "in", subquery);
-    },
-    applyWhereClause({ query, clause, aliases }) {
-      return applyWhereClause(query, clause, aliases);
-    },
-    applySelection({ query, selection, aliases }) {
-      return query.select((eb: any) =>
-        selection.map((entry) => {
-          if (entry.kind === "metric") {
-            return buildMetricExpression(eb, entry.metric, aliases).as(entry.output);
-          }
-          if (entry.kind === "expr") {
-            throw new UnsupportedSingleQueryPlanError(
-              "Computed projections are not supported in Kysely single-query pushdown.",
-            );
-          }
+    const next = (fn as (...args: unknown[]) => KyselyQueryBuilderLike).call(
+      query,
+      `${join.right.table} as ${join.right.alias}`,
+      `${join.leftKey.alias}.${join.leftKey.column}`,
+      `${join.rightKey.alias}.${join.rightKey.column}`,
+    );
 
-          const source = resolveQualifiedColumnRef(aliases, {
-            ...toRef(entry.source.alias ?? entry.source.table, entry.source.column),
-          });
-          return eb.ref(source).as(entry.output);
-        }),
+    return applyBase(next, runtime, join.right, context, join.right.alias);
+  },
+  applySemiJoin({ query, leftKey, subquery }) {
+    return query.where(`${leftKey.alias}.${leftKey.column}`, "in", subquery);
+  },
+  applyWhereClause({ query, clause, aliases }) {
+    return applyWhereClause(query, clause, aliases);
+  },
+  applySelection({ query, selection, aliases }) {
+    return query.select((eb: any) =>
+      buildSelectionEntries(selection, aliases).map((entry) => entry.toExpression(eb)),
+    );
+  },
+  applyGroupBy({ query, groupBy, aliases }) {
+    return (
+      query.groupBy?.(
+        groupBy.map((ref) =>
+          resolveQualifiedColumnRef(aliases, {
+            ...toRef(ref.alias ?? ref.table, ref.column),
+          }),
+        ),
+      ) ?? query
+    );
+  },
+  applyOrderBy({ query, orderBy, aliases }) {
+    let next = query;
+    for (const term of orderBy) {
+      next = next.orderBy(resolveOrderTerm(term, aliases), term.direction);
+    }
+    return next;
+  },
+  applyLimit({ query, limit }) {
+    return query.limit(limit);
+  },
+  applyOffset({ query, offset }) {
+    return query.offset(offset);
+  },
+  applySetOp({ left, right, wrapper }) {
+    const methodName =
+      wrapper.setOp.op === "union_all"
+        ? "unionAll"
+        : wrapper.setOp.op === "union"
+          ? "union"
+          : wrapper.setOp.op === "intersect"
+            ? "intersect"
+            : "except";
+
+    const applySetOp = (left as unknown as Record<string, unknown>)[methodName];
+    if (typeof applySetOp !== "function") {
+      throw new UnsupportedSqlRelationalPlanError(
+        `Kysely query builder does not support ${methodName} for single-query pushdown.`,
       );
-    },
-    applyGroupBy({ query, groupBy, aliases }) {
-      return (
-        query.groupBy?.(
-          groupBy.map((ref) =>
-            resolveQualifiedColumnRef(aliases, {
-              ...toRef(ref.alias ?? ref.table, ref.column),
-            }),
-          ),
-        ) ?? query
+    }
+
+    return applySetOp.call(left, right) as KyselyQueryBuilderLike;
+  },
+  buildWithQuery({ body, ctes, projection, orderBy, runtime }) {
+    if (typeof runtime.with !== "function") {
+      throw new UnsupportedSqlRelationalPlanError(
+        "Kysely database instance does not support CTE builders required for WITH pushdown.",
       );
-    },
-    applyOrderBy({ query, orderBy, aliases }) {
-      let out = query;
-      for (const term of orderBy) {
-        out = out.orderBy(resolveOrderTerm(term, aliases), term.direction);
-      }
-      return out;
-    },
-    applyLimit({ query, limit }) {
-      return query.limit(limit);
-    },
-    applyOffset({ query, offset }) {
-      return query.offset(offset);
-    },
-    applySetOp({ left, right, wrapper }) {
-      const methodName =
-        wrapper.setOp.op === "union_all"
-          ? "unionAll"
-          : wrapper.setOp.op === "union"
-            ? "union"
-            : wrapper.setOp.op === "intersect"
-              ? "intersect"
-              : "except";
+    }
 
-      const applySetOp = (left as unknown as Record<string, unknown>)[methodName];
-      if (typeof applySetOp !== "function") {
-        throw new UnsupportedSingleQueryPlanError(
-          `Kysely query builder does not support ${methodName} for single-query pushdown.`,
-        );
-      }
+    let withDb = runtime;
+    for (const cte of ctes) {
+      withDb = withDb.with!(cte.name, () => cte.query);
+    }
 
-      return applySetOp.call(left, right) as KyselyQueryBuilderLike;
-    },
-    buildWithQuery({ body, ctes, projection, orderBy, runtime }) {
-      if (typeof runtime.with !== "function") {
-        throw new UnsupportedSingleQueryPlanError(
-          "Kysely database instance does not support CTE builders required for WITH pushdown.",
-        );
-      }
+    const scanAlias = body.cteRef.alias ?? body.cteRef.name;
+    const from = body.cteRef.alias
+      ? `${body.cteRef.name} as ${body.cteRef.alias}`
+      : body.cteRef.name;
+    let query = withDb.selectFrom(from);
 
-      let withDb = runtime;
-      for (const cte of ctes) {
-        withDb = withDb.with!(cte.name, () => cte.query);
-      }
-
-      const scanAlias = body.cteScan.alias ?? body.cteScan.table;
-      const from = body.cteScan.alias
-        ? `${body.cteScan.table} as ${body.cteScan.alias}`
-        : body.cteScan.table;
-      let query = withDb.selectFrom(from);
-
-      const aliases = new Map<string, ScanBinding<any>>([
-        [
-          scanAlias,
-          {
-            alias: scanAlias,
-            entity: body.cteScan.table,
-            table: body.cteScan.table,
-            scan: body.cteScan,
-            resolved: {
-              entity: body.cteScan.table,
-              table: body.cteScan.table,
-              config: {},
-            },
+    const aliases = new Map<string, ScanBinding<unknown>>([
+      [
+        scanAlias,
+        {
+          alias: scanAlias,
+          entity: body.cteRef.name,
+          table: body.cteRef.name,
+          scan: {
+            ...body.cteRef,
+            kind: "scan",
+            table: body.cteRef.name,
           },
-        ],
-      ]);
+          resolved: {
+            entity: body.cteRef.name,
+            table: body.cteRef.name,
+            config: {},
+          },
+        },
+      ],
+    ]);
 
-      for (const clause of body.cteScan.where ?? []) {
+    for (const clause of body.cteRef.where ?? []) {
+      query = applyWhereClause(query, clause, aliases);
+    }
+    for (const filter of body.filters) {
+      for (const clause of filter.where ?? []) {
         query = applyWhereClause(query, clause, aliases);
       }
-      for (const filter of body.filters) {
-        for (const clause of filter.where ?? []) {
-          query = applyWhereClause(query, clause, aliases);
+    }
+
+    const windowByAlias = new Map((body.window?.functions ?? []).map((fn) => [fn.as, fn] as const));
+    query = query.select((eb: any) =>
+      projection.map((entry) => {
+        if (entry.kind === "window") {
+          return buildWindowExpression(eb, entry.window, scanAlias).as(entry.output);
         }
-      }
 
-      query = query.select((eb: any) =>
-        projection.map((entry) => {
-          if (entry.kind === "window") {
-            return buildWindowExpression(eb, entry.window, scanAlias).as(entry.output);
-          }
+        const source = resolveWithBodyColumnRef(entry.source, scanAlias);
+        return eb.ref(source).as(entry.output);
+      }),
+    );
 
-          const source = resolveWithBodyColumnRef(entry.source, scanAlias);
-          return eb.ref(source).as(entry.output);
-        }),
+    for (const term of orderBy) {
+      query = query.orderBy(
+        resolveWithBodyOrderTerm(term, scanAlias, windowByAlias),
+        term.direction,
       );
+    }
 
-      for (const term of orderBy) {
-        query = query.orderBy(resolveWithOrderTerm(term, scanAlias), term.direction);
-      }
-
-      return query;
-    },
-    async executeQuery({ query }) {
-      return query.execute();
-    },
+    return query;
+  },
+  async executeQuery({ query }) {
+    return query.execute();
   },
 };
+
+function buildSelectionEntries<TContext>(
+  selection: SqlRelationalSelection[],
+  aliases: Map<string, ScanBinding<TContext>>,
+): SelectionEntry[] {
+  return selection.map((entry) => {
+    switch (entry.kind) {
+      case "column": {
+        const source = resolveQualifiedColumnRef(aliases, {
+          ...toRef(entry.source.alias ?? entry.source.table, entry.source.column),
+        });
+        return {
+          output: entry.output,
+          toExpression: (eb: any) => eb.ref(source).as(entry.output),
+        };
+      }
+      case "metric":
+        return {
+          output: entry.output,
+          toExpression: (eb: any) =>
+            buildMetricExpression(eb, entry.metric, aliases).as(entry.output),
+        };
+      case "expr":
+        throw new UnsupportedSqlRelationalPlanError(
+          "Computed projections are not supported in Kysely single-query pushdown.",
+        );
+    }
+  });
+}
 
 function buildMetricExpression<TContext>(
   eb: any,
@@ -217,7 +234,7 @@ function buildMetricExpression<TContext>(
   }
 
   if (!metric.column) {
-    throw new UnsupportedSingleQueryPlanError(`Aggregate ${metric.fn} requires a column.`);
+    throw new UnsupportedSqlRelationalPlanError(`Aggregate ${metric.fn} requires a column.`);
   }
 
   const ref = resolveQualifiedColumnRef(aliases, {
@@ -226,14 +243,14 @@ function buildMetricExpression<TContext>(
 
   const fn = (eb as { fn?: Record<string, (value: unknown) => any> }).fn;
   if (!fn) {
-    throw new UnsupportedSingleQueryPlanError(
+    throw new UnsupportedSqlRelationalPlanError(
       "Kysely expression builder does not expose fn helpers.",
     );
   }
 
   const fnImpl = fn[metric.fn];
   if (typeof fnImpl !== "function") {
-    throw new UnsupportedSingleQueryPlanError(`Unsupported aggregate function: ${metric.fn}.`);
+    throw new UnsupportedSqlRelationalPlanError(`Unsupported aggregate function: ${metric.fn}.`);
   }
 
   let expression = fnImpl(eb.ref(ref));
@@ -242,19 +259,6 @@ function buildMetricExpression<TContext>(
   }
 
   return expression;
-}
-
-function resolveOrderTerm<TContext>(
-  term: SqlRelationalOrderTerm,
-  aliases: Map<string, ScanBinding<TContext>>,
-): string {
-  if (term.kind === "output") {
-    return term.column;
-  }
-
-  return resolveQualifiedColumnRef(aliases, {
-    ...toRef(term.source.alias ?? term.source.table, term.source.column),
-  });
 }
 
 function buildWindowExpression(
@@ -281,12 +285,33 @@ function buildWindowExpression(
   });
 }
 
-function resolveWithOrderTerm(term: SqlRelationalOrderTerm, scanAlias: string): string {
-  if (term.kind === "output") {
+function resolveOrderTerm<TContext>(
+  term: SqlRelationalOrderTerm,
+  aliases: Map<string, ScanBinding<TContext>>,
+): string {
+  if (term.kind === "qualified") {
+    return resolveQualifiedColumnRef(aliases, {
+      ...toRef(term.source.alias ?? term.source.table, term.source.column),
+    });
+  }
+
+  return term.column;
+}
+
+function resolveWithBodyOrderTerm(
+  term: SqlRelationalOrderTerm,
+  scanAlias: string,
+  windowByAlias: Map<string, Extract<RelNode, { kind: "window" }>["functions"][number]>,
+): string {
+  if (term.kind === "output" && windowByAlias.has(term.column)) {
     return term.column;
   }
 
-  return resolveWithBodyColumnRef(term.source, scanAlias);
+  if (term.kind === "qualified") {
+    return resolveWithBodyColumnRef(term.source, scanAlias);
+  }
+
+  return term.column;
 }
 
 function resolveWithBodyColumnRef(
@@ -295,10 +320,9 @@ function resolveWithBodyColumnRef(
 ): string {
   const refAlias = ref.alias ?? ref.table;
   if (refAlias && refAlias !== scanAlias) {
-    throw new UnsupportedSingleQueryPlanError(
+    throw new UnsupportedSqlRelationalPlanError(
       `WITH body column "${refAlias}.${ref.column}" must reference alias "${scanAlias}".`,
     );
   }
-
   return `${scanAlias}.${ref.column}`;
 }

@@ -55,6 +55,19 @@ describe("playground/validation", () => {
     },
   );
 
+  it(
+    "does not misclassify plain objects with value fields as better-result exports",
+    { timeout: 15_000 },
+    async () => {
+      const schemaResult = await parseFacadeSchemaCode(
+        "export const executableSchema = { value: 123, nope: true };",
+      );
+
+      expect(schemaResult.ok).toBe(false);
+      expect(schemaResult.issues[0]?.message).toContain("SCHEMA_EXPORT_INVALID");
+    },
+  );
+
   it("rejects schema modules that throw at runtime", async () => {
     const schemaResult = await parseFacadeSchemaCode(
       'const fail = (): never => { throw new Error("boom"); }; fail(); export const executableSchema = {};',

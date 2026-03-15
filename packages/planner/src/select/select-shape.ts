@@ -1,0 +1,334 @@
+import { Result, type Result as BetterResult } from "better-result";
+
+import {
+  RelLoweringError,
+  type RelColumnRef,
+  type RelNode,
+  type RelProjectExprMapping,
+} from "@tupl/foundation";
+import type { SchemaDefinition } from "@tupl/schema-model";
+
+import {
+  getAggregateMetricSignature,
+  hasAggregateProjection,
+  lowerHavingExpr,
+  parseAggregateProjections,
+  parseGroupBy,
+  parseOrderBy,
+  resolveAggregateGroupBy,
+  resolveAggregateOrderBy,
+  resolveNonAggregateOrderBy,
+  validateAggregateProjectionGroupBy,
+} from "../aggregate-lowering";
+import type {
+  Binding,
+  ParsedAggregateMetricProjection,
+  ParsedAggregateProjection,
+  ResolvedOrderTerm,
+  SelectProjection,
+  SelectWindowProjection,
+} from "../planner-types";
+import type { FromEntryAst, SelectAst, WindowSpecificationAst } from "../sqlite-parser/ast";
+import type { SqlExprLoweringContext } from "../sql-expr-lowering";
+import { parseLimitAndOffset } from "../sql-expr-lowering";
+import {
+  parseNamedWindows,
+  parseProjection,
+  parseWindowProjections,
+  toParsedOrderSource,
+} from "./select-projections";
+import { parseJoins } from "./select-from-lowering";
+import { parseWhereFilters, validateEnumLiteralFilters } from "../where-lowering";
+
+export interface PreparedSimpleSelect {
+  bindings: Binding[];
+  aggregateMode: boolean;
+  safeAggregateProjections: ParsedAggregateProjection[];
+  safeProjections: SelectProjection[];
+  aggregateWindowProjections: SelectWindowProjection[];
+  aggregateGroupByResolution: {
+    groupBy: RelColumnRef[];
+    materializations: RelProjectExprMapping[];
+  };
+  effectiveGroupBy: RelColumnRef[];
+  allAggregateMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"];
+  havingExpr: import("@tupl/foundation").RelExpr | null;
+  orderBy: ResolvedOrderTerm[];
+  orderByMaterializations: RelProjectExprMapping[];
+  limit?: number;
+  offset?: number;
+  joins: NonNullable<ReturnType<typeof parseJoins>>;
+  whereFilters: NonNullable<ReturnType<typeof parseWhereFilters>>;
+  windowFunctions: SelectWindowProjection["function"][];
+  rootBinding: Binding | null;
+}
+
+/**
+ * Select-shape preparation owns the analysis pass that turns a parsed SELECT into
+ * binding state, aggregate/window mode, and the normalized projection/filter metadata
+ * needed by lower phases.
+ */
+export function prepareSimpleSelectLowering(
+  ast: SelectAst,
+  schema: SchemaDefinition,
+  cteNames: Set<string>,
+  tryLowerSelect: (ast: SelectAst) => RelNode | null,
+): BetterResult<PreparedSimpleSelect | null, RelLoweringError> {
+  if (ast.type !== "select" || ast.with || ast.set_op || ast._next) {
+    return Result.ok(null);
+  }
+
+  const from = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
+  if (
+    from.some(
+      (entry) => typeof (entry as FromEntryAst).table !== "string" || (entry as FromEntryAst).stmt,
+    )
+  ) {
+    return Result.ok(null);
+  }
+
+  const bindings: Binding[] = [];
+  for (const [index, entry] of from.entries()) {
+    const table = (entry as FromEntryAst).table;
+    const isCte = typeof table === "string" && cteNames.has(table);
+    if (typeof table !== "string" || (!schema.tables[table] && !isCte)) {
+      return Result.err(
+        new RelLoweringError({
+          operation: "prepare simple select lowering",
+          message: `Unknown table: ${String(table)}`,
+        }),
+      );
+    }
+
+    const alias =
+      typeof (entry as FromEntryAst).as === "string" && (entry as FromEntryAst).as
+        ? ((entry as FromEntryAst).as as string)
+        : table;
+
+    bindings.push({
+      table,
+      alias,
+      index,
+      sourceKind: isCte ? "cte" : "table",
+    });
+  }
+
+  const aliasToBinding = new Map(bindings.map((binding) => [binding.alias, binding]));
+  const lowerExprContext: SqlExprLoweringContext = {
+    schema,
+    cteNames,
+    tryLowerSelect,
+  };
+
+  const joins = parseJoins(from, bindings, aliasToBinding);
+  if (joins == null) {
+    return Result.ok(null);
+  }
+
+  const whereFilters = parseWhereFilters(ast.where, bindings, aliasToBinding, lowerExprContext);
+  if (!whereFilters) {
+    return Result.ok(null);
+  }
+  const enumFilterValidation = validateEnumLiteralFilters(whereFilters.literals, bindings, schema);
+  if (Result.isError(enumFilterValidation)) {
+    return enumFilterValidation;
+  }
+
+  const distinctMode = ast.distinct === "DISTINCT";
+  const aggregateMode = Boolean(ast.groupby || hasAggregateProjection(ast.columns) || distinctMode);
+  const namedWindows = parseNamedWindows(ast.window);
+
+  const projections = aggregateMode
+    ? null
+    : parseProjection(ast.columns, bindings, aliasToBinding, namedWindows, lowerExprContext);
+  if (!aggregateMode && projections == null) {
+    return Result.ok(null);
+  }
+
+  const aggregateProjections = aggregateMode
+    ? parseAggregateProjections(ast.columns, bindings, aliasToBinding, lowerExprContext)
+    : null;
+  if (aggregateMode && aggregateProjections == null) {
+    return Result.ok(null);
+  }
+
+  const safeAggregateProjections = aggregateMode ? (aggregateProjections ?? []) : [];
+  const safeProjections = aggregateMode ? [] : (projections ?? []);
+  const aggregateWindowProjections = aggregateMode
+    ? parseAggregateWindowProjections(
+        ast.columns,
+        safeAggregateProjections,
+        lowerExprContext,
+        namedWindows,
+      )
+    : [];
+  if (aggregateMode && aggregateWindowProjections == null) {
+    return Result.ok(null);
+  }
+  const groupByTerms = aggregateMode ? parseGroupBy(ast.groupby, bindings, aliasToBinding) : [];
+  if (aggregateMode && groupByTerms == null) {
+    return Result.ok(null);
+  }
+
+  const windowFunctions = safeProjections
+    .filter((projection): projection is SelectWindowProjection => projection.kind === "window")
+    .map((projection) => projection.function)
+    .concat((aggregateWindowProjections ?? []).map((projection) => projection.function));
+
+  const aggregateGroupByResolutionResult = aggregateMode
+    ? resolveAggregateGroupBy(groupByTerms ?? [], safeAggregateProjections)
+    : Result.ok({
+        groupBy: [] as RelColumnRef[],
+        materializations: [] as RelProjectExprMapping[],
+      });
+  if (Result.isError(aggregateGroupByResolutionResult)) {
+    return aggregateGroupByResolutionResult;
+  }
+  let effectiveGroupBy = aggregateGroupByResolutionResult.value.groupBy;
+
+  if (distinctMode && effectiveGroupBy.length === 0) {
+    const distinctGroupBy: RelColumnRef[] = [];
+    for (const projection of safeAggregateProjections) {
+      if (projection.kind !== "group" || !projection.source) {
+        return Result.ok(null);
+      }
+      distinctGroupBy.push(projection.source);
+    }
+    if (distinctGroupBy.length === 0) {
+      return Result.ok(null);
+    }
+    effectiveGroupBy = distinctGroupBy;
+  }
+
+  if (
+    aggregateMode &&
+    !validateAggregateProjectionGroupBy(safeAggregateProjections, effectiveGroupBy)
+  ) {
+    return Result.ok(null);
+  }
+
+  const aggregateMetrics = safeAggregateProjections
+    .filter(
+      (projection): projection is ParsedAggregateMetricProjection => projection.kind === "metric",
+    )
+    .map((projection) => projection.metric);
+  const aggregateMetricAliases = new Map<string, string>(
+    aggregateMetrics.map((metric) => [getAggregateMetricSignature(metric), metric.as]),
+  );
+  const hiddenHavingMetrics: Extract<RelNode, { kind: "aggregate" }>["metrics"] = [];
+  const havingExpr =
+    aggregateMode && ast.having
+      ? lowerHavingExpr(
+          ast.having,
+          bindings,
+          aliasToBinding,
+          aggregateMetricAliases,
+          hiddenHavingMetrics,
+        )
+      : null;
+  if (ast.having && (!aggregateMode || !havingExpr)) {
+    return Result.ok(null);
+  }
+  const allAggregateMetrics = [...aggregateMetrics, ...hiddenHavingMetrics];
+
+  const orderByTerms = parseOrderBy(
+    ast.orderby,
+    bindings,
+    aliasToBinding,
+    new Set(
+      (aggregateMode ? safeAggregateProjections : safeProjections).map(
+        (projection) => projection.output,
+      ),
+    ),
+  );
+  if (orderByTerms == null) {
+    return Result.ok(null);
+  }
+
+  const orderResolution = aggregateMode
+    ? Result.gen(function* () {
+        const orderBy = yield* resolveAggregateOrderBy(orderByTerms, safeAggregateProjections);
+        return Result.ok({
+          orderBy,
+          materializations: [] as RelProjectExprMapping[],
+        });
+      })
+    : resolveNonAggregateOrderBy(orderByTerms, safeProjections, toParsedOrderSource);
+  if (Result.isError(orderResolution)) {
+    return orderResolution;
+  }
+  const { orderBy, materializations: orderByMaterializations } = orderResolution.value;
+
+  const rootBinding = bindings[0] ?? null;
+
+  const { limit, offset } = parseLimitAndOffset(ast.limit);
+
+  return Result.ok({
+    bindings,
+    aggregateMode,
+    safeAggregateProjections,
+    safeProjections,
+    aggregateWindowProjections: aggregateWindowProjections ?? [],
+    aggregateGroupByResolution: aggregateGroupByResolutionResult.value,
+    effectiveGroupBy,
+    allAggregateMetrics,
+    havingExpr,
+    orderBy,
+    orderByMaterializations,
+    ...(limit != null ? { limit } : {}),
+    ...(offset != null ? { offset } : {}),
+    joins,
+    whereFilters,
+    windowFunctions,
+    rootBinding,
+  });
+}
+
+function parseAggregateWindowProjections(
+  rawColumns: unknown,
+  aggregateProjections: ParsedAggregateProjection[],
+  lowerExprContext: SqlExprLoweringContext,
+  namedWindows: Map<string, WindowSpecificationAst>,
+) {
+  const bindings: Binding[] = [
+    {
+      table: "__aggregate__",
+      alias: "",
+      index: 0,
+      sourceKind: "table",
+    },
+  ];
+  const aliasToBinding = new Map<string, Binding>();
+  const windowProjections = parseWindowProjections(
+    rawColumns,
+    bindings,
+    aliasToBinding,
+    namedWindows,
+    lowerExprContext,
+  );
+  if (windowProjections == null) {
+    return null;
+  }
+
+  const availableColumns = new Set(
+    aggregateProjections.map((projection) =>
+      projection.kind === "metric" ? projection.metric.as : projection.output,
+    ),
+  );
+  for (const projection of windowProjections) {
+    const refs = [
+      ...projection.function.partitionBy,
+      ...projection.function.orderBy.map((term) => term.source),
+      ...("column" in projection.function && projection.function.column
+        ? [projection.function.column]
+        : []),
+    ];
+    for (const ref of refs) {
+      if (!availableColumns.has(ref.column)) {
+        return null;
+      }
+    }
+  }
+
+  return windowProjections;
+}

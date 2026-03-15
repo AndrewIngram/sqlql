@@ -5,7 +5,7 @@ import type { AggregateFunction, ScanFilterClause, ScanOrderBy } from "./primiti
  * Relational contracts define the logical IR shared by planner, runtime, and provider normalization.
  * They describe query shape and output semantics, not a backend-specific execution plan.
  */
-export type RelConvention = `provider:${string}` | "local";
+export type RelConvention = `provider:${string}` | "local" | "logical";
 
 /** Column refs identify one logical column, optionally qualified by table or alias. */
 export interface RelColumnRef {
@@ -95,6 +95,24 @@ export interface RelScanNode extends RelNodeBase {
   offset?: number;
 }
 
+/** Values nodes materialize literal rows without requiring a backing table scan. */
+export interface RelValuesNode extends RelNodeBase {
+  kind: "values";
+  rows: Array<Array<string | number | boolean | null>>;
+}
+
+/** CTE refs read a named CTE binding using the same logical scan shape as ordinary table access. */
+export interface RelCteRefNode extends RelNodeBase {
+  kind: "cte_ref";
+  name: string;
+  alias?: string;
+  select: string[];
+  where?: ScanFilterClause[];
+  orderBy?: ScanOrderBy[];
+  limit?: number;
+  offset?: number;
+}
+
 /** Filter nodes preserve input shape while applying residual filters or computed expressions. */
 export interface RelFilterNode extends RelNodeBase {
   kind: "filter";
@@ -127,7 +145,49 @@ export interface RelJoinNode extends RelNodeBase {
   rightKey: RelColumnRef;
 }
 
+/** Correlate nodes preserve explicit outer-scope dependency until the planner decorrelates them. */
+export interface RelCorrelateNode extends RelNodeBase {
+  kind: "correlate";
+  left: RelNode;
+  right: RelNode;
+  correlation: {
+    outer: RelColumnRef;
+    inner: RelColumnRef;
+  };
+  apply:
+    | {
+        kind: "semi";
+      }
+    | {
+        kind: "anti";
+      }
+    | {
+        kind: "scalar_filter";
+        comparison: string;
+        outerCompare: RelColumnRef;
+        correlationColumn: string;
+        metricColumn: string;
+      }
+    | {
+        kind: "scalar_project";
+        correlationColumn: string;
+        metricColumn: string;
+        outputColumn: string;
+      };
+}
+
 /** Rank window functions compute rank-style outputs over one partitioned and ordered input. */
+export interface RelWindowFrameBound {
+  kind: "unbounded_preceding" | "preceding" | "current_row" | "following" | "unbounded_following";
+  offset?: number;
+}
+
+export interface RelWindowFrame {
+  mode: "rows" | "range" | "groups";
+  start: RelWindowFrameBound;
+  end: RelWindowFrameBound;
+}
+
 export interface RelRankWindowFunction {
   fn: "dense_rank" | "rank" | "row_number";
   as: string;
@@ -136,6 +196,7 @@ export interface RelRankWindowFunction {
     source: RelColumnRef;
     direction: "asc" | "desc";
   }>;
+  frame?: RelWindowFrame;
 }
 
 /** Aggregate window functions compute aggregate outputs over one partitioned and ordered input. */
@@ -149,10 +210,29 @@ export interface RelAggregateWindowFunction {
     source: RelColumnRef;
     direction: "asc" | "desc";
   }>;
+  frame?: RelWindowFrame;
+}
+
+/** Navigation window functions read ordered values from the current partition without changing row count. */
+export interface RelNavigationWindowFunction {
+  fn: "first_value" | "lag" | "lead";
+  as: string;
+  partitionBy: RelColumnRef[];
+  value: RelExpr;
+  orderBy: Array<{
+    source: RelColumnRef;
+    direction: "asc" | "desc";
+  }>;
+  offset?: number;
+  defaultExpr?: RelExpr;
+  frame?: RelWindowFrame;
 }
 
 /** Relational window functions are the supported local/provider-neutral window calculation forms. */
-export type RelWindowFunction = RelRankWindowFunction | RelAggregateWindowFunction;
+export type RelWindowFunction =
+  | RelRankWindowFunction
+  | RelAggregateWindowFunction
+  | RelNavigationWindowFunction;
 
 /** Window nodes append window-function outputs without changing the underlying input row count. */
 export interface RelWindowNode extends RelNodeBase {
@@ -213,29 +293,31 @@ export interface RelWithNode extends RelNodeBase {
   body: RelNode;
 }
 
-/**
- * SQL nodes are escape hatches for query shapes not lowered into canonical relational operators.
- * They require provider pushdown and are not executable by the local relational runtime.
- */
-export interface RelSqlNode extends RelNodeBase {
-  kind: "sql";
-  sql: string;
-  tables: string[];
+/** Repeat-union nodes evaluate a recursive relation until a fixpoint is reached. */
+export interface RelRepeatUnionNode extends RelNodeBase {
+  kind: "repeat_union";
+  cteName: string;
+  mode: "union" | "union_all";
+  seed: RelNode;
+  iterative: RelNode;
 }
 
 /** Relational nodes are the full logical IR consumed by runtime and provider normalization. */
 export type RelNode =
   | RelScanNode
+  | RelValuesNode
+  | RelCteRefNode
   | RelFilterNode
   | RelProjectNode
   | RelJoinNode
+  | RelCorrelateNode
   | RelAggregateNode
   | RelWindowNode
   | RelSortNode
   | RelLimitOffsetNode
   | RelSetOpNode
   | RelWithNode
-  | RelSqlNode;
+  | RelRepeatUnionNode;
 
 let relIdCounter = 0;
 
@@ -244,60 +326,18 @@ function nextRelId(prefix: string): string {
   return `${prefix}_${relIdCounter}`;
 }
 
-/** `createSqlRel` wraps an opaque SQL fallback shape as a local-convention relational node. */
-export function createSqlRel(sql: string, tables: string[]): RelSqlNode {
+/** `createValuesRel` materializes literal rows without any backing table/provider. */
+export function createValuesRel(
+  rows: Array<Array<string | number | boolean | null>>,
+  output: RelOutputColumn[] = [],
+): RelValuesNode {
   return {
-    id: nextRelId("sql"),
-    kind: "sql",
+    id: nextRelId("values"),
+    kind: "values",
     convention: "local",
-    sql,
-    tables,
-    output: [],
+    rows,
+    output,
   };
-}
-
-/**
- * `relContainsSqlNode` detects whether a relational tree or any nested scalar subquery expression
- * still depends on SQL-shaped execution semantics that only a provider can satisfy.
- */
-export function relContainsSqlNode(node: RelNode): boolean {
-  const exprContainsSqlNode = (expr: RelExpr): boolean => {
-    switch (expr.kind) {
-      case "literal":
-      case "column":
-        return false;
-      case "function":
-        return expr.args.some(exprContainsSqlNode);
-      case "subquery":
-        return relContainsSqlNode(expr.rel);
-    }
-  };
-
-  switch (node.kind) {
-    case "sql":
-      return true;
-    case "scan":
-      return false;
-    case "filter":
-      return relContainsSqlNode(node.input) || (node.expr ? exprContainsSqlNode(node.expr) : false);
-    case "project":
-      return (
-        relContainsSqlNode(node.input) ||
-        node.columns.some((column) => "expr" in column && exprContainsSqlNode(column.expr))
-      );
-    case "aggregate":
-    case "window":
-    case "sort":
-    case "limit_offset":
-      return relContainsSqlNode(node.input);
-    case "join":
-    case "set_op":
-      return relContainsSqlNode(node.left) || relContainsSqlNode(node.right);
-    case "with":
-      return (
-        node.ctes.some((cte) => relContainsSqlNode(cte.query)) || relContainsSqlNode(node.body)
-      );
-  }
 }
 
 /** `countRelNodes` measures the size of a relational tree for guardrails and diagnostics. */
@@ -316,7 +356,8 @@ export function countRelNodes(node: RelNode): number {
 
   switch (node.kind) {
     case "scan":
-    case "sql":
+    case "values":
+    case "cte_ref":
       return 1;
     case "filter":
       return 1 + countRelNodes(node.input) + (node.expr ? countExpr(node.expr) : 0);
@@ -336,9 +377,13 @@ export function countRelNodes(node: RelNode): number {
     case "sort":
     case "limit_offset":
       return 1 + countRelNodes(node.input);
+    case "correlate":
+      return 1 + countRelNodes(node.left) + countRelNodes(node.right);
     case "join":
     case "set_op":
       return 1 + countRelNodes(node.left) + countRelNodes(node.right);
+    case "repeat_union":
+      return 1 + countRelNodes(node.seed) + countRelNodes(node.iterative);
     case "with":
       return (
         1 +
@@ -351,32 +396,13 @@ export function countRelNodes(node: RelNode): number {
 /** `collectRelTables` gathers the set of physical tables referenced anywhere in a relational tree. */
 export function collectRelTables(node: RelNode): string[] {
   const out = new Set<string>();
-
-  const visitExpr = (expr: RelExpr): void => {
-    switch (expr.kind) {
-      case "literal":
-      case "column":
-        return;
-      case "function":
-        for (const arg of expr.args) {
-          visitExpr(arg);
-        }
-        return;
-      case "subquery":
-        visit(expr.rel);
-        return;
-    }
-  };
-
   const visit = (current: RelNode): void => {
     switch (current.kind) {
       case "scan":
         out.add(current.table);
         return;
-      case "sql":
-        for (const table of current.tables) {
-          out.add(table);
-        }
+      case "values":
+      case "cte_ref":
         return;
       case "filter":
         if (current.expr) {
@@ -398,16 +424,40 @@ export function collectRelTables(node: RelNode): string[] {
       case "limit_offset":
         visit(current.input);
         return;
+      case "correlate":
+        visit(current.left);
+        visit(current.right);
+        return;
       case "join":
       case "set_op":
         visit(current.left);
         visit(current.right);
+        return;
+      case "repeat_union":
+        visit(current.seed);
+        visit(current.iterative);
         return;
       case "with":
         for (const cte of current.ctes) {
           visit(cte.query);
         }
         visit(current.body);
+        return;
+    }
+  };
+
+  const visitExpr = (expr: RelExpr): void => {
+    switch (expr.kind) {
+      case "literal":
+      case "column":
+        return;
+      case "function":
+        for (const arg of expr.args) {
+          visitExpr(arg);
+        }
+        return;
+      case "subquery":
+        visit(expr.rel);
         return;
     }
   };

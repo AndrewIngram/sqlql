@@ -3,21 +3,22 @@ import {
   normalizeDataEntityShape,
   type DataEntityColumnMap,
 } from "../entity-handles";
-import type { Provider } from "../contracts";
+import type { ProviderAdapter } from "../contracts";
 import type {
+  RelationalProviderAdapterOptions,
   RelationalProviderEntityConfig,
   RelationalProviderHandles,
-  RelationalProviderOptions,
 } from "./relational-adapter-types";
 
 export function buildRelationalEntityHandles<
   TContext,
   TEntities extends Record<string, RelationalProviderEntityConfig>,
   TStrategy extends string,
+  THandles extends RelationalProviderHandles<TEntities> = RelationalProviderHandles<TEntities>,
 >(
-  provider: Provider<TContext>,
-  options: RelationalProviderOptions<TContext, TEntities, TStrategy>,
-): RelationalProviderHandles<TEntities> {
+  adapter: ProviderAdapter<TContext>,
+  options: RelationalProviderAdapterOptions<TContext, TEntities, TStrategy>,
+): THandles {
   const handles = {} as RelationalProviderHandles<TEntities>;
 
   for (const entity of Object.keys(options.entities) as Array<Extract<keyof TEntities, string>>) {
@@ -35,17 +36,17 @@ export function buildRelationalEntityHandles<
       ? createDataEntityHandle({
           entity,
           provider: options.name,
-          providerInstance: provider,
+          providerInstance: adapter,
           columns,
         })
       : createDataEntityHandle({
           entity,
           provider: options.name,
-          providerInstance: provider,
+          providerInstance: adapter,
         });
   }
 
-  return handles;
+  return handles as THandles;
 }
 
 function hasColumns(

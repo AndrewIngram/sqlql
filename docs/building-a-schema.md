@@ -144,7 +144,7 @@ builder.view(
 const executableSchema = createExecutableSchema(builder);
 ```
 
-`createExecutableSchema(...)` now accepts either a built schema object or a `SchemaBuilder`. For the DSL flow, `createSchemaBuilder(...)` plus `createExecutableSchema(builder)` is the intended pattern.
+`createExecutableSchema(...)` now accepts either a built schema object or a `SchemaBuilder`. For the DSL flow, `createSchemaBuilder(...)` plus `createExecutableSchema(builder)` is the intended pattern. That step also prepares the runtime artifact once by finalizing the schema, materializing linked enums, and validating provider bindings up front instead of on each query.
 
 When a view only needs a provider entity as a private source, `scan(...)` can read the `DataEntityHandle` directly. You only need `table(...)` when you want that source to be part of the public facade.
 

@@ -12,7 +12,13 @@ import type {
   QueryStepEvent,
   QueryStepState,
 } from "@tupl/runtime/session";
-import { toSqlDDL, type QueryRow, type SchemaDefinition, type SqlScalarType } from "@tupl/schema";
+import {
+  toSqlDDL,
+  type ExplainResult,
+  type QueryRow,
+  type SchemaDefinition,
+  type SqlScalarType,
+} from "@tupl/schema";
 
 import { DataGrid } from "@/data-grid";
 import {
@@ -51,6 +57,7 @@ import {
   serializeJson,
 } from "@/examples";
 import { PlanGraph } from "@/PlanGraph";
+import { presentStep } from "@/plan-step-presentation";
 import { buildQueryCompatibilityMap } from "@/query-compatibility";
 import { truncateReason } from "@/query-preview";
 import { findTableLineNumber, inferSqlErrorRange } from "@/playground-sql-diagnostics";
@@ -66,6 +73,7 @@ import {
   JsonBlock,
   renderRows,
   StepSection,
+  TranslationExplainPanel,
 } from "@/playground-query-views";
 import { compilePlaygroundInput, createSession, runSessionToCompletion } from "@/session-runtime";
 import { SqlPreviewLine } from "@/SqlPreviewLine";
@@ -102,7 +110,6 @@ import {
   SelectLabel,
   SelectSeparator,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import {
   Table,
@@ -218,6 +225,7 @@ export function App(): React.JSX.Element {
   const [planScopes, setPlanScopes] = useState<QueryExecutionPlanScope[]>([]);
   const [events, setEvents] = useState<QueryStepEvent[]>([]);
   const [resultRows, setResultRows] = useState<Array<Record<string, unknown>> | null>(null);
+  const [translationExplain, setTranslationExplain] = useState<ExplainResult | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedCatalogQueryId, setSelectedCatalogQueryId] = useState(
     defaultScenario?.defaultQueryId ?? defaultQuery?.id ?? CUSTOM_QUERY_ID,
@@ -300,6 +308,32 @@ export function App(): React.JSX.Element {
   }, []);
 
   const queryCatalog = useMemo(() => buildQueryCatalog(QUERY_PRESETS), []);
+  const queryCatalogGroups = useMemo(() => {
+    const groups = new Map<string, typeof queryCatalog>();
+    for (const entry of queryCatalog) {
+      const category = entry.category ?? "Query presets";
+      const existing = groups.get(category) ?? [];
+      existing.push(entry);
+      groups.set(category, existing);
+    }
+    return [...groups.entries()].map(([label, entries]) => ({ label, entries }));
+  }, [queryCatalog]);
+  const formatHighlights = useCallback((highlights: string[] | undefined) => {
+    if (!highlights || highlights.length === 0) {
+      return null;
+    }
+
+    return highlights.join(" · ");
+  }, []);
+  const selectedCatalogQueryLabel = useMemo(() => {
+    if (selectedCatalogQueryId === CUSTOM_QUERY_ID) {
+      return "Custom";
+    }
+
+    return (
+      queryCatalog.find((entry) => entry.id === selectedCatalogQueryId)?.label ?? "Preset query"
+    );
+  }, [queryCatalog, selectedCatalogQueryId]);
   const generatedDbCodeText = useMemo(
     () => buildGeneratedDbModuleCode(buildPostgresSchemaFromRows(downstreamStructureRowsByTable)),
     [downstreamStructureRowsByTable],
@@ -578,6 +612,10 @@ export function App(): React.JSX.Element {
     ? (planSteps.find((step) => step.id === selectedStepId) ?? null)
     : null;
   const selectedStepState = selectedStep ? statesById[selectedStep.id] : undefined;
+  const selectedStepPresentation = useMemo(
+    () => (selectedStep ? presentStep(selectedStep, selectedStepState ?? null) : null),
+    [selectedStep, selectedStepState],
+  );
 
   const configureSchemaTypescript = useCallback((): void => {
     const monaco = monacoRef.current;
@@ -826,6 +864,7 @@ export function App(): React.JSX.Element {
     setRuntimeError(null);
     setExecutedOperations([]);
     setEvents([]);
+    setTranslationExplain(null);
 
     void compilePlaygroundInput(schemaCodeText, rowsJsonText, sqlText, {
       modules: schemaProgramModules,
@@ -842,6 +881,7 @@ export function App(): React.JSX.Element {
           setPlanSteps([]);
           setPlanScopes([]);
           setExecutedOperations([]);
+          setTranslationExplain(null);
           setSessionTick((tick) => tick + 1);
           return undefined;
         }
@@ -862,6 +902,7 @@ export function App(): React.JSX.Element {
         }
 
         sessionRef.current = bundle.session;
+        setTranslationExplain(bundle.explain);
         const freshPlan = bundle.session.getPlan();
         setPlanSteps(freshPlan.steps);
         setPlanScopes(freshPlan.scopes ?? []);
@@ -886,6 +927,7 @@ export function App(): React.JSX.Element {
 
         setRuntimeError(error instanceof Error ? error.message : "Failed to execute query.");
         setExecutedOperations([]);
+        setTranslationExplain(null);
       });
   }, [orgId, rowsJsonText, schemaCodeText, schemaProgramModules, sqlText, userId]);
 
@@ -1400,37 +1442,53 @@ export function App(): React.JSX.Element {
                   <div className="grid gap-2 lg:grid-cols-[minmax(180px,260px)_minmax(0,1fr)_auto] lg:items-center">
                     <Select value={selectedCatalogQueryId} onValueChange={handleCatalogQuerySelect}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Preset query" />
+                        <span className="line-clamp-1 min-w-0 text-left">
+                          {selectedCatalogQueryLabel}
+                        </span>
                       </SelectTrigger>
                       <SelectContent className="min-w-[520px]">
-                        <SelectItem value={CUSTOM_QUERY_ID}>Custom</SelectItem>
+                        <SelectItem value={CUSTOM_QUERY_ID} textValue="Custom">
+                          Custom
+                        </SelectItem>
                         <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Query presets</SelectLabel>
-                          {queryCatalog.map((entry) => {
-                            const compatibility = queryCompatibilityById[entry.id];
-                            const compatible = compatibility?.compatible === true;
-                            const reason = compatibility?.reason ?? "Unsupported for this schema.";
+                        {queryCatalogGroups.map((group, groupIndex) => (
+                          <div key={group.label}>
+                            {groupIndex > 0 ? <SelectSeparator /> : null}
+                            <SelectGroup>
+                              <SelectLabel>{group.label}</SelectLabel>
+                              {group.entries.map((entry) => {
+                                const compatibility = queryCompatibilityById[entry.id];
+                                const compatible = compatibility?.compatible === true;
+                                const reason =
+                                  compatibility?.reason ?? "Unsupported for this schema.";
+                                const highlights = formatHighlights(entry.highlights);
 
-                            return (
-                              <SelectItem
-                                key={entry.id}
-                                value={entry.id}
-                                disabled={!compatible}
-                                title={!compatible ? reason : undefined}
-                              >
-                                <div className="flex min-w-0 flex-col">
-                                  <span>{entry.label}</span>
-                                  {!compatible ? (
-                                    <span className="text-xs text-muted-foreground">
-                                      {truncateReason(reason)}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </SelectItem>
-                            );
-                          })}
-                        </SelectGroup>
+                                return (
+                                  <SelectItem
+                                    key={entry.id}
+                                    value={entry.id}
+                                    textValue={entry.label}
+                                    disabled={!compatible}
+                                    title={!compatible ? reason : undefined}
+                                  >
+                                    <div className="flex min-w-0 flex-col">
+                                      <span>{entry.label}</span>
+                                      {!compatible ? (
+                                        <span className="text-xs text-muted-foreground">
+                                          {truncateReason(reason)}
+                                        </span>
+                                      ) : highlights ? (
+                                        <span className="text-xs text-muted-foreground">
+                                          {highlights}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </SelectItem>
+                                );
+                              })}
+                            </SelectGroup>
+                          </div>
+                        ))}
                       </SelectContent>
                     </Select>
 
@@ -2447,150 +2505,221 @@ export function App(): React.JSX.Element {
                         )}
                       </div>
                     ) : (
-                      <div className="relative h-full min-h-0">
-                        <PlanGraph
-                          steps={planSteps}
-                          scopes={planScopes}
-                          statesById={statesById}
-                          currentStepId={currentStepId}
-                          selectedStepId={selectedStepId}
-                          isVisible={activeTopTab === "query" && activeQueryTab === "explain"}
-                          onSelectStep={handleSelectStep}
-                          onClearSelection={handleCloseStepOverlay}
-                          heightClassName="h-full"
-                          containerClassName="rounded-none border-0 bg-transparent"
-                        />
-                        {selectedStep ? (
-                          <div className="pointer-events-none absolute inset-y-4 right-4 z-20 w-[430px] max-w-[48%]">
-                            <div className="pointer-events-auto flex h-full flex-col rounded-xl border border-sky-200 bg-white/95 shadow-2xl backdrop-blur-sm">
-                              <div className="flex items-start justify-between gap-2 border-b p-3">
-                                <div className="min-w-0 space-y-2">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <Badge variant="secondary" className="font-mono text-[11px]">
-                                      {selectedStep.id}
-                                    </Badge>
-                                    <Badge variant="outline">{selectedStep.kind}</Badge>
-                                    <Badge variant="outline">{selectedStep.phase}</Badge>
-                                    {selectedStep.sqlOrigin ? (
-                                      <Badge variant="outline">{selectedStep.sqlOrigin}</Badge>
-                                    ) : null}
-                                  </div>
-                                  <p className="text-sm text-slate-700">{selectedStep.summary}</p>
-                                </div>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 shrink-0"
-                                  onClick={handleCloseStepOverlay}
-                                >
-                                  <X className="h-4 w-4" />
-                                </Button>
-                              </div>
-                              <div className="min-h-0 flex-1 p-3 pt-2">
-                                <ScrollArea className="h-full pr-2">
-                                  <div className="space-y-3">
-                                    <div className="rounded-md border bg-slate-50 p-3">
-                                      <p className="text-xs text-slate-500">
-                                        Depends on: {selectedStep.dependsOn.join(", ") || "none"}
-                                      </p>
+                      <div className="grid h-full min-h-0 grid-cols-[360px_minmax(0,1fr)]">
+                        <TranslationExplainPanel explain={translationExplain} />
+                        <div className="relative h-full min-h-0">
+                          <PlanGraph
+                            steps={planSteps}
+                            scopes={planScopes}
+                            statesById={statesById}
+                            currentStepId={currentStepId}
+                            selectedStepId={selectedStepId}
+                            isVisible={activeTopTab === "query" && activeQueryTab === "explain"}
+                            onSelectStep={handleSelectStep}
+                            onClearSelection={handleCloseStepOverlay}
+                            heightClassName="h-full"
+                            containerClassName="rounded-none border-0 bg-transparent"
+                          />
+                          {selectedStep ? (
+                            <div className="pointer-events-none absolute inset-y-4 right-4 z-20 w-[430px] max-w-[48%]">
+                              <div className="pointer-events-auto flex h-full flex-col rounded-xl border border-sky-200 bg-white/95 shadow-2xl backdrop-blur-sm">
+                                <div className="flex items-start justify-between gap-2 border-b p-3">
+                                  <div className="min-w-0 space-y-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge variant="secondary" className="font-mono text-[11px]">
+                                        {selectedStep.id}
+                                      </Badge>
+                                      <Badge variant="outline">
+                                        {selectedStepPresentation?.operator ?? selectedStep.kind}
+                                      </Badge>
+                                      <Badge variant="outline">
+                                        {selectedStepPresentation?.placement ?? selectedStep.phase}
+                                      </Badge>
+                                      {selectedStep.sqlOrigin ? (
+                                        <Badge variant="outline">{selectedStep.sqlOrigin}</Badge>
+                                      ) : null}
                                     </div>
-
-                                    <StepSection title="Logical operation" defaultOpen>
-                                      <p className="text-xs text-slate-500">
-                                        The planner-level intent for this step and the columns it
-                                        aims to produce.
-                                      </p>
-                                      <JsonBlock value={selectedStep.operation} />
-                                      {selectedStep.outputs && selectedStep.outputs.length > 0 ? (
-                                        <div className="text-xs text-slate-600">
-                                          Outputs: {selectedStep.outputs.join(", ")}
-                                        </div>
-                                      ) : null}
-                                    </StepSection>
-
-                                    <StepSection title="Request" defaultOpen>
-                                      <p className="text-xs text-slate-500">
-                                        The normalized input shape passed into this step at
-                                        execution time.
-                                      </p>
-                                      <JsonBlock value={selectedStep.request ?? {}} />
-                                    </StepSection>
-
-                                    <StepSection title="Routing / Pushdown" defaultOpen>
-                                      <p className="text-xs text-slate-500">
-                                        How work is split between table methods and local engine
-                                        processing.
-                                      </p>
-                                      <div className="text-xs text-slate-600">
-                                        Route used:{" "}
-                                        <span className="font-medium text-slate-900">
-                                          {selectedStepState?.routeUsed ?? "pending"}
-                                        </span>
-                                      </div>
-                                      <JsonBlock value={selectedStep.pushdown ?? {}} />
-                                      {selectedStepState?.notes &&
-                                      selectedStepState.notes.length > 0 ? (
-                                        <ul className="list-disc space-y-1 pl-5 text-xs text-slate-600">
-                                          {selectedStepState.notes.map((note: string) => (
-                                            <li key={note}>{note}</li>
-                                          ))}
-                                        </ul>
-                                      ) : null}
-                                    </StepSection>
-
-                                    <StepSection title="Runtime" defaultOpen>
-                                      <p className="text-xs text-slate-500">
-                                        Execution status and timing/row-count metrics for this step
-                                        instance.
-                                      </p>
-                                      <div className="grid gap-1 text-xs text-slate-600">
-                                        <div>Status: {selectedStepState?.status ?? "ready"}</div>
-                                        <div>
-                                          Execution index:{" "}
-                                          {selectedStepState?.executionIndex != null
-                                            ? selectedStepState.executionIndex
-                                            : "pending"}
-                                        </div>
-                                        {selectedStepState?.durationMs != null ? (
-                                          <div>Duration: {selectedStepState.durationMs}ms</div>
-                                        ) : null}
-                                        {selectedStepState?.inputRowCount != null ? (
-                                          <div>Input rows: {selectedStepState.inputRowCount}</div>
-                                        ) : null}
-                                        {selectedStepState?.outputRowCount != null ? (
-                                          <div>Output rows: {selectedStepState.outputRowCount}</div>
-                                        ) : selectedStepState?.rowCount != null ? (
-                                          <div>Output rows: {selectedStepState.rowCount}</div>
-                                        ) : null}
-                                      </div>
-                                      {selectedStepState?.error ? (
-                                        <Alert variant="destructive">
-                                          <AlertTitle>Step error</AlertTitle>
-                                          <AlertDescription>
-                                            {selectedStepState.error}
-                                          </AlertDescription>
-                                        </Alert>
-                                      ) : null}
-                                    </StepSection>
-
-                                    {selectedStepState?.rows ? (
-                                      <StepSection title="Data preview" defaultOpen={false}>
-                                        <p className="text-xs text-slate-500">
-                                          Sample output rows emitted by this step after execution.
-                                        </p>
-                                        {renderRows(selectedStepState.rows, {
-                                          heightClassName: "h-[260px]",
-                                          expandNestedObjects: true,
-                                        })}
-                                      </StepSection>
-                                    ) : null}
+                                    <p className="font-mono text-sm text-slate-800">
+                                      {selectedStepPresentation?.signature ?? selectedStep.summary}
+                                    </p>
+                                    <p className="text-xs text-slate-500">{selectedStep.summary}</p>
                                   </div>
-                                </ScrollArea>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 shrink-0"
+                                    onClick={handleCloseStepOverlay}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                                <div className="min-h-0 flex-1 p-3 pt-2">
+                                  <ScrollArea className="h-full pr-2">
+                                    <div className="space-y-3">
+                                      <StepSection title="Summary" defaultOpen>
+                                        <div className="grid gap-3 text-xs text-slate-600">
+                                          <div className="grid grid-cols-2 gap-2">
+                                            <div className="rounded-md border bg-slate-50 p-2">
+                                              <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                                                Operator
+                                              </div>
+                                              <div className="mt-1 font-medium text-slate-900">
+                                                {selectedStepPresentation?.operator ??
+                                                  selectedStep.kind}
+                                              </div>
+                                            </div>
+                                            <div className="rounded-md border bg-slate-50 p-2">
+                                              <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                                                Placement
+                                              </div>
+                                              <div className="mt-1 font-medium text-slate-900">
+                                                {selectedStepPresentation?.placement ?? "pending"}
+                                              </div>
+                                            </div>
+                                          </div>
+                                          <div className="rounded-md border bg-slate-50 p-3">
+                                            <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                                              Operator signature
+                                            </div>
+                                            <div className="mt-1 font-mono text-[12px] leading-5 text-slate-800">
+                                              {selectedStepPresentation?.signature ??
+                                                selectedStep.summary}
+                                            </div>
+                                          </div>
+                                          {selectedStepPresentation?.facts &&
+                                          selectedStepPresentation.facts.length > 0 ? (
+                                            <div className="flex flex-wrap gap-1.5">
+                                              {selectedStepPresentation.facts.map((fact) => (
+                                                <Badge
+                                                  key={fact}
+                                                  variant="outline"
+                                                  className="text-[10px]"
+                                                >
+                                                  {fact}
+                                                </Badge>
+                                              ))}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      </StepSection>
+
+                                      <StepSection title="Shape" defaultOpen>
+                                        <div className="grid gap-2 text-xs text-slate-600">
+                                          <div className="rounded-md border bg-slate-50 p-3">
+                                            <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                                              Depends on
+                                            </div>
+                                            <div className="mt-1 font-mono text-[11px] text-slate-800">
+                                              {selectedStep.dependsOn.join(", ") || "none"}
+                                            </div>
+                                          </div>
+                                          <div className="rounded-md border bg-slate-50 p-3">
+                                            <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                                              Output columns
+                                            </div>
+                                            <div className="mt-1 font-mono text-[11px] text-slate-800">
+                                              {selectedStep.outputs?.join(", ") || "not surfaced"}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </StepSection>
+
+                                      <StepSection title="Placement" defaultOpen>
+                                        <div className="grid gap-2 text-xs text-slate-600">
+                                          <div>
+                                            Route used:{" "}
+                                            <span className="font-medium text-slate-900">
+                                              {selectedStepState?.routeUsed ?? "pending"}
+                                            </span>
+                                          </div>
+                                          {selectedStepState?.notes &&
+                                          selectedStepState.notes.length > 0 ? (
+                                            <ul className="list-disc space-y-1 pl-5 text-xs text-slate-600">
+                                              {selectedStepState.notes.map((note: string) => (
+                                                <li key={note}>{note}</li>
+                                              ))}
+                                            </ul>
+                                          ) : (
+                                            <div className="text-xs text-slate-500">
+                                              No additional routing notes.
+                                            </div>
+                                          )}
+                                        </div>
+                                      </StepSection>
+
+                                      <StepSection title="Runtime" defaultOpen>
+                                        <p className="text-xs text-slate-500">
+                                          Execution status and timing/row-count metrics for this
+                                          step instance.
+                                        </p>
+                                        <div className="grid gap-1 text-xs text-slate-600">
+                                          <div>Status: {selectedStepState?.status ?? "ready"}</div>
+                                          <div>
+                                            Execution index:{" "}
+                                            {selectedStepState?.executionIndex != null
+                                              ? selectedStepState.executionIndex
+                                              : "pending"}
+                                          </div>
+                                          {selectedStepState?.durationMs != null ? (
+                                            <div>Duration: {selectedStepState.durationMs}ms</div>
+                                          ) : null}
+                                          {selectedStepState?.inputRowCount != null ? (
+                                            <div>Input rows: {selectedStepState.inputRowCount}</div>
+                                          ) : null}
+                                          {selectedStepState?.outputRowCount != null ? (
+                                            <div>
+                                              Output rows: {selectedStepState.outputRowCount}
+                                            </div>
+                                          ) : selectedStepState?.rowCount != null ? (
+                                            <div>Output rows: {selectedStepState.rowCount}</div>
+                                          ) : null}
+                                        </div>
+                                        {selectedStepState?.error ? (
+                                          <Alert variant="destructive">
+                                            <AlertTitle>Step error</AlertTitle>
+                                            <AlertDescription>
+                                              {selectedStepState.error}
+                                            </AlertDescription>
+                                          </Alert>
+                                        ) : null}
+                                      </StepSection>
+
+                                      <StepSection title="Debug JSON" defaultOpen={false}>
+                                        <div className="space-y-3">
+                                          <div>
+                                            <p className="mb-1 text-xs text-slate-500">Operation</p>
+                                            <JsonBlock value={selectedStep.operation} />
+                                          </div>
+                                          <div>
+                                            <p className="mb-1 text-xs text-slate-500">Request</p>
+                                            <JsonBlock value={selectedStep.request ?? {}} />
+                                          </div>
+                                          <div>
+                                            <p className="mb-1 text-xs text-slate-500">Pushdown</p>
+                                            <JsonBlock value={selectedStep.pushdown ?? {}} />
+                                          </div>
+                                        </div>
+                                      </StepSection>
+
+                                      {selectedStepState?.rows ? (
+                                        <StepSection title="Data preview" defaultOpen={false}>
+                                          <p className="text-xs text-slate-500">
+                                            Sample output rows emitted by this step after execution.
+                                          </p>
+                                          {renderRows(selectedStepState.rows, {
+                                            heightClassName: "h-[260px]",
+                                            expandNestedObjects: true,
+                                          })}
+                                        </StepSection>
+                                      ) : null}
+                                    </div>
+                                  </ScrollArea>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ) : null}
+                          ) : null}
+                        </div>
                       </div>
                     )}
                   </div>

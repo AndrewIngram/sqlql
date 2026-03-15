@@ -4,12 +4,11 @@ import { TuplExecutionError, type RelNode } from "@tupl/foundation";
 import {
   getDataEntityProvider,
   normalizeCapability,
-  supportsFragmentExecution,
   unwrapProviderOperationResult,
-  type Provider,
+  type ProviderAdapter,
 } from "@tupl/provider-kit";
 import { buildProviderFragmentForRelResult } from "@tupl/planner";
-import { mapProviderRowsToRelOutput } from "@tupl/schema-model";
+import { mapProviderRowsToRelOutput } from "@tupl/schema-model/mapping";
 
 import {
   tryExecutionStep,
@@ -25,7 +24,7 @@ export async function tryExecuteRemoteSubtreeResult<TContext>(
   node: RelNode,
   context: RelExecutionContext<TContext>,
 ): Promise<RemoteExecutionResult> {
-  if (node.kind === "sql" || node.kind === "scan") {
+  if (node.kind === "scan") {
     return Result.ok(null);
   }
 
@@ -49,7 +48,7 @@ export async function tryExecuteRemoteSubtreeResult<TContext>(
   }
 
   const capabilityResult = await tryExecutionStepAsync("check subtree provider capability", () =>
-    Promise.resolve(provider.canExecute(fragment, context.context)),
+    Promise.resolve(provider.canExecute(fragment.rel, context.context)),
   );
   if (Result.isError(capabilityResult)) {
     return capabilityResult;
@@ -60,17 +59,8 @@ export async function tryExecuteRemoteSubtreeResult<TContext>(
     return Result.ok(null);
   }
 
-  if (!supportsFragmentExecution(provider)) {
-    return Result.err(
-      new TuplExecutionError({
-        operation: "execute relational node",
-        message: `Provider ${fragment.provider} does not support compiled fragment execution.`,
-      }),
-    );
-  }
-
   const compiledResult = await tryExecutionStepAsync("compile subtree provider fragment", () =>
-    Promise.resolve(provider.compile(fragment, context.context)).then(
+    Promise.resolve(provider.compile(fragment.rel, context.context)).then(
       unwrapProviderOperationResult,
     ),
   );
@@ -87,33 +77,29 @@ export async function tryExecuteRemoteSubtreeResult<TContext>(
     return rowsResult;
   }
 
-  if (fragment.kind === "rel") {
-    return tryExecutionStep("map provider rows to logical rel output rows", () =>
-      mapProviderRowsToRelOutput(rowsResult.value, fragment.rel, context.schema),
-    );
-  }
-
-  return Result.ok(rowsResult.value);
+  return tryExecutionStep("map provider rows to logical rel output rows", () =>
+    mapProviderRowsToRelOutput(rowsResult.value, fragment.rel, context.schema),
+  );
 }
 
 function resolveProviderForNode<TContext>(
   node: RelNode,
   providerName: string,
   context: RelExecutionContext<TContext>,
-): Provider<TContext> | undefined {
+): ProviderAdapter<TContext> | undefined {
   return context.providers[providerName] ?? findNodeProvider(node, providerName);
 }
 
 function findNodeProvider<TContext>(
   node: RelNode,
   providerName: string,
-): Provider<TContext> | undefined {
+): ProviderAdapter<TContext> | undefined {
   switch (node.kind) {
     case "scan": {
       if (!node.entity || node.entity.provider !== providerName) {
         return undefined;
       }
-      return getDataEntityProvider(node.entity) as Provider<TContext> | undefined;
+      return getDataEntityProvider(node.entity) as ProviderAdapter<TContext> | undefined;
     }
     case "filter":
     case "project":
@@ -132,7 +118,10 @@ function findNodeProvider<TContext>(
         node.ctes.map((cte) => findNodeProvider(cte.query, providerName)).find(Boolean) ??
         findNodeProvider(node.body, providerName)
       );
-    case "sql":
+    case "values":
+    case "cte_ref":
+    case "correlate":
+    case "repeat_union":
       return undefined;
   }
 }

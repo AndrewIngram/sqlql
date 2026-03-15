@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { AdapterResult, type ProviderFragment } from "@tupl/provider-kit";
+import type { RelNode } from "@tupl/foundation";
+import { AdapterResult } from "@tupl/provider-kit";
 import { createIoredisProvider, type RedisLike, type RedisPipelineLike } from "../index";
 
 class StubPipeline implements RedisPipelineLike {
@@ -29,10 +30,20 @@ class StubRedis implements RedisLike {
 }
 
 describe("ioredis adapter", () => {
-  it("exposes typed entity handles and reports unsupported fragment kinds in v1", async () => {
+  it("exposes typed entity handles and executes keyed relational scan fragments", async () => {
     const provider = createIoredisProvider<{ tenant: string }>({
       name: "redisProvider",
-      redis: new StubRedis(new Map()),
+      redis: new StubRedis(
+        new Map([
+          [
+            "product_view_counts:acme:p1",
+            {
+              product_id: "p1",
+              view_count: "8",
+            },
+          ],
+        ]),
+      ),
       entities: {
         product_view_counts: {
           entity: "product_view_counts",
@@ -70,21 +81,64 @@ describe("ioredis adapter", () => {
       },
     });
 
-    const scanFragment: ProviderFragment = {
+    const scanRel: RelNode = {
+      id: "redis:product_view_counts",
       kind: "scan",
-      provider: "redisProvider",
+      convention: "provider:redisProvider",
       table: "product_view_counts",
-      request: {
+      select: ["product_id", "view_count"],
+      where: [{ op: "eq", column: "product_id", value: "p1" }],
+      output: [{ name: "product_id" }, { name: "view_count" }],
+    };
+    const scanCapability = await provider.canExecute(scanRel, { tenant: "acme" });
+    expect(scanCapability).toBe(true);
+
+    const plan = (await provider.compile(scanRel, { tenant: "acme" })).unwrap();
+    expect(await provider.describeCompiledPlan?.(plan, { tenant: "acme" })).toMatchObject({
+      kind: "redis_lookup_scan",
+      summary: "redisProvider keyed hash lookup",
+    });
+    expect((await provider.execute(plan, { tenant: "acme" })).unwrap()).toEqual([
+      { product_id: "p1", view_count: 8 },
+    ]);
+  });
+
+  it("reports unsupported unconstrained scans", async () => {
+    const provider = createIoredisProvider<{ tenant: string }>({
+      name: "redisProvider",
+      redis: new StubRedis(new Map()),
+      entities: {
+        product_view_counts: {
+          entity: "product_view_counts",
+          lookupKey: "product_id",
+          columns: ["product_id", "view_count"] as const,
+          buildRedisKey: ({ key }) => `product_view_counts:${String(key)}`,
+          decodeRow: ({ hash }) => ({
+            product_id: hash.product_id ?? "",
+            view_count: Number(hash.view_count ?? 0),
+          }),
+        },
+      },
+    });
+
+    const scanCapability = await provider.canExecute(
+      {
+        id: "redis:product_view_counts",
+        kind: "scan",
+        convention: "provider:redisProvider",
         table: "product_view_counts",
         select: ["product_id", "view_count"],
+        output: [{ name: "product_id" }, { name: "view_count" }],
       },
-    };
-    const scanCapability = await provider.canExecute(scanFragment, { tenant: "acme" });
+      { tenant: "acme" },
+    );
     if (typeof scanCapability === "boolean") {
-      throw new Error("Expected a capability report for scan fragments.");
+      throw new Error("Expected a capability report for unconstrained scans.");
     }
     expect(scanCapability.supported).toBe(false);
-    expect(scanCapability.routeFamily).toBe("scan");
+    expect(scanCapability.reason).toBe(
+      "Provider requires an equality or IN predicate on product_view_counts.product_id.",
+    );
   });
 
   it("resolves lookupMany against Redis hashes with residual filtering and projection", async () => {
@@ -169,17 +223,19 @@ describe("ioredis adapter", () => {
       },
     });
 
-    await expect(
-      provider.lookupMany!(
-        {
-          table: "missing",
-          key: "product_id",
-          keys: ["p1"],
-          select: ["product_id"],
-        },
-        { tenant: "acme" },
-      ),
-    ).rejects.toThrow("Unknown Redis entity missing.");
+    const missingEntity = await provider.lookupMany!(
+      {
+        table: "missing",
+        key: "product_id",
+        keys: ["p1"],
+        select: ["product_id"],
+      },
+      { tenant: "acme" },
+    );
+    expect(AdapterResult.isError(missingEntity)).toBe(true);
+    if (AdapterResult.isError(missingEntity)) {
+      expect(missingEntity.error.message).toBe("Unknown Redis entity missing.");
+    }
 
     const wrongKey = await provider.lookupMany!(
       {

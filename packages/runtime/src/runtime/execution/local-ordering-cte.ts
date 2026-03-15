@@ -1,6 +1,6 @@
 import { Result } from "better-result";
 
-import type { RelNode } from "@tupl/foundation";
+import { TuplExecutionError, type RelNode } from "@tupl/foundation";
 
 import {
   executeRelNodeResult,
@@ -115,4 +115,62 @@ export async function executeWithResult<TContext>(
   }
 
   return executeRelNodeResult(withNode.body, nested);
+}
+
+export async function executeRepeatUnionResult<TContext>(
+  repeatUnion: Extract<RelNode, { kind: "repeat_union" }>,
+  context: RelExecutionContext<TContext>,
+): Promise<RelExecutionResult> {
+  const seedRowsResult = await executeRelNodeResult(repeatUnion.seed, context);
+  if (Result.isError(seedRowsResult)) {
+    return seedRowsResult;
+  }
+
+  let accumulated =
+    repeatUnion.mode === "union" ? dedupeRows(seedRowsResult.value) : [...seedRowsResult.value];
+  let delta = [...seedRowsResult.value];
+  let iteration = 0;
+
+  while (delta.length > 0) {
+    iteration += 1;
+    if (iteration > 256) {
+      return Result.err(
+        new TuplExecutionError({
+          operation: "execute recursive CTE",
+          message: `Recursive CTE exceeded iteration limit for ${repeatUnion.cteName}.`,
+        }),
+      );
+    }
+
+    const nested: RelExecutionContext<TContext> = {
+      ...context,
+      cteRows: new Map(context.cteRows).set(repeatUnion.cteName, delta),
+    };
+
+    const iterativeRowsResult = await executeRelNodeResult(repeatUnion.iterative, nested);
+    if (Result.isError(iterativeRowsResult)) {
+      return iterativeRowsResult;
+    }
+
+    const iterativeRows = iterativeRowsResult.value;
+    if (iterativeRows.length === 0) {
+      break;
+    }
+
+    if (repeatUnion.mode === "union") {
+      const existing = new Set(accumulated.map((row) => stableRowKey(row)));
+      const fresh = iterativeRows.filter((row) => !existing.has(stableRowKey(row)));
+      if (fresh.length === 0) {
+        break;
+      }
+      accumulated = [...accumulated, ...fresh];
+      delta = fresh;
+      continue;
+    }
+
+    accumulated = [...accumulated, ...iterativeRows];
+    delta = iterativeRows;
+  }
+
+  return Result.ok(accumulated);
 }

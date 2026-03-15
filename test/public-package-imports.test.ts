@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import * as foundation from "@tupl/foundation";
 import * as providerKit from "@tupl/provider-kit";
+import * as providerKitRelationalSql from "@tupl/provider-kit/relational-sql";
 import * as providerKitShapes from "@tupl/provider-kit/shapes";
 import * as providerKitTesting from "@tupl/provider-kit/testing";
 import * as providerDrizzle from "@tupl/provider-drizzle";
@@ -13,6 +14,15 @@ import * as runtime from "@tupl/runtime";
 import * as runtimeExecutor from "@tupl/runtime/executor";
 import * as runtimeSession from "@tupl/runtime/session";
 import * as schema from "@tupl/schema";
+import * as schemaModel from "@tupl/schema-model";
+import * as schemaModelDefinition from "@tupl/schema-model/definition";
+import * as schemaModelEnums from "@tupl/schema-model/enums";
+import * as schemaModelMapping from "@tupl/schema-model/mapping";
+import * as schemaModelDsl from "@tupl/schema-model/dsl";
+import * as schemaModelNormalized from "@tupl/schema-model/normalized";
+import * as schemaModelNormalization from "@tupl/schema-model/normalization";
+import * as schemaModelPlanning from "@tupl/schema-model/planning";
+import * as schemaModelTablePlanning from "@tupl/schema-model/table-planning";
 import type {
   QueryRow as ProviderQueryRow,
   RelationalProviderOptions as ProviderRelationalProviderOptions,
@@ -21,12 +31,15 @@ import type {
   RelationalProviderRelCompileStrategy as ProviderRelationalProviderRelCompileStrategy,
   ScanFilterClause as ProviderScanFilterClause,
   ScanOrderBy as ProviderScanOrderBy,
-  SqlRelationalProviderOptions as ProviderSqlRelationalProviderOptions,
   TableAggregateMetric as ProviderTableAggregateMetric,
   TableAggregateRequest as ProviderTableAggregateRequest,
   TableLookupRequest as ProviderTableLookupRequest,
   TableScanRequest as ProviderTableScanRequest,
 } from "@tupl/provider-kit";
+import type { NormalizedColumnBinding as SchemaModelNormalizedColumnBinding } from "@tupl/schema-model/normalized";
+import type { PlannedScanRequest as SchemaModelPlannedScanRequest } from "@tupl/schema-model/planning";
+import type { SchemaViewRelNode as SchemaModelDslSchemaViewRelNode } from "@tupl/schema-model/dsl";
+import type { TablePlanningMethods as SchemaModelTablePlanningMethods } from "@tupl/schema-model/table-planning";
 
 declare const providerQueryRow: ProviderQueryRow;
 declare const providerRelationalProviderOptions: ProviderRelationalProviderOptions<
@@ -39,20 +52,6 @@ declare const providerRelationalProviderCapabilityContext: ProviderRelationalPro
   Record<string, ProviderRelationalProviderEntityConfig>,
   ProviderRelationalProviderRelCompileStrategy
 >;
-declare const providerSqlRelationalProviderOptions: ProviderSqlRelationalProviderOptions<
-  unknown,
-  Record<string, ProviderRelationalProviderEntityConfig>,
-  { entity: string; table: string; config: unknown },
-  {
-    alias: string;
-    entity: string;
-    table: string;
-    resolved: { entity: string; table: string; config: unknown };
-    scan: Extract<providerKit.ProviderFragment, { kind: "scan" }>;
-  },
-  unknown,
-  unknown
->;
 declare const providerScanFilter: ProviderScanFilterClause;
 declare const providerScanOrderBy: ProviderScanOrderBy;
 declare const providerTableScanRequest: ProviderTableScanRequest;
@@ -63,13 +62,21 @@ declare const providerTableAggregateRequest: ProviderTableAggregateRequest;
 void providerQueryRow;
 void providerRelationalProviderOptions;
 void providerRelationalProviderCapabilityContext;
-void providerSqlRelationalProviderOptions;
 void providerScanFilter;
 void providerScanOrderBy;
 void providerTableScanRequest;
 void providerTableLookupRequest;
 void providerTableAggregateMetric;
 void providerTableAggregateRequest;
+declare const schemaModelNormalizedColumnBinding: SchemaModelNormalizedColumnBinding;
+declare const schemaModelPlannedScanRequest: SchemaModelPlannedScanRequest;
+declare const schemaModelDslSchemaViewRelNode: SchemaModelDslSchemaViewRelNode;
+declare const schemaModelTablePlanningMethods: SchemaModelTablePlanningMethods;
+
+void schemaModelNormalizedColumnBinding;
+void schemaModelPlannedScanRequest;
+void schemaModelDslSchemaViewRelNode;
+void schemaModelTablePlanningMethods;
 
 describe("public package imports", () => {
   it("exposes the canonical schema surface", () => {
@@ -98,19 +105,61 @@ describe("public package imports", () => {
     expect("AggregatePlanDecision" in schema).toBe(false);
   });
 
+  it("keeps schema-model root focused on schema authoring contracts", () => {
+    expect(typeof schemaModel.createSchemaBuilder).toBe("function");
+    expect(typeof schemaModel.defineTableMethods).toBe("function");
+    expect(typeof schemaModel.toSqlDDL).toBe("function");
+    expect("getNormalizedTableBinding" in schemaModel).toBe(false);
+    expect("NormalizedColumnBinding" in schemaModel).toBe(false);
+    expect("NormalizedTableBinding" in schemaModel).toBe(false);
+    expect("TableName" in schemaModel).toBe(false);
+    expect("TablePlanningMethods" in schemaModel).toBe(false);
+    expect("TablePlanningMethodsMap" in schemaModel).toBe(false);
+    expect("PlannedScanRequest" in schemaModel).toBe(false);
+    expect("PlannedLookupRequest" in schemaModel).toBe(false);
+    expect("PlannedAggregateRequest" in schemaModel).toBe(false);
+    expect("ScanPlanDecision" in schemaModel).toBe(false);
+    expect("LookupPlanDecision" in schemaModel).toBe(false);
+    expect("AggregatePlanDecision" in schemaModel).toBe(false);
+    expect("SchemaViewRelNode" in schemaModel).toBe(false);
+    expect("mapProviderRowsToLogical" in schemaModel).toBe(false);
+    expect("resolveSchemaLinkedEnums" in schemaModel).toBe(false);
+    expect("resolveTableColumnDefinition" in schemaModel).toBe(false);
+  });
+
   it("exposes adapter-authoring contracts from provider-kit", () => {
     expect(typeof providerKit.createDataEntityHandle).toBe("function");
     expect(typeof providerKit.createRelationalProviderAdapter).toBe("function");
     expect(typeof providerKit.createSqlRelationalProviderAdapter).toBe("function");
+    expect("UnsupportedSqlRelationalPlanError" in providerKit).toBe(false);
     expect(typeof providerKit.AdapterResult.ok).toBe("function");
   });
 
   it("resolves canonical public subpaths directly", () => {
     expect(typeof providerKitShapes.buildScanUnsupportedReport).toBe("function");
+    expect(typeof providerKitRelationalSql.UnsupportedSqlRelationalPlanError).toBe("function");
+    expect("createSqlRelationalProviderAdapter" in providerKitRelationalSql).toBe(false);
+    expect("SqlRelationalProviderOptions" in providerKitRelationalSql).toBe(false);
     expect("hasSqlNode" in providerKitShapes).toBe(false);
     expect(typeof runtimeExecutor.executeRelWithProvidersResult).toBe("function");
     expect(typeof runtimeSession.createExecutableSchemaSession).toBe("function");
     expect(typeof providerKitTesting.createProviderConformanceCases).toBe("function");
+    expect(typeof schemaModelNormalization.getNormalizedTableBinding).toBe("function");
+    expect("createSchemaBuilder" in schemaModelDsl).toBe(false);
+    expect("TableMethods" in schemaModelDsl).toBe(false);
+    expect("getNormalizedTableBinding" in schemaModelDsl).toBe(false);
+    expect("createSchemaBuilder" in schemaModelNormalized).toBe(false);
+    expect("PlannedScanRequest" in schemaModelNormalized).toBe(false);
+    expect("QueryRow" in schemaModelNormalized).toBe(false);
+    expect("createSchemaBuilder" in schemaModelPlanning).toBe(false);
+    expect("NormalizedColumnBinding" in schemaModelPlanning).toBe(false);
+    expect("QueryRow" in schemaModelPlanning).toBe(false);
+    expect("createSchemaBuilder" in schemaModelTablePlanning).toBe(false);
+    expect("TableMethods" in schemaModelTablePlanning).toBe(false);
+    expect("getNormalizedTableBinding" in schemaModelTablePlanning).toBe(false);
+    expect(typeof schemaModelMapping.mapProviderRowsToLogical).toBe("function");
+    expect(typeof schemaModelEnums.resolveSchemaLinkedEnums).toBe("function");
+    expect(typeof schemaModelDefinition.resolveTableColumnDefinition).toBe("function");
   });
 
   it("keeps session observation off the runtime root surface", () => {
@@ -124,9 +173,11 @@ describe("public package imports", () => {
   });
 
   it("keeps the planner root surface stable", () => {
-    expect(typeof planner.lowerSqlToRel).toBe("function");
-    expect(typeof planner.expandRelViews).toBe("function");
-    expect(typeof planner.planPhysicalQuery).toBe("function");
+    expect(typeof planner.lowerSqlToRelResult).toBe("function");
+    expect(typeof planner.expandRelViewsResult).toBe("function");
+    expect(typeof planner.planPhysicalQueryResult).toBe("function");
+    expect(typeof planner.buildLogicalQueryPlanResult).toBe("function");
+    expect(typeof planner.buildPhysicalQueryPlanResult).toBe("function");
   });
 
   it("resolves the Drizzle provider package", () => {

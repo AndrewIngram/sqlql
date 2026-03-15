@@ -8,18 +8,18 @@ import {
 } from "@tupl/foundation";
 import {
   getDataEntityProvider,
-  supportsLookupMany,
   unwrapProviderOperationResult,
-  type Provider,
+  type ProviderAdapter,
 } from "@tupl/provider-kit";
+import { supportsLookupMany } from "@tupl/provider-kit/shapes";
+import { mapProviderRowsToLogical } from "@tupl/schema-model/mapping";
 import {
   createPhysicalBindingFromEntity,
   createTableDefinitionFromEntity,
   getNormalizedTableBinding,
-  mapProviderRowsToLogical,
   resolveNormalizedColumnSource,
   resolveTableProvider,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/normalization";
 
 import {
   tryExecutionStep,
@@ -41,18 +41,31 @@ export async function maybeExecuteLookupJoinResult<TContext>(
   }
 
   const leftScan = findFirstScan(join.left);
-  const rightScan = findFirstScan(join.right);
+  const rightScan = findLookupEligibleScan(join.right);
   if (!leftScan || !rightScan) {
+    return Result.ok(null);
+  }
+  const leftScanAlias = leftScan.alias ?? leftScan.table;
+  const rightScanAlias = rightScan.alias ?? rightScan.table;
+  if ((join.leftKey.alias ?? join.leftKey.table ?? leftScanAlias) !== leftScanAlias) {
+    return Result.ok(null);
+  }
+  if ((join.rightKey.alias ?? join.rightKey.table ?? rightScanAlias) !== rightScanAlias) {
     return Result.ok(null);
   }
 
   const rightBinding = getNormalizedTableBinding(context.schema, rightScan.table);
   const rightProviderName =
-    rightScan.entity?.provider ?? readResolvedTableProvider(context.schema, rightScan.table);
+    rightScan.entity?.provider ?? resolveTableProvider(context.schema, rightScan.table);
+  const rightProviderResult =
+    typeof rightProviderName === "string" ? Result.ok(rightProviderName) : rightProviderName;
+  if (Result.isError(rightProviderResult)) {
+    return Result.ok(null);
+  }
   const rightProvider =
-    context.providers[rightProviderName] ??
+    context.providers[rightProviderResult.value] ??
     (rightScan.entity
-      ? (getDataEntityProvider(rightScan.entity) as Provider<TContext> | undefined)
+      ? (getDataEntityProvider(rightScan.entity) as ProviderAdapter<TContext> | undefined)
       : undefined);
   if (!rightProvider || !supportsLookupMany(rightProvider)) {
     return Result.ok(null);
@@ -214,10 +227,36 @@ export function applyLocalHashJoin(
   return joined;
 }
 
+function findLookupEligibleScan(node: RelNode): RelScanNode | null {
+  switch (node.kind) {
+    case "scan":
+      return node;
+    case "values":
+    case "cte_ref":
+      return null;
+    case "filter":
+    case "project":
+    case "sort":
+    case "limit_offset":
+      return findLookupEligibleScan(node.input);
+    case "aggregate":
+    case "window":
+    case "correlate":
+    case "join":
+    case "set_op":
+    case "repeat_union":
+    case "with":
+      return null;
+  }
+}
+
 function findFirstScan(node: RelNode): RelScanNode | null {
   switch (node.kind) {
     case "scan":
       return node;
+    case "values":
+    case "cte_ref":
+      return null;
     case "filter":
     case "project":
     case "aggregate":
@@ -225,24 +264,14 @@ function findFirstScan(node: RelNode): RelScanNode | null {
     case "sort":
     case "limit_offset":
       return findFirstScan(node.input);
+    case "correlate":
+      return findFirstScan(node.left) ?? findFirstScan(node.right);
     case "join":
     case "set_op":
       return findFirstScan(node.left) ?? findFirstScan(node.right);
+    case "repeat_union":
+      return findFirstScan(node.seed) ?? findFirstScan(node.iterative);
     case "with":
       return findFirstScan(node.body);
-    case "sql":
-      return null;
   }
-}
-
-function readResolvedTableProvider(
-  schema: RelExecutionContext<unknown>["schema"],
-  table: string,
-): string {
-  const result = resolveTableProvider(schema, table);
-  if (Result.isError(result)) {
-    throw result.error;
-  }
-
-  return result.value;
 }

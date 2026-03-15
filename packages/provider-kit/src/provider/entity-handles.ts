@@ -9,7 +9,7 @@ import type {
 } from "@tupl/foundation";
 import { DATA_ENTITY_PROVIDER_BRAND } from "@tupl/foundation";
 
-import type { Provider } from "./contracts";
+import type { ProviderAdapter } from "./contracts";
 
 export type {
   DataEntityColumnMap,
@@ -36,7 +36,7 @@ export function createDataEntityHandle<
   entity: string;
   provider: string;
   columns?: DataEntityColumnMap<TColumns, TRow, TColumnMetadata>;
-  providerInstance?: Provider<any>;
+  providerInstance?: ProviderAdapter<any>;
 }): DataEntityHandle<TColumns, TRow, TColumnMetadata> {
   const handle = {
     kind: "data_entity",
@@ -54,7 +54,7 @@ export function createDataEntityHandle<
 
 export function bindDataEntityHandleToProvider(
   handle: DataEntityHandle<string>,
-  provider: Provider<any>,
+  provider: ProviderAdapter<any>,
 ): DataEntityHandle<string> {
   Object.defineProperty(handle, DATA_ENTITY_PROVIDER_BRAND, {
     value: provider,
@@ -65,11 +65,13 @@ export function bindDataEntityHandleToProvider(
   return handle;
 }
 
-export function getDataEntityProvider(handle: DataEntityHandle<string>): Provider<any> | undefined {
-  return handle[DATA_ENTITY_PROVIDER_BRAND] as Provider<any> | undefined;
+export function getDataEntityProvider(
+  handle: DataEntityHandle<string>,
+): ProviderAdapter<any> | undefined {
+  return handle[DATA_ENTITY_PROVIDER_BRAND] as ProviderAdapter<any> | undefined;
 }
 
-export function bindProviderEntities<TContext, TAdapter extends Provider<TContext>>(
+export function bindProviderEntities<TContext, TAdapter extends ProviderAdapter<TContext>>(
   provider: TAdapter,
 ): TAdapter {
   const entities = provider.entities;
@@ -77,7 +79,8 @@ export function bindProviderEntities<TContext, TAdapter extends Provider<TContex
     return provider;
   }
 
-  for (const [entityName, handle] of Object.entries(entities)) {
+  for (const [entityName, value] of Object.entries(entities)) {
+    const handle = value as DataEntityHandle<string>;
     if (!handle.provider || handle.provider.length === 0) {
       handle.provider = provider.name;
     }

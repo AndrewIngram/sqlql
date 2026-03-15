@@ -1,33 +1,38 @@
 import { Result } from "better-result";
 
 import {
-  collectCapabilityAtomsForFragment,
-  inferRouteFamilyForFragment,
-  type ProviderFragment,
-  type ProviderLookupManyRequest,
+  buildCapabilityReport,
   type ProviderOperationResult,
   type ProviderCapabilityReport,
 } from "..";
-import type { QueryRow, ScanFilterClause } from "@tupl/foundation";
+import type { QueryRow, RelNode, ScanFilterClause, TableScanRequest } from "@tupl/foundation";
+import type { ProviderLookupManyRequest } from "./lookup-optimization";
+import {
+  checkSimpleRelScanCapability,
+  collectSimpleRelScanReferencedColumns,
+  type SimpleRelScanSupportPolicy,
+} from "./scan-request";
 
 export interface LookupEntityBinding<TColumns extends string = string> {
   lookupKey: TColumns;
   columns: readonly TColumns[];
 }
 
-export function buildLookupOnlyUnsupportedReport(
-  fragment: ProviderFragment,
-  reason: string,
-  supportedAtoms: readonly string[] = ["lookup.bulk"],
-): ProviderCapabilityReport {
-  const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
-  return {
-    supported: false,
-    reason,
-    routeFamily: inferRouteFamilyForFragment(fragment),
-    requiredAtoms,
-    missingAtoms: requiredAtoms.filter((atom) => !supportedAtoms.includes(atom)),
-  };
+export interface KeyedSimpleRelScan<TColumn extends string = string> {
+  request: TableScanRequest;
+  key: TColumn;
+  keys: unknown[];
+  fetchColumns: string[];
+}
+
+export interface KeyedSimpleRelScanOptions<TColumn extends string = string> {
+  entity: LookupEntityBinding<TColumn>;
+  policy?: SimpleRelScanSupportPolicy<TColumn>;
+  unsupportedShapeReason?: string;
+}
+
+export function buildLookupOnlyUnsupportedReport(reason: string): ProviderCapabilityReport {
+  return buildCapabilityReport(reason);
 }
 
 export function validateLookupRequest<TColumns extends string>(
@@ -52,6 +57,49 @@ export function validateLookupRequest<TColumns extends string>(
   }
 
   return Result.ok(undefined);
+}
+
+export function prepareKeyedSimpleRelScan<TColumn extends string = string>(
+  rel: RelNode,
+  options: KeyedSimpleRelScanOptions<TColumn>,
+): Result<KeyedSimpleRelScan<TColumn>, ProviderCapabilityReport> {
+  const capability = checkSimpleRelScanCapability(rel, {
+    unsupportedShapeReason:
+      options.unsupportedShapeReason ?? "Provider only supports keyed simple scan pipelines.",
+    ...(options.policy ? { policy: options.policy } : {}),
+  });
+  if (Result.isError(capability)) {
+    return capability;
+  }
+
+  const request = capability.value;
+  const keys = inferExactLookupKeys(request.where, options.entity.lookupKey);
+  if (keys === null) {
+    return Result.err(
+      buildCapabilityReport(
+        `Provider requires an equality or IN predicate on ${request.table}.${options.entity.lookupKey}.`,
+      ),
+    );
+  }
+
+  const fetchColumns = collectSimpleRelScanReferencedColumns(request, [options.entity.lookupKey]);
+  const lookupRequest = {
+    table: request.table,
+    key: options.entity.lookupKey,
+    keys,
+    select: fetchColumns,
+  } satisfies ProviderLookupManyRequest;
+  const validation = validateLookupRequest(lookupRequest, options.entity);
+  if (Result.isError(validation)) {
+    return Result.err(buildCapabilityReport(validation.error.message));
+  }
+
+  return Result.ok({
+    request,
+    key: options.entity.lookupKey,
+    keys,
+    fetchColumns,
+  });
 }
 
 export function filterLookupRows(rows: QueryRow[], clauses?: ScanFilterClause[]): QueryRow[] {
@@ -118,4 +166,44 @@ export function matchesLikePattern(value: string, pattern: string): boolean {
     .replace(/%/g, ".*")
     .replace(/_/g, ".");
   return new RegExp(`^${escaped}$`, "su").test(value);
+}
+
+function inferExactLookupKeys(
+  where: readonly ScanFilterClause[] | undefined,
+  lookupKey: string,
+): unknown[] | null {
+  let candidateKeys: Set<unknown> | null = null;
+
+  for (const clause of where ?? []) {
+    if (clause.column !== lookupKey) {
+      continue;
+    }
+
+    let clauseKeys: Set<unknown> | null = null;
+    switch (clause.op) {
+      case "eq":
+        clauseKeys = clause.value == null ? new Set() : new Set([clause.value]);
+        break;
+      case "in":
+        clauseKeys = new Set(clause.values.filter((value) => value != null));
+        break;
+      default:
+        return null;
+    }
+
+    if (candidateKeys === null) {
+      candidateKeys = clauseKeys;
+      continue;
+    }
+
+    const intersected = new Set<unknown>();
+    for (const value of candidateKeys) {
+      if (clauseKeys.has(value)) {
+        intersected.add(value);
+      }
+    }
+    candidateKeys = intersected;
+  }
+
+  return candidateKeys ? [...candidateKeys] : null;
 }

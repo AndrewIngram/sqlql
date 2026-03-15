@@ -21,10 +21,20 @@ export function inferRelOutputDefinitions(
   switch (rel.kind) {
     case "scan":
       return inferScanOutputDefinitions(rel, schema, cteDefinitions);
+    case "values":
+      return Object.fromEntries(rel.output.map((column) => [column.name, undefined]));
+    case "cte_ref": {
+      const cteOutput = cteDefinitions.get(rel.name);
+      return Object.fromEntries(
+        rel.output.map((column) => [column.name, cteOutput?.[column.name.split(".").pop() ?? ""]]),
+      );
+    }
     case "filter":
     case "sort":
     case "limit_offset":
       return inferRelOutputDefinitions(rel.input, schema, cteDefinitions);
+    case "correlate":
+      return inferRelOutputDefinitions(rel.left, schema, cteDefinitions);
     case "project": {
       const inputDefinitions = inferRelOutputDefinitions(rel.input, schema, cteDefinitions);
       return Object.fromEntries(
@@ -107,8 +117,8 @@ export function inferRelOutputDefinitions(
       }
       return inferRelOutputDefinitions(rel.body, schema, nextCtes);
     }
-    case "sql":
-      return {};
+    case "repeat_union":
+      return inferRelOutputDefinitions(rel.seed, schema, cteDefinitions);
   }
 }
 

@@ -1,20 +1,15 @@
-import {
-  UnsupportedSqlRelationalPlanError,
-  type QueryRow,
-  type ScanFilterClause,
-} from "@tupl/provider-kit";
+import { type QueryRow, type ScanFilterClause } from "@tupl/provider-kit";
 import { resolveColumnFromFilterColumn, resolveColumnRef } from "@tupl/provider-kit/shapes";
 import type { RelNode } from "@tupl/foundation";
+import { UnsupportedSqlRelationalPlanError } from "@tupl/provider-kit/relational-sql";
 
 import type {
   KnexLike,
   KnexLikeQueryBuilder,
   ObjectionProviderEntityConfig,
   ResolvedEntityConfig,
+  ScanBinding,
 } from "../types";
-import type { ScanBinding } from "../planning/rel-builder";
-
-class UnsupportedSingleQueryPlanError extends UnsupportedSqlRelationalPlanError {}
 
 export function toRef(
   alias: string | undefined,
@@ -134,7 +129,7 @@ export function applyWindowFunction(
 
   const method = (query as unknown as Record<string, unknown>)[methodName];
   if (typeof method !== "function") {
-    throw new UnsupportedSingleQueryPlanError(
+    throw new UnsupportedSqlRelationalPlanError(
       `Knex query builder does not support ${methodName} window functions in this dialect.`,
     );
   }
@@ -144,7 +139,7 @@ export function applyWindowFunction(
       ? (() => {
           const firstOrder = fn.orderBy[0];
           if (!firstOrder) {
-            throw new UnsupportedSingleQueryPlanError(
+            throw new UnsupportedSqlRelationalPlanError(
               `${methodName} window function requires at least one ORDER BY column.`,
             );
           }
@@ -185,7 +180,7 @@ export function resolveWithBodyColumnRef(
 ): string {
   const refAlias = ref.alias ?? ref.table;
   if (refAlias && refAlias !== scanAlias) {
-    throw new UnsupportedSingleQueryPlanError(
+    throw new UnsupportedSqlRelationalPlanError(
       `WITH body column "${refAlias}.${ref.column}" must reference alias "${scanAlias}".`,
     );
   }

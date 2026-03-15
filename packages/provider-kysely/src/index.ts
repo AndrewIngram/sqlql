@@ -1,19 +1,20 @@
 import {
-  AdapterResult,
   createSqlRelationalProviderAdapter,
-  type FragmentProvider,
-  type LookupProvider,
+  type FragmentProviderAdapter,
 } from "@tupl/provider-kit";
+import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
-import { executeLookupMany } from "./execution/lookup-execution";
-import { executeScan } from "./execution/scan-execution";
-import { kyselySqlRelationalBackend } from "./planning/rel-builder";
+import { executeLookupManyResult } from "./execution/lookup-execution";
+import { kyselyQueryTranslationBackend } from "./planning/rel-builder";
+import { resolveKyselyDb } from "./backend/runtime-checks";
 import type {
   CreateKyselyProviderOptions,
   KyselyDatabaseLike,
+  KyselyQueryBuilderLike,
   KyselyProviderEntities,
   KyselyProviderEntityConfig,
   ResolvedEntityConfig,
+  ScanBinding,
 } from "./types";
 
 export type {
@@ -38,70 +39,32 @@ export function createKyselyProvider<
   >,
 >(
   options: CreateKyselyProviderOptions<TContext, TEntities>,
-): FragmentProvider<TContext> &
-  LookupProvider<TContext> & {
-    entities: KyselyProviderEntities<TContext, TDatabase, TEntities>;
-  } {
+): FragmentProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
+  entities: KyselyProviderEntities<TContext, TDatabase, TEntities>;
+} {
   const providerName = options.name ?? "kysely";
-  const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
 
-  return createSqlRelationalProviderAdapter({
+  return createSqlRelationalProviderAdapter<
+    TContext,
+    TEntities,
+    ResolvedEntityConfig<TContext>,
+    ScanBinding<TContext>,
+    KyselyDatabaseLike,
+    KyselyQueryBuilderLike,
+    KyselyProviderEntities<TContext, TDatabase, TEntities>
+  >({
     name: providerName,
     entities: entityOptions,
-    resolveEntity({ entity, config }) {
-      return {
-        entity,
-        table: config.table ?? entity,
-        config,
-      };
+    resolveRuntime(context) {
+      return resolveKyselyDb(options, context);
     },
-    backend: kyselySqlRelationalBackend,
-    resolveRuntime: (context: TContext) => resolveKyselyDb(options, context),
-    unsupportedRelCompileMessage: "Unsupported SQL-relational fragment for Kysely provider.",
+    unsupportedRelCompileMessage: "Unsupported relational fragment for Kysely provider.",
     unsupportedRelReasonMessage: "Rel fragment is not supported for single-query Kysely pushdown.",
-    async executeScan({ runtime, request, context }) {
-      return executeScan(runtime, entityConfigs, request, context);
+    queryBackend: kyselyQueryTranslationBackend,
+    async lookupMany({ request, context, resolvedEntities, runtime }) {
+      return executeLookupManyResult(runtime, resolvedEntities, request, context);
     },
-    async lookupMany({ request, runtime, context }) {
-      return AdapterResult.tryPromise({
-        try: () => executeLookupMany(runtime, entityConfigs, request, context),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
-    },
-  }) as FragmentProvider<TContext> &
-    LookupProvider<TContext> & {
-      entities: KyselyProviderEntities<TContext, TDatabase, TEntities>;
-    };
-}
-
-export async function resolveKyselyDb<TContext>(
-  options: CreateKyselyProviderOptions<TContext>,
-  context: TContext,
-): Promise<KyselyDatabaseLike> {
-  const db = typeof options.db === "function" ? await options.db(context) : options.db;
-  const candidate = db as Partial<KyselyDatabaseLike> | null | undefined;
-  if (!candidate || typeof candidate.selectFrom !== "function") {
-    throw new Error(
-      "Kysely provider runtime binding did not resolve to a valid database instance. Check your context and db callback.",
-    );
-  }
-  return candidate as KyselyDatabaseLike;
-}
-
-function resolveEntityConfigs<TContext>(
-  options: CreateKyselyProviderOptions<TContext>,
-): Record<string, ResolvedEntityConfig<TContext>> {
-  const raw = options.entities ?? {};
-  const out: Record<string, ResolvedEntityConfig<TContext>> = {};
-
-  for (const [entity, config] of Object.entries(raw)) {
-    out[entity] = {
-      entity,
-      table: config.table ?? entity,
-      config,
-    };
-  }
-
-  return out;
+  });
 }

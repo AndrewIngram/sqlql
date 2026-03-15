@@ -1,11 +1,8 @@
 import { Result } from "better-result";
 
-import { TuplRuntimeError, type RelNode } from "@tupl/foundation";
-import {
-  supportsFragmentExecution,
-  type Provider,
-  type ProviderFragment,
-} from "@tupl/provider-kit";
+import { type RelNode } from "@tupl/foundation";
+import { type ProviderAdapter } from "@tupl/provider-kit";
+import type { ProviderRelTarget } from "@tupl/planner";
 import { type QueryRow } from "@tupl/schema-model";
 
 import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
@@ -32,19 +29,12 @@ import {
 export function createProviderFragmentSession<TContext>(
   input: QuerySessionInput<TContext>,
   guardrails: QueryGuardrails,
-  provider: Provider<TContext>,
+  provider: ProviderAdapter<TContext>,
   providerName: string,
-  fragment: ProviderFragment,
+  fragment: ProviderRelTarget,
   rel: RelNode,
   diagnostics: TuplDiagnostic[] = [],
 ): QuerySession {
-  if (!supportsFragmentExecution(provider)) {
-    throw new TuplRuntimeError({
-      operation: "create provider fragment session",
-      message: `Provider ${providerName} does not support compiled fragment execution.`,
-    });
-  }
-
   let executed = false;
   let result: QueryRow[] | null = null;
   let eventDispatched = false;

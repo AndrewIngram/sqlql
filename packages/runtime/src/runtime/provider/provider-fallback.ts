@@ -25,7 +25,7 @@ export function maybeRejectFallbackResult<TContext>(
     Number.isFinite(policy.maxJoinExpansionRisk) &&
     resolution.report.estimatedCost > policy.maxJoinExpansionRisk;
 
-  if (!policy.allowFallback || policy.rejectOnMissingAtom || exceedsEstimatedCost) {
+  if (!policy.allowFallback || exceedsEstimatedCost) {
     const diagnostics =
       resolution.diagnostics.length > 0
         ? resolution.diagnostics
@@ -36,8 +36,7 @@ export function maybeRejectFallbackResult<TContext>(
               summarizeCapabilityReason(resolution.report),
               {
                 provider: resolution.provider.name,
-                fragment: resolution.fragment?.kind,
-                missingAtoms: resolution.report.missingAtoms,
+                relKind: resolution.fragment?.rel.kind,
               },
               "42000",
             ),

@@ -1,17 +1,10 @@
 import { Result, type Result as BetterResult } from "better-result";
 
 import type { RelNode } from "@tupl/foundation";
-import {
-  unwrapProviderOperationResult,
-  type FragmentProvider,
-  type ProviderFragment,
-} from "@tupl/provider-kit";
-import {
-  getNormalizedTableBinding,
-  mapProviderRowsToLogical,
-  mapProviderRowsToRelOutput,
-  type QueryRow,
-} from "@tupl/schema-model";
+import { unwrapProviderOperationResult, type FragmentProviderAdapter } from "@tupl/provider-kit";
+import type { ProviderRelTarget } from "@tupl/planner";
+import type { QueryRow } from "@tupl/schema-model";
+import { mapProviderRowsToRelOutput } from "@tupl/schema-model/mapping";
 
 import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
 import type { QuerySessionInput, QueryStepEvent, QueryStepState } from "../session/contracts";
@@ -29,9 +22,9 @@ export interface ProviderFragmentRunFailure {
  * Provider fragment replay owns one-shot remote fragment execution and done-event shaping.
  */
 export async function runProviderFragmentOnceResult<TContext>(input: {
-  provider: FragmentProvider<TContext>;
+  provider: FragmentProviderAdapter<TContext>;
   providerName: string;
-  fragment: ProviderFragment;
+  fragment: ProviderRelTarget;
   rel: RelNode;
   sessionInput: QuerySessionInput<TContext>;
   guardrails: QueryGuardrails;
@@ -46,7 +39,7 @@ export async function runProviderFragmentOnceResult<TContext>(input: {
 
   const compiledResult = await tryQueryStepAsync("compile provider fragment", async () =>
     unwrapProviderOperationResult(
-      await Promise.resolve(input.provider.compile(input.fragment, input.sessionInput.context)),
+      await Promise.resolve(input.provider.compile(input.fragment.rel, input.sessionInput.context)),
     ),
   );
   if (Result.isError(compiledResult)) {
@@ -72,36 +65,16 @@ export async function runProviderFragmentOnceResult<TContext>(input: {
   }
 
   let rows: QueryRow[] = executeRowsResult.value;
-  if (input.fragment.kind === "rel") {
-    const mappedRowsResult = tryQueryStep("map provider rows to logical rel output rows", () =>
-      mapProviderRowsToRelOutput(rows, input.rel, input.sessionInput.schema),
-    );
-    if (Result.isError(mappedRowsResult)) {
-      return Result.err({
-        error: mappedRowsResult.error,
-        state: failProviderFragmentState(state, mappedRowsResult.error, Date.now()),
-      });
-    }
-    rows = mappedRowsResult.value;
-  } else if (input.fragment.kind === "scan" && input.rel.kind === "scan") {
-    const scanRel = input.rel;
-    const mappedRowsResult = tryQueryStep("map provider rows to logical rows", () => {
-      const binding = getNormalizedTableBinding(input.sessionInput.schema, scanRel.table);
-      return mapProviderRowsToLogical(
-        rows,
-        scanRel.select,
-        binding?.kind === "physical" ? binding : null,
-        input.sessionInput.schema.tables[scanRel.table],
-      );
+  const mappedRowsResult = tryQueryStep("map provider rows to logical rel output rows", () =>
+    mapProviderRowsToRelOutput(rows, input.rel, input.sessionInput.preparedSchema.schema),
+  );
+  if (Result.isError(mappedRowsResult)) {
+    return Result.err({
+      error: mappedRowsResult.error,
+      state: failProviderFragmentState(state, mappedRowsResult.error, Date.now()),
     });
-    if (Result.isError(mappedRowsResult)) {
-      return Result.err({
-        error: mappedRowsResult.error,
-        state: failProviderFragmentState(state, mappedRowsResult.error, Date.now()),
-      });
-    }
-    rows = mappedRowsResult.value;
   }
+  rows = mappedRowsResult.value;
 
   const limitedRowsResult = enforceExecutionRowLimitResult(rows, input.guardrails);
   if (Result.isError(limitedRowsResult)) {

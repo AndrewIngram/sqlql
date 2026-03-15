@@ -3,16 +3,15 @@ import * as drizzlePgCoreModule from "drizzle-orm/pg-core";
 import * as drizzlePgliteModule from "drizzle-orm/pglite";
 import * as pgliteModule from "@electric-sql/pglite";
 import * as betterResultModule from "better-result";
-import type { Result as BetterResult } from "better-result";
-import type { FragmentProvider, Provider } from "@tupl/provider-kit";
-import { lowerSqlToRel, planPhysicalQuery } from "@tupl/planner";
+import type { ProviderAdapter } from "@tupl/provider-kit";
+import { lowerSqlToRelResult, planPhysicalQueryResult } from "@tupl/planner";
 import {
   createExecutableSchemaSession,
   type QueryExecutionPlan,
   type QuerySession,
   type QueryStepEvent,
 } from "@tupl/runtime/session";
-import type { ExecutableSchema, QueryRow, SchemaDefinition } from "@tupl/schema";
+import type { ExecutableSchema, ExplainResult, QueryRow, SchemaDefinition } from "@tupl/schema";
 
 import { createVirtualModuleRuntime } from "./playground-module-runtime";
 import {
@@ -65,6 +64,7 @@ export interface SandboxCreateSessionSuccess {
   ok: true;
   sessionId: string;
   plan: QueryExecutionPlan;
+  explain: ExplainResult;
 }
 
 export interface SandboxCreateSessionFailure {
@@ -83,18 +83,20 @@ interface SessionRecord {
   session: QuerySession;
 }
 
-interface ExecutableSchemaModuleExports {
-  executableSchema?: unknown;
+interface ExecutableSchemaModuleExports<TContext> {
+  executableSchema?:
+    | ExecutableSchema<TContext, SchemaDefinition>
+    | betterResultModule.Result<ExecutableSchema<TContext, SchemaDefinition>, unknown>;
 }
 
 interface ProviderModuleExports<TContext> {
-  dbProvider?: FragmentProvider<TContext>;
-  redisProvider?: Provider<TContext>;
+  dbProvider?: ProviderAdapter<TContext>;
+  redisProvider?: ProviderAdapter<TContext>;
 }
 
 interface TuplRuntimeModule {
-  lowerSqlToRel: typeof lowerSqlToRel;
-  planPhysicalQuery: typeof planPhysicalQuery;
+  lowerSqlToRelResult: typeof lowerSqlToRelResult;
+  planPhysicalQueryResult: typeof planPhysicalQueryResult;
 }
 
 interface PlaygroundRuntimeModule {
@@ -108,8 +110,8 @@ interface PlaygroundRuntimeModule {
 interface SandboxProviderRuntime<TContext> {
   tuplModule: TuplRuntimeModule;
   executableSchema: ExecutableSchema<TContext, SchemaDefinition>;
-  dbProvider: FragmentProvider<TContext>;
-  redisProvider: Provider<TContext>;
+  dbProvider: ProviderAdapter<TContext>;
+  redisProvider: ProviderAdapter<TContext>;
   db: PlaygroundRuntimeContext["db"];
   redis: PlaygroundRuntimeContext["redis"];
 }
@@ -150,6 +152,20 @@ function asErrorMessage(error: unknown): string {
   return "Sandbox execution failed.";
 }
 
+function unwrapResult<T, E>(result: import("better-result").Result<T, E>) {
+  if (betterResultModule.Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
+}
+
+function isResultLike<T>(value: unknown): value is betterResultModule.Result<T, unknown> {
+  return (
+    betterResultModule.Result.isOk(value as betterResultModule.Result<T, unknown>) ||
+    betterResultModule.Result.isError(value as betterResultModule.Result<T, unknown>)
+  );
+}
+
 async function runSandboxPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -168,16 +184,19 @@ function extractSchemaExport(
       "[SCHEMA_EXPORT_MISSING] Schema module must export `executableSchema` via `export const executableSchema = createExecutableSchema(...)`.",
     );
   }
-  const exportedSchema = (exportsRecord as ExecutableSchemaModuleExports).executableSchema;
-  const maybeResult = exportedSchema as BetterResult<unknown, unknown>;
-  const executableSchema = betterResultModule.Result.isError(maybeResult)
-    ? (() => {
-        throw maybeResult.error;
-      })()
-    : betterResultModule.Result.isOk(maybeResult)
-      ? maybeResult.value
-      : exportedSchema;
-  if (!isExecutableSchema(executableSchema)) {
+  const exportedSchema = (exportsRecord as ExecutableSchemaModuleExports<PlaygroundRuntimeContext>)
+    .executableSchema;
+  const executableSchema = isResultLike<
+    ExecutableSchema<PlaygroundRuntimeContext, SchemaDefinition>
+  >(exportedSchema)
+    ? unwrapResult(exportedSchema)
+    : exportedSchema;
+  if (
+    !executableSchema ||
+    typeof executableSchema !== "object" ||
+    !("schema" in executableSchema) ||
+    typeof executableSchema.query !== "function"
+  ) {
     throw new Error(
       "[SCHEMA_EXPORT_INVALID] Schema module must export `executableSchema` created via createExecutableSchema(...).",
     );
@@ -185,23 +204,11 @@ function extractSchemaExport(
   return executableSchema;
 }
 
-function isExecutableSchema(
-  value: unknown,
-): value is ExecutableSchema<PlaygroundRuntimeContext, SchemaDefinition> {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    "schema" in value &&
-    typeof (value as { query?: unknown }).query === "function" &&
-    typeof (value as { explain?: unknown }).explain === "function"
-  );
-}
-
 function readProviderExportOrThrow<TContext>(
   moduleId: string,
   exportsRecord: Record<string, unknown>,
   exportName: "dbProvider" | "redisProvider",
-): Provider<TContext> {
+): ProviderAdapter<TContext> {
   const provider = (exportsRecord as ProviderModuleExports<TContext>)[exportName];
   if (
     !provider ||
@@ -209,7 +216,9 @@ function readProviderExportOrThrow<TContext>(
     typeof provider.name !== "string" ||
     typeof provider.canExecute !== "function"
   ) {
-    throw new Error(`[SCHEMA_EXEC_ERROR] ${moduleId} must export ${exportName} as a provider.`);
+    throw new Error(
+      `[SCHEMA_EXEC_ERROR] ${moduleId} must export ${exportName} as a provider adapter.`,
+    );
   }
 
   return provider;
@@ -311,7 +320,7 @@ function createProviderRuntime<TContext>(
       PLAYGROUND_DB_PROVIDER_FILE_PATH,
       dbProviderModule,
       "dbProvider",
-    ) as FragmentProvider<TContext>,
+    ) as ProviderAdapter<TContext>,
     redisProvider: readProviderExportOrThrow<TContext>(
       PLAYGROUND_REDIS_PROVIDER_FILE_PATH,
       redisProviderModule,
@@ -432,6 +441,14 @@ export async function createSandboxSession(
   const runtime = await runSandboxPhase("RUNTIME_INIT", () => getOrCreateProviderRuntime(compiled));
   const runtimeContext = toRuntimeContext(context, runtime);
   const { executableSchema } = runtime;
+  const explain = await runSandboxPhase("EXPLAIN", async () =>
+    unwrapResult(
+      await executableSchema.explain({
+        context: runtimeContext,
+        sql: compiled.sql,
+      }),
+    ),
+  );
 
   const sessionResult = await runSandboxPhase("CREATE_SESSION", async () =>
     createExecutableSchemaSession(executableSchema, {
@@ -444,11 +461,14 @@ export async function createSandboxSession(
     }),
   );
   if (betterResultModule.Result.isError(sessionResult)) {
-    const error = sessionResult.error as { message: string; _tag?: string };
+    const error = sessionResult.error as {
+      message?: unknown;
+      _tag?: unknown;
+    };
     return {
       ok: false,
       error: {
-        message: error.message,
+        message: typeof error.message === "string" ? error.message : "Sandbox session failed.",
         ...(typeof error._tag === "string" ? { tag: error._tag } : {}),
       },
     };
@@ -463,6 +483,7 @@ export async function createSandboxSession(
     ok: true,
     sessionId,
     plan: session.getPlan(),
+    explain,
   };
 }
 

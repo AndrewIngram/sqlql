@@ -1,35 +1,79 @@
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
+import type { RelNode } from "@tupl/foundation";
 
 import {
+  buildCapabilityReport,
   createDataEntityHandle,
   createRelationalProviderAdapter,
-  DEFAULT_RELATIONAL_CAPABILITY_ATOMS,
-  type FragmentProvider,
+  type FragmentProviderAdapter,
   getDataEntityProvider,
-  type LookupProvider,
   type QueryRow,
-  type Provider,
-  type ProviderCapabilityAtom,
-  type ProviderFragment,
+  type ProviderAdapter,
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/provider-kit";
-import { getNormalizedTableBinding, validateProviderBindings } from "@tupl/schema-model";
+import type {
+  LookupManyCapableProviderAdapter,
+  ProviderLookupManyRequest,
+} from "@tupl/provider-kit/shapes";
+import {
+  getNormalizedTableBinding,
+  validateProviderBindings,
+} from "@tupl/schema-model/normalization";
 import {
   createExecutableSchemaFromProviders,
   createSessionFromExecutableSchema,
 } from "@tupl/test-support/runtime";
 import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
-import { collectCapabilityAtomsForFragment } from "../provider/capabilities";
-
-type TestProvider = Omit<FragmentProvider, "name"> & Partial<Pick<LookupProvider, "lookupMany">>;
+type TestProvider = Omit<FragmentProviderAdapter, "name"> &
+  Partial<LookupManyCapableProviderAdapter>;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function createScanFragment(input: {
+  provider?: string;
+  table: string;
+  select: string[];
+  where?: TableScanRequest["where"];
+  orderBy?: TableScanRequest["orderBy"];
+  limit?: number;
+  offset?: number;
+}): RelNode {
+  const provider = input.provider ?? "warehouse";
+  return {
+    id: `${provider}:${input.table}`,
+    kind: "scan",
+    convention: `provider:${provider}`,
+    table: input.table,
+    select: input.select,
+    output: input.select.map((name) => ({ name })),
+    ...(input.where ? { where: input.where } : {}),
+    ...(input.orderBy ? { orderBy: input.orderBy } : {}),
+    ...(input.limit != null ? { limit: input.limit } : {}),
+    ...(input.offset != null ? { offset: input.offset } : {}),
+  };
+}
+
+function toScanRequest(rel: RelNode): TableScanRequest | null {
+  if (rel.kind !== "scan") {
+    return null;
+  }
+
+  return {
+    table: rel.table,
+    ...(rel.kind === "scan" && rel.alias ? { alias: rel.alias } : {}),
+    select: rel.select,
+    ...("where" in rel && rel.where ? { where: rel.where } : {}),
+    ...("orderBy" in rel && rel.orderBy ? { orderBy: rel.orderBy } : {}),
+    ...("limit" in rel && rel.limit != null ? { limit: rel.limit } : {}),
+    ...("offset" in rel && rel.offset != null ? { offset: rel.offset } : {}),
+  };
 }
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
@@ -180,7 +224,6 @@ describe("query/provider runtime", () => {
   it("creates and binds relational provider entity handles automatically", () => {
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
-      declaredAtoms: ["scan.project"] as const,
       entities: {
         orders: {
           shape: {
@@ -214,10 +257,8 @@ describe("query/provider runtime", () => {
   });
 
   it("returns structured capability reports for unsupported relational fragments", async () => {
-    const requiredAtomsByCheck: ProviderCapabilityAtom[][] = [];
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
-      declaredAtoms: ["scan.project"] as const,
       entities: {
         orders: {},
       },
@@ -225,7 +266,7 @@ describe("query/provider runtime", () => {
         return null;
       },
       unsupportedRelReason() {
-        return "Rel fragment is not supported for this provider.";
+        return buildCapabilityReport("Rel fragment is not supported for this provider.");
       },
       async compileRelFragment() {
         return Result.ok({
@@ -237,66 +278,50 @@ describe("query/provider runtime", () => {
       async executeCompiledPlan() {
         return Result.ok([]);
       },
-      isRelStrategySupported(args) {
-        requiredAtomsByCheck.push(args.requiredAtoms);
-        return true;
-      },
     });
 
     const capability = await adapter.canExecute(
       {
-        kind: "rel",
-        provider: "warehouse",
-        rel: {
-          id: "join",
-          kind: "join",
+        id: "join",
+        kind: "join",
+        convention: "local",
+        joinType: "inner",
+        left: {
+          id: "left_scan",
+          kind: "scan",
           convention: "local",
-          joinType: "inner",
-          left: {
-            id: "left_scan",
-            kind: "scan",
-            convention: "local",
-            table: "orders",
-            select: ["id"],
-            output: [],
-          },
-          right: {
-            id: "right_scan",
-            kind: "scan",
-            convention: "local",
-            table: "orders",
-            alias: "o2",
-            select: ["id"],
-            output: [],
-          },
-          leftKey: { column: "id" },
-          rightKey: { alias: "o2", column: "id" },
+          table: "orders",
+          select: ["id"],
           output: [],
         },
+        right: {
+          id: "right_scan",
+          kind: "scan",
+          convention: "local",
+          table: "orders",
+          alias: "o2",
+          select: ["id"],
+          output: [],
+        },
+        leftKey: { column: "id" },
+        rightKey: { alias: "o2", column: "id" },
+        output: [],
       },
       {},
     );
 
-    expect(requiredAtomsByCheck).toEqual([]);
     expect(capability).toEqual({
       supported: false,
-      routeFamily: "rel-core",
-      requiredAtoms: ["join.inner", "scan.project"],
-      missingAtoms: ["join.inner"],
       reason: "Rel fragment is not supported for this provider.",
     });
   });
 
-  it("passes route family and required atoms into supported relational capability checks", async () => {
-    const observed: {
-      routeFamily: string;
-      requiredAtoms: ProviderCapabilityAtom[];
-      missingAtoms: ProviderCapabilityAtom[];
+  it("passes strategy into supported relational capability checks", async () => {
+    const observed: Array<{
       strategy: string | null;
-    }[] = [];
+    }> = [];
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
-      declaredAtoms: ["scan.project", "join.inner"] as const,
       entities: {
         orders: {},
       },
@@ -305,9 +330,6 @@ describe("query/provider runtime", () => {
       },
       isRelStrategySupported(args) {
         observed.push({
-          routeFamily: args.routeFamily,
-          requiredAtoms: args.requiredAtoms,
-          missingAtoms: args.missingAtoms,
           strategy: args.strategy,
         });
         return true;
@@ -326,34 +348,30 @@ describe("query/provider runtime", () => {
 
     const capability = await adapter.canExecute(
       {
-        kind: "rel",
-        provider: "warehouse",
-        rel: {
-          id: "join",
-          kind: "join",
+        id: "join",
+        kind: "join",
+        convention: "local",
+        joinType: "inner",
+        left: {
+          id: "left_scan",
+          kind: "scan",
           convention: "local",
-          joinType: "inner",
-          left: {
-            id: "left_scan",
-            kind: "scan",
-            convention: "local",
-            table: "orders",
-            select: ["id"],
-            output: [],
-          },
-          right: {
-            id: "right_scan",
-            kind: "scan",
-            convention: "local",
-            table: "orders",
-            alias: "o2",
-            select: ["id"],
-            output: [],
-          },
-          leftKey: { column: "id" },
-          rightKey: { alias: "o2", column: "id" },
+          table: "orders",
+          select: ["id"],
           output: [],
         },
+        right: {
+          id: "right_scan",
+          kind: "scan",
+          convention: "local",
+          table: "orders",
+          alias: "o2",
+          select: ["id"],
+          output: [],
+        },
+        leftKey: { column: "id" },
+        rightKey: { alias: "o2", column: "id" },
+        output: [],
       },
       {},
     );
@@ -361,9 +379,6 @@ describe("query/provider runtime", () => {
     expect(capability).toBe(true);
     expect(observed).toEqual([
       {
-        routeFamily: "rel-core",
-        requiredAtoms: ["join.inner", "scan.project"],
-        missingAtoms: [],
         strategy: "basic",
       },
     ]);
@@ -372,12 +387,11 @@ describe("query/provider runtime", () => {
   it("bases scan fragment support on registered relational entities", async () => {
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
-      declaredAtoms: ["scan.project"] as const,
       entities: {
         orders: {},
       },
-      resolveRelCompileStrategy() {
-        return null;
+      resolveRelCompileStrategy({ rel }) {
+        return rel.kind === "scan" && rel.table === "orders" ? "basic" : null;
       },
       async compileRelFragment() {
         return Result.ok({
@@ -393,38 +407,33 @@ describe("query/provider runtime", () => {
 
     expect(
       adapter.canExecute(
-        {
-          kind: "scan",
+        createScanFragment({
           provider: "warehouse",
           table: "orders",
-          request: {
-            table: "orders",
-            select: ["id"],
-          },
-        },
+          select: ["id"],
+        }),
         {},
       ),
     ).toBe(true);
     expect(
       adapter.canExecute(
-        {
-          kind: "scan",
+        createScanFragment({
           provider: "warehouse",
           table: "users",
-          request: {
-            table: "users",
-            select: ["id"],
-          },
-        },
+          select: ["id"],
+        }),
         {},
       ),
-    ).toBe(false);
+    ).toEqual(
+      expect.objectContaining({
+        supported: false,
+      }),
+    );
   });
 
   it("wires lookupMany only when relational lookup hooks are provided", async () => {
     const withoutLookup = createRelationalProviderAdapter({
       name: "warehouse",
-      declaredAtoms: ["scan.project"] as const,
       entities: {
         orders: {},
       },
@@ -444,7 +453,6 @@ describe("query/provider runtime", () => {
     });
     const withLookup = createRelationalProviderAdapter({
       name: "warehouse",
-      declaredAtoms: ["scan.project", "lookup.bulk"] as const,
       entities: {
         orders: {},
       },
@@ -481,46 +489,7 @@ describe("query/provider runtime", () => {
     ).resolves.toEqual(Result.ok([{ id: "o1" }]));
   });
 
-  it("does not require expr.null_distinct for is_null and is_not_null scan filters", () => {
-    const isNullAtoms = collectCapabilityAtomsForFragment({
-      kind: "scan",
-      provider: "warehouse",
-      table: "orders",
-      request: {
-        table: "orders",
-        select: ["id"],
-        where: [{ column: "org_id", op: "is_null" }],
-      },
-    });
-    const isNotNullAtoms = collectCapabilityAtomsForFragment({
-      kind: "scan",
-      provider: "warehouse",
-      table: "orders",
-      request: {
-        table: "orders",
-        select: ["id"],
-        where: [{ column: "org_id", op: "is_not_null" }],
-      },
-    });
-    const distinctAtoms = collectCapabilityAtomsForFragment({
-      kind: "scan",
-      provider: "warehouse",
-      table: "orders",
-      request: {
-        table: "orders",
-        select: ["id"],
-        where: [{ column: "org_id", op: "is_distinct_from", value: null }],
-      },
-    });
-
-    expect(isNullAtoms).toContain("scan.filter.basic");
-    expect(isNotNullAtoms).toContain("scan.filter.basic");
-    expect(isNullAtoms).not.toContain("expr.null_distinct");
-    expect(isNotNullAtoms).not.toContain("expr.null_distinct");
-    expect(distinctAtoms).toContain("expr.null_distinct");
-  });
-
-  it("routes same-provider queries through scan fragments", async () => {
+  it("routes same-provider queries through rel fragments", async () => {
     const schema = buildEntitySchema({
       orders: {
         provider: "warehouse",
@@ -537,15 +506,15 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
+        canExecute(rel: RelNode) {
           canExecuteCalls += 1;
-          return fragment.kind === "scan";
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
@@ -586,17 +555,15 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "rel" || fragment.kind === "scan";
+        canExecute(_rel: RelNode) {
+          return true;
         },
-        async compile(fragment: ProviderFragment) {
-          if (fragment.kind === "rel") {
-            sawRelCompile = true;
-          }
+        async compile(rel: RelNode) {
+          sawRelCompile = true;
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
@@ -653,18 +620,16 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "rel";
+        canExecute(_rel: RelNode) {
+          return true;
         },
-        async compile(fragment: ProviderFragment) {
-          if (fragment.kind === "rel") {
-            capturedRel = fragment.rel;
-          }
+        async compile(rel: RelNode) {
+          capturedRel = rel;
 
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
@@ -727,18 +692,18 @@ describe("query/provider runtime", () => {
       });
     });
 
-    let capturedScan: { request: TableScanRequest } | null = null;
+    let capturedScan: TableScanRequest | null = null;
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
-          capturedScan = fragment.kind === "scan" ? fragment : null;
+        async compile(rel: RelNode) {
+          capturedScan = toScanRequest(rel);
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
@@ -759,7 +724,10 @@ describe("query/provider runtime", () => {
     });
 
     expect(capturedScan).not.toBeNull();
-    const capturedRequest = (capturedScan as unknown as { request: TableScanRequest }).request;
+    if (!capturedScan) {
+      throw new Error("Expected provider scan request to be captured.");
+    }
+    const capturedRequest = capturedScan as TableScanRequest;
     expect(capturedRequest.select).toEqual(["id", "total_cents", "created_at"]);
     expect(rows).toEqual([
       {
@@ -801,43 +769,45 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       orders_provider: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "orders_provider",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(ordersRows, fragment.request));
+          return Result.ok(scanRows(ordersRows, request));
         },
       } satisfies TestProvider,
       users_provider: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "users_provider",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(usersRows, fragment.request));
+          return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           lookupCalls += 1;
           const keys = new Set(request.keys);
           return Result.ok(
@@ -907,40 +877,42 @@ describe("query/provider runtime", () => {
         canExecute() {
           return true;
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "orders_provider",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(ordersRows, fragment.request));
+          return Result.ok(scanRows(ordersRows, request));
         },
       } satisfies TestProvider,
       users_provider: {
         canExecute() {
           return true;
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "users_provider",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(usersRows, fragment.request));
+          return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           const keys = new Set(request.keys);
           return Result.ok(usersRows.filter((row) => keys.has(row.id)));
         },
@@ -990,43 +962,45 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       orders_provider: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "orders_provider",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(ordersRows, fragment.request));
+          return Result.ok(scanRows(ordersRows, request));
         },
       } satisfies TestProvider,
       users_provider: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "users_provider",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(usersRows, fragment.request));
+          return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           const keys = new Set(request.keys);
           return Result.ok(
             usersRows
@@ -1095,19 +1069,20 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
 
@@ -1118,7 +1093,7 @@ describe("query/provider runtime", () => {
                 { id: "o1", total_cents: 500 },
                 { id: "o2", total_cents: 700 },
               ],
-              fragment.request,
+              request,
             ),
           );
         },
@@ -1174,19 +1149,20 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
 
@@ -1197,7 +1173,7 @@ describe("query/provider runtime", () => {
                 { id: "o2", total_cents: 3200 },
                 { id: "o3", total_cents: 2100 },
               ],
-              fragment.request,
+              request,
             ),
           );
         },
@@ -1248,14 +1224,14 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "rel";
+        canExecute(_rel: RelNode) {
+          return true;
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
@@ -1311,14 +1287,14 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "rel";
+        canExecute(_rel: RelNode) {
+          return true;
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
@@ -1366,23 +1342,24 @@ describe("query/provider runtime", () => {
 
   it("executes views that scan data entities directly without intermediate facade tables", async () => {
     const warehouseProvider = {
-      canExecute(fragment: ProviderFragment) {
-        return fragment.kind === "scan";
+      canExecute(rel: RelNode) {
+        return rel.kind === "scan";
       },
-      async compile(fragment: ProviderFragment) {
+      async compile(rel: RelNode) {
         return Result.ok({
           provider: "warehouse",
-          kind: fragment.kind,
-          payload: fragment,
+          kind: "rel",
+          payload: rel,
         });
       },
       async execute(plan) {
-        const fragment = plan.payload as ProviderFragment;
-        if (fragment.kind !== "scan") {
+        const rel = plan.payload as RelNode;
+        const request = toScanRequest(rel);
+        if (!request) {
           return Result.ok([]);
         }
 
-        if (fragment.request.table === "orders_raw") {
+        if (request.table === "orders_raw") {
           return Result.ok(
             scanRows(
               [
@@ -1390,19 +1367,19 @@ describe("query/provider runtime", () => {
                 { id: "o2", vendor_id: "v1", total_cents: 800 },
                 { id: "o3", vendor_id: "v2", total_cents: 500 },
               ],
-              fragment.request,
+              request,
             ),
           );
         }
 
-        if (fragment.request.table === "vendors_raw") {
+        if (request.table === "vendors_raw") {
           return Result.ok(
             scanRows(
               [
                 { id: "v1", name: "Acme" },
                 { id: "v2", name: "Bolt" },
               ],
-              fragment.request,
+              request,
             ),
           );
         }
@@ -1414,7 +1391,7 @@ describe("query/provider runtime", () => {
     const ordersEntity = createDataEntityHandle({
       entity: "orders_raw",
       provider: "warehouse",
-      providerInstance: warehouseProvider as unknown as Provider,
+      providerInstance: warehouseProvider as unknown as ProviderAdapter,
       columns: {
         id: { source: "id", type: "text", nullable: false },
         vendorId: { source: "vendor_id", type: "text", nullable: false },
@@ -1424,7 +1401,7 @@ describe("query/provider runtime", () => {
     const vendorsEntity = createDataEntityHandle({
       entity: "vendors_raw",
       provider: "warehouse",
-      providerInstance: warehouseProvider as unknown as Provider,
+      providerInstance: warehouseProvider as unknown as ProviderAdapter,
       columns: {
         id: { source: "id", type: "text", nullable: false },
         name: { source: "name", type: "text", nullable: false },
@@ -1569,19 +1546,20 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
 
@@ -1597,7 +1575,7 @@ describe("query/provider runtime", () => {
             product_access_raw: [{ product_id: "p1" }, { product_id: "p2" }],
           };
 
-          return Result.ok(scanRows(rowsByTable[fragment.table] ?? [], fragment.request));
+          return Result.ok(scanRows(rowsByTable[request.table] ?? [], request));
         },
       } satisfies TestProvider,
     });
@@ -1730,19 +1708,20 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
 
@@ -1759,7 +1738,7 @@ describe("query/provider runtime", () => {
             product_access_raw: [{ product_id: "p1" }, { product_id: "p2" }],
           };
 
-          return Result.ok(scanRows(rowsByTable[fragment.table] ?? [], fragment.request));
+          return Result.ok(scanRows(rowsByTable[request.table] ?? [], request));
         },
       } satisfies TestProvider,
     });
@@ -1832,19 +1811,20 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
 
@@ -1854,29 +1834,30 @@ describe("query/provider runtime", () => {
                 { id: "p1", name: "Edge Router" },
                 { id: "p2", name: "Backup Service" },
               ],
-              fragment.request,
+              request,
             ),
           );
         },
       } satisfies TestProvider,
       kv: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "kv",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
 
-          return Result.ok(scanRows([{ product_id: "p1", view_count: 12 }], fragment.request));
+          return Result.ok(scanRows([{ product_id: "p1", view_count: 12 }], request));
         },
       } satisfies TestProvider,
     });
@@ -1967,23 +1948,18 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "rel";
+        canExecute(_rel: RelNode) {
+          return true;
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "rel") {
-            warehouseScanExecutions += 1;
-            return Result.ok([]);
-          }
-
+          const rel = plan.payload as RelNode;
           warehouseRelExecutions += 1;
           const products = [
             { id: "p1", name: "Edge Router" },
@@ -1993,7 +1969,7 @@ describe("query/provider runtime", () => {
           return Result.ok(
             products.map((product) =>
               Object.fromEntries(
-                fragment.rel.output.map((output) => {
+                rel.output.map((output) => {
                   if (output.name.endsWith(".id") || output.name === "id") {
                     return [output.name, product.id] as const;
                   }
@@ -2008,21 +1984,21 @@ describe("query/provider runtime", () => {
         },
       } satisfies TestProvider,
       kv: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "kv",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute() {
           kvScanExecutions += 1;
           return Result.ok([]);
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           kvLookupCalls += 1;
           return Result.ok(
             request.keys.includes("p1") ? [{ product_id: "p1", view_count: 12 }] : [],
@@ -2077,22 +2053,23 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows([{ id: "o1" }], fragment.request));
+          return Result.ok(scanRows([{ id: "o1" }], request));
         },
       } satisfies TestProvider,
     });
@@ -2107,7 +2084,7 @@ describe("query/provider runtime", () => {
     expect(plan.steps.some((step) => step.kind === "scan")).toBe(true);
   });
 
-  it("includes fallback diagnostics in explain output for unsupported rel pushdown", () => {
+  it("includes fallback diagnostics in explain output for unsupported rel pushdown", async () => {
     const schema = buildEntitySchema({
       orders: {
         provider: "warehouse",
@@ -2127,34 +2104,35 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
           return Result.ok(
             scanRows(
-              fragment.table === "orders"
+              request.table === "orders"
                 ? [{ id: "o1", user_id: "u1" }]
                 : [{ id: "u1", email: "a@example.com" }],
-              fragment.request,
+              request,
             ),
           );
         },
       } satisfies TestProvider,
     });
 
-    const explained = executableSchema.explain({
+    const explained = await executableSchema.explain({
       context: {},
       sql: `
         SELECT o.id, u.email
@@ -2166,14 +2144,17 @@ describe("query/provider runtime", () => {
     expect(explained.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "TUPL_WARN_FALLBACK",
-          severity: "warning",
+          stage: "physical_planning",
+          diagnostic: expect.objectContaining({
+            code: "TUPL_WARN_FALLBACK",
+            severity: "warning",
+          }),
         }),
       ]),
     );
   });
 
-  it("defaults relational provider capability atoms for common SQL-like adapters", () => {
+  it("keeps capability analysis out of the relational adapter surface", () => {
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
       entities: {
@@ -2186,22 +2167,17 @@ describe("query/provider runtime", () => {
         return Result.ok([]);
       },
     });
-
-    expect(adapter.capabilityAtoms).toEqual([...DEFAULT_RELATIONAL_CAPABILITY_ATOMS]);
+    expect("capabilityAtoms" in adapter).toBe(false);
   });
 
   it("builds the default relational compiled-plan payload when no custom compiler is provided", async () => {
-    const relFragment: ProviderFragment = {
-      kind: "rel",
-      provider: "warehouse",
-      rel: {
-        id: "scan_orders",
-        kind: "scan",
-        convention: "local",
-        table: "orders",
-        select: ["id"],
-        output: [{ name: "id" }],
-      },
+    const relFragment: RelNode = {
+      id: "scan_orders",
+      kind: "scan",
+      convention: "local",
+      table: "orders",
+      select: ["id"],
+      output: [{ name: "id" }],
     };
     const adapter = createRelationalProviderAdapter({
       name: "warehouse",
@@ -2227,7 +2203,7 @@ describe("query/provider runtime", () => {
       kind: "rel",
       payload: {
         strategy: "basic",
-        rel: relFragment.rel,
+        rel: relFragment,
       },
     });
   });
@@ -2249,30 +2225,26 @@ describe("query/provider runtime", () => {
 
     const capability = await adapter.canExecute(
       {
-        kind: "rel",
-        provider: "warehouse",
-        rel: {
-          id: "window_1",
-          kind: "window",
+        id: "window_1",
+        kind: "window",
+        convention: "local",
+        input: {
+          id: "scan_orders",
+          kind: "scan",
           convention: "local",
-          input: {
-            id: "scan_orders",
-            kind: "scan",
-            convention: "local",
-            table: "orders",
-            select: ["id"],
-            output: [{ name: "id" }],
-          },
-          functions: [
-            {
-              fn: "count",
-              as: "row_count",
-              partitionBy: [],
-              orderBy: [],
-            },
-          ],
-          output: [{ name: "id" }, { name: "row_count" }],
+          table: "orders",
+          select: ["id"],
+          output: [{ name: "id" }],
         },
+        functions: [
+          {
+            fn: "count",
+            as: "row_count",
+            partitionBy: [],
+            orderBy: [],
+          },
+        ],
+        output: [{ name: "id" }, { name: "row_count" }],
       },
       {},
     );
@@ -2283,7 +2255,7 @@ describe("query/provider runtime", () => {
     });
   });
 
-  it("rejects fallback when query policy forbids missing capability atoms", async () => {
+  it("rejects fallback when query policy forbids provider fallback", async () => {
     const schema = buildEntitySchema({
       orders: {
         provider: "warehouse",
@@ -2303,22 +2275,23 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows([], fragment.request));
+          return Result.ok(scanRows([], request));
         },
       } satisfies TestProvider,
     });
@@ -2327,7 +2300,7 @@ describe("query/provider runtime", () => {
       executableSchema.query({
         context: {},
         fallbackPolicy: {
-          rejectOnMissingAtom: true,
+          allowFallback: false,
         },
         sql: `
         SELECT o.id, u.email
@@ -2354,23 +2327,24 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
           await sleep(25);
-          return Result.ok(scanRows([{ id: "u1" }], fragment.request));
+          return Result.ok(scanRows([{ id: "u1" }], request));
         },
       } satisfies TestProvider,
     });
@@ -2429,19 +2403,20 @@ describe("query/provider runtime", () => {
 
     const executableSchema = createExecutableSchemaFromProviders(schema, {
       warehouse: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "warehouse",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
           return Result.ok(
@@ -2451,7 +2426,7 @@ describe("query/provider runtime", () => {
                 { id: "u2", email: "beta@sample.com", score: 7 },
                 { id: "u3", email: "Gamma@Example.com", score: 4 },
               ],
-              fragment.request,
+              request,
             ),
           );
         },

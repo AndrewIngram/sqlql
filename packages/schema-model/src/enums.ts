@@ -23,10 +23,10 @@ export interface ResolveSchemaLinkedEnumsOptions {
   strictUnmapped?: boolean;
 }
 
-export function resolveSchemaLinkedEnums(
-  schema: SchemaDefinition,
+export function resolveSchemaLinkedEnums<TSchema extends SchemaDefinition>(
+  schema: TSchema,
   options: ResolveSchemaLinkedEnumsOptions = {},
-): TuplResult<SchemaDefinition> {
+): TuplResult<TSchema> {
   const resolveEnumValues = options.resolveEnumValues ?? defaultResolveLinkedEnumValues;
   const onUnresolved = options.onUnresolved ?? "error";
   const strictUnmapped = options.strictUnmapped ?? true;
@@ -141,7 +141,7 @@ export function resolveSchemaLinkedEnums(
 
   const resolvedSchema: SchemaDefinition = { tables };
   copyNormalizedSchemaBindings(schema, resolvedSchema);
-  return finalizeSchemaDefinition(resolvedSchema);
+  return finalizeSchemaDefinition(resolvedSchema as TSchema);
 }
 
 function parseEnumLinkReference(

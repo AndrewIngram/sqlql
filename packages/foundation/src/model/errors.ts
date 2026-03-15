@@ -48,6 +48,36 @@ export class TuplPlanningError extends TaggedError("TuplPlanningError")<{
   operation: string;
 }>() {}
 
+export class UnsupportedQueryShapeError extends TaggedError("UnsupportedQueryShapeError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+}>() {}
+
+export class RelLoweringError extends TaggedError("RelLoweringError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+}>() {}
+
+export class RelRewriteError extends TaggedError("RelRewriteError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+}>() {}
+
+export class PhysicalPlanningError extends TaggedError("PhysicalPlanningError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+}>() {}
+
+export class ProviderFragmentBuildError extends TaggedError("ProviderFragmentBuildError")<{
+  cause?: unknown;
+  message: string;
+  operation: string;
+}>() {}
+
 export class TuplExecutionError extends TaggedError("TuplExecutionError")<{
   cause?: unknown;
   message: string;
@@ -81,6 +111,11 @@ export type TuplError =
   | TuplRuntimeError
   | TuplParseError
   | TuplPlanningError
+  | UnsupportedQueryShapeError
+  | RelLoweringError
+  | RelRewriteError
+  | PhysicalPlanningError
+  | ProviderFragmentBuildError
   | TuplExecutionError
   | TuplProviderBindingError
   | TuplSchemaValidationError

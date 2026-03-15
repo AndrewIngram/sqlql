@@ -6,8 +6,8 @@ import type {
   KyselyProviderEntityConfig,
   KyselyQueryBuilderLike,
   ResolvedEntityConfig,
+  ScanBinding,
 } from "../types";
-import type { ScanBinding } from "../planning/rel-builder";
 
 type BaseBinding<TContext> =
   | {

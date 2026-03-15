@@ -1,9 +1,11 @@
-import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/provider-kit";
+import type { ProviderOperationResult, QueryRow, ScanFilterClause } from "@tupl/provider-kit";
+import { executeLookupManyViaScanResult } from "@tupl/provider-kit/relational-sql";
+import type { TuplExecutionError, TuplProviderBindingError } from "@tupl/foundation";
 
 import type { KyselyDatabaseLike, ResolvedEntityConfig } from "../types";
-import { executeScan } from "./scan-execution";
+import { executeScanResult } from "./scan-execution";
 
-export async function executeLookupMany<TContext>(
+export async function executeLookupManyResult<TContext>(
   db: KyselyDatabaseLike,
   entityConfigs: Record<string, ResolvedEntityConfig<TContext>>,
   request: {
@@ -14,19 +16,6 @@ export async function executeLookupMany<TContext>(
     where?: ScanFilterClause[];
   },
   context: TContext,
-): Promise<QueryRow[]> {
-  const scanRequest: TableScanRequest = {
-    table: request.table,
-    select: request.select,
-    where: [
-      ...(request.where ?? []),
-      {
-        op: "in",
-        column: request.key,
-        values: request.keys,
-      } as ScanFilterClause,
-    ],
-  };
-
-  return executeScan(db, entityConfigs, scanRequest, context);
+): Promise<ProviderOperationResult<QueryRow[], TuplProviderBindingError | TuplExecutionError>> {
+  return executeLookupManyViaScanResult(db, entityConfigs, request, context, executeScanResult);
 }

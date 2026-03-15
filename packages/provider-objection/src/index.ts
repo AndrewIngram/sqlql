@@ -1,19 +1,20 @@
 import {
-  AdapterResult,
   createSqlRelationalProviderAdapter,
-  type FragmentProvider,
-  type LookupProvider,
+  type FragmentProviderAdapter,
 } from "@tupl/provider-kit";
+import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
-import { executeLookupMany } from "./execution/lookup-execution";
-import { executeScan } from "./execution/scan-execution";
-import { objectionSqlRelationalBackend } from "./planning/rel-builder";
+import { executeLookupManyResult } from "./execution/lookup-execution";
+import { objectionQueryTranslationBackend } from "./planning/rel-builder";
+import { resolveKnex } from "./backend/runtime-checks";
 import type {
   CreateObjectionProviderOptions,
   KnexLike,
+  KnexLikeQueryBuilder,
   ObjectionProviderEntities,
   ObjectionProviderEntityConfig,
   ResolvedEntityConfig,
+  ScanBinding,
 } from "./types";
 
 export type {
@@ -36,74 +37,33 @@ export function createObjectionProvider<
   >,
 >(
   options: CreateObjectionProviderOptions<TContext, TEntities>,
-): FragmentProvider<TContext> &
-  LookupProvider<TContext> & {
-    entities: ObjectionProviderEntities<TEntities>;
-  } {
+): FragmentProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
+  entities: ObjectionProviderEntities<TEntities>;
+} {
   const providerName = options.name ?? "objection";
-  const entityConfigs = resolveEntityConfigs(options);
   const entityOptions = (options.entities ?? {}) as TEntities;
 
-  return createSqlRelationalProviderAdapter({
+  return createSqlRelationalProviderAdapter<
+    TContext,
+    TEntities,
+    ResolvedEntityConfig<TContext>,
+    ScanBinding<TContext>,
+    KnexLike,
+    KnexLikeQueryBuilder,
+    ObjectionProviderEntities<TEntities>
+  >({
     name: providerName,
     entities: entityOptions,
-    resolveEntity({ entity, config }) {
-      return {
-        entity,
-        table: config.table ?? entity,
-        config,
-      };
+    resolveRuntime(context) {
+      return resolveKnex(options, context);
     },
-    backend: objectionSqlRelationalBackend,
-    resolveRuntime: (context: TContext) => resolveKnex(options, context),
-    unsupportedRelCompileMessage: "Unsupported SQL-relational fragment for Objection provider.",
+    unsupportedRelCompileMessage: "Unsupported relational fragment for Objection provider.",
     unsupportedRelReasonMessage:
       "Rel fragment is not supported for single-query Objection pushdown.",
-    async executeScan({ runtime, request, context }) {
-      return executeScan(runtime, entityConfigs, request, context);
+    queryBackend: objectionQueryTranslationBackend,
+    async lookupMany({ request, context, resolvedEntities, runtime }) {
+      return executeLookupManyResult(runtime, resolvedEntities, request, context);
     },
-    async lookupMany({ request, runtime, context }) {
-      return AdapterResult.tryPromise({
-        try: () => executeLookupMany(runtime, entityConfigs, request, context),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
-    },
-  }) as FragmentProvider<TContext> &
-    LookupProvider<TContext> & {
-      entities: ObjectionProviderEntities<TEntities>;
-    };
-}
-
-export async function resolveKnex<TContext>(
-  options: CreateObjectionProviderOptions<TContext>,
-  context: TContext,
-): Promise<KnexLike> {
-  const knex = typeof options.knex === "function" ? await options.knex(context) : options.knex;
-  const candidate = knex as Partial<KnexLike> | null | undefined;
-  if (
-    !candidate ||
-    typeof candidate.table !== "function" ||
-    typeof candidate.queryBuilder !== "function"
-  ) {
-    throw new Error(
-      "Objection provider runtime binding did not resolve to a valid knex instance. Check your context and knex callback.",
-    );
-  }
-  return candidate as KnexLike;
-}
-
-function resolveEntityConfigs<TContext>(
-  options: CreateObjectionProviderOptions<TContext>,
-): Record<string, ResolvedEntityConfig<TContext>> {
-  const out: Record<string, ResolvedEntityConfig<TContext>> = {};
-
-  for (const [entity, config] of Object.entries(options.entities ?? {})) {
-    out[entity] = {
-      entity,
-      table: config.table ?? entity,
-      config,
-    };
-  }
-
-  return out;
+  });
 }

@@ -8,6 +8,7 @@ import type {
   ProviderRuntimeBinding,
   QueryRow,
 } from "@tupl/provider-kit";
+import type { SqlRelationalScanBinding } from "@tupl/provider-kit/relational-sql";
 
 export type KyselyQueryBuilderLike = {
   select: (...args: any[]) => KyselyQueryBuilderLike;
@@ -68,6 +69,8 @@ export interface ResolvedEntityConfig<TContext> {
   table: string;
   config: KyselyProviderEntityConfig<TContext>;
 }
+
+export type ScanBinding<TContext> = SqlRelationalScanBinding<ResolvedEntityConfig<TContext>>;
 
 export type InferKyselyEntityRow<
   TDatabase,

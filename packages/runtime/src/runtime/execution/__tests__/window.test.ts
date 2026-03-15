@@ -146,127 +146,223 @@ describe("query/window", () => {
     );
   });
 
-  it("rejects explicit ROWS frame clauses", async () => {
+  it("supports explicit ROWS frame clauses", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                id,
-                SUM(total_cents) OVER (
-                  PARTITION BY org_id
-                  ORDER BY created_at
-                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                ) AS running_total
-              FROM orders
-              WHERE org_id = 'org_1'
-              ORDER BY id ASC
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Explicit window frame clauses are not yet supported.");
-      },
-    );
-  });
-
-  it("rejects named WINDOW clauses and references", async () => {
-    await withQueryHarness(
-      {
-        schema: commerceSchema,
-        rowsByTable: commerceRows,
-      },
-      async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                id,
-                SUM(total_cents) OVER w AS running_total
-              FROM orders
-              WINDOW w AS (
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER (
                 PARTITION BY org_id
                 ORDER BY created_at
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-              )
-              ORDER BY id ASC
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Named WINDOW clauses are not yet supported.");
+              ) AS running_total
+            FROM orders
+            WHERE org_id = 'org_1'
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", running_total: 1200 },
+          { id: "ord_2", running_total: 3000 },
+          { id: "ord_3", running_total: 5400 },
+        ]);
       },
     );
   });
 
-  it("rejects unsupported navigation window functions", async () => {
+  it("supports named WINDOW clauses and references", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                o.id,
-                LEAD(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS next_total,
-                LAG(o.total_cents, 1, 0) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS prev_total
-              FROM orders o
-              WHERE o.org_id = 'org_1'
-              ORDER BY o.id ASC
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Unsupported window function: LEAD");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER w AS running_total
+            FROM orders
+            WINDOW w AS (
+              PARTITION BY org_id
+              ORDER BY created_at
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", running_total: 1200 },
+          { id: "ord_2", running_total: 3000 },
+          { id: "ord_3", running_total: 5400 },
+          { id: "ord_4", running_total: 9900 },
+        ]);
       },
     );
   });
 
-  it("rejects unsupported window functions", async () => {
+  it("supports bounded ROWS frames with sqlite parity", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT FIRST_VALUE(total_cents) OVER (PARTITION BY org_id ORDER BY created_at) AS first_total
-              FROM orders
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Unsupported window function: FIRST_VALUE");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER (
+                PARTITION BY org_id
+                ORDER BY created_at
+                ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+              ) AS bounded_total
+            FROM orders
+            WHERE org_id = 'org_1'
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", bounded_total: 1200 },
+          { id: "ord_2", bounded_total: 3000 },
+          { id: "ord_3", bounded_total: 4200 },
+        ]);
       },
     );
   });
 
-  it("rejects mixing GROUP BY/HAVING with window functions", async () => {
+  it("includes the end row for PRECEDING frame boundaries", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
         rowsByTable: commerceRows,
       },
       async (harness) => {
-        await expect(
-          harness.runTupl(
-            `
-              SELECT
-                org_id,
-                COUNT(*) AS order_count,
-                ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY org_id) AS rn
-              FROM orders
-              GROUP BY org_id
-            `,
-            EMPTY_CONTEXT,
-          ),
-        ).rejects.toThrow("Window functions cannot be mixed with GROUP BY/HAVING.");
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER (
+                PARTITION BY org_id
+                ORDER BY created_at
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+              ) AS prior_total
+            FROM orders
+            WHERE org_id = 'org_1'
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", prior_total: null },
+          { id: "ord_2", prior_total: 1200 },
+          { id: "ord_3", prior_total: 3000 },
+        ]);
+      },
+    );
+  });
+
+  it("supports LEAD and LAG window functions", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              o.id,
+              LEAD(o.total_cents) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS next_total,
+              LAG(o.total_cents, 1, 0) OVER (PARTITION BY o.org_id ORDER BY o.created_at) AS prev_total
+            FROM orders o
+            WHERE o.org_id = 'org_1'
+            ORDER BY o.id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", next_total: 1800, prev_total: 0 },
+          { id: "ord_2", next_total: 2400, prev_total: 1200 },
+          { id: "ord_3", next_total: null, prev_total: 1800 },
+        ]);
+      },
+    );
+  });
+
+  it("supports FIRST_VALUE window functions", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              FIRST_VALUE(total_cents) OVER (PARTITION BY org_id ORDER BY created_at) AS first_total
+            FROM orders
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", first_total: 1200 },
+          { id: "ord_2", first_total: 1200 },
+          { id: "ord_3", first_total: 1200 },
+          { id: "ord_4", first_total: 9900 },
+        ]);
+      },
+    );
+  });
+
+  it("supports mixing GROUP BY/HAVING with window functions", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              org_id,
+              COUNT(*) AS order_count,
+              ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY org_id) AS rn
+            FROM orders
+            GROUP BY org_id
+            ORDER BY org_id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { org_id: "org_1", order_count: 3, rn: 1 },
+          { org_id: "org_2", order_count: 1, rn: 1 },
+        ]);
       },
     );
   });

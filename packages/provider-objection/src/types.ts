@@ -5,6 +5,7 @@ import type {
   InferDataEntityShapeMetadata,
   ProviderRuntimeBinding,
 } from "@tupl/provider-kit";
+import type { SqlRelationalScanBinding } from "@tupl/provider-kit/relational-sql";
 
 export type KnexLikeQueryBuilder = {
   clone?: (...args: any[]) => KnexLikeQueryBuilder;
@@ -87,6 +88,8 @@ export interface ResolvedEntityConfig<TContext> {
   table: string;
   config: ObjectionProviderEntityConfig<TContext>;
 }
+
+export type ScanBinding<TContext> = SqlRelationalScanBinding<ResolvedEntityConfig<TContext>>;
 
 export type InferObjectionEntityColumns<TConfig> = TConfig extends { shape: infer TShape }
   ? Extract<keyof Extract<TShape, DataEntityShape<string>>, string>

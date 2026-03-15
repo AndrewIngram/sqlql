@@ -1,4 +1,5 @@
-import type { ProviderRuntimeBinding, MaybePromise } from "@tupl/provider-kit";
+import { TuplProviderBindingError } from "@tupl/foundation";
+import { AdapterResult, type ProviderRuntimeBinding, type MaybePromise } from "@tupl/provider-kit";
 
 import type {
   CreateDrizzleProviderOptions,
@@ -20,25 +21,62 @@ export function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
   );
 }
 
-export function assertDrizzleDb(db: DrizzleQueryExecutor | null | undefined): DrizzleQueryExecutor {
+export function validateDrizzleDb(
+  db: DrizzleQueryExecutor | null | undefined,
+): import("@tupl/provider-kit").ProviderOperationResult<
+  DrizzleQueryExecutor,
+  TuplProviderBindingError
+> {
   if (!db || typeof db.select !== "function") {
-    throw new Error(
-      "Drizzle provider runtime binding did not resolve to a valid database instance. Check your context and db callback.",
+    return AdapterResult.err(
+      new TuplProviderBindingError({
+        provider: "drizzle",
+        message:
+          "Drizzle provider runtime binding did not resolve to a valid database instance. Check your context and db callback.",
+      }),
     );
   }
-  return db;
+  return AdapterResult.ok(db);
+}
+
+export function resolveDrizzleDbMaybeSyncResult<TContext>(
+  options: CreateDrizzleProviderOptions<TContext>,
+  context: TContext,
+): MaybePromise<
+  import("@tupl/provider-kit").ProviderOperationResult<
+    DrizzleQueryExecutor,
+    TuplProviderBindingError
+  >
+> {
+  if (!isRuntimeBindingResolver(options.db)) {
+    return validateDrizzleDb(options.db);
+  }
+
+  const db = options.db(context);
+  return isPromiseLike(db) ? db.then(validateDrizzleDb) : validateDrizzleDb(db);
+}
+
+export async function resolveDrizzleDbResult<TContext>(
+  options: CreateDrizzleProviderOptions<TContext>,
+  context: TContext,
+): Promise<
+  import("@tupl/provider-kit").ProviderOperationResult<
+    DrizzleQueryExecutor,
+    TuplProviderBindingError
+  >
+> {
+  return await Promise.resolve(resolveDrizzleDbMaybeSyncResult(options, context));
 }
 
 export function resolveDrizzleDbMaybeSync<TContext>(
   options: CreateDrizzleProviderOptions<TContext>,
   context: TContext,
 ): MaybePromise<DrizzleQueryExecutor> {
-  if (!isRuntimeBindingResolver(options.db)) {
-    return assertDrizzleDb(options.db);
+  const result = resolveDrizzleDbMaybeSyncResult(options, context);
+  if (isPromiseLike(result)) {
+    return result.then((resolved) => resolved.unwrap());
   }
-
-  const db = options.db(context);
-  return isPromiseLike(db) ? db.then(assertDrizzleDb) : assertDrizzleDb(db);
+  return result.unwrap();
 }
 
 export async function resolveDrizzleDb<TContext>(

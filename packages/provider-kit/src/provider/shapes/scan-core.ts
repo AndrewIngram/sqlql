@@ -1,25 +1,9 @@
-import {
-  collectCapabilityAtomsForFragment,
-  inferRouteFamilyForFragment,
-  type ProviderCapabilityReport,
-  type ProviderFragment,
-} from "..";
+import { buildCapabilityReport, type ProviderCapabilityReport } from "..";
 
 export interface ScanEntityBinding {
   entity: string;
 }
 
-export function buildScanUnsupportedReport(
-  fragment: ProviderFragment,
-  supportedAtoms: readonly string[],
-  reason: string,
-): ProviderCapabilityReport {
-  const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
-  return {
-    supported: false,
-    reason,
-    routeFamily: inferRouteFamilyForFragment(fragment),
-    requiredAtoms,
-    missingAtoms: requiredAtoms.filter((atom) => !supportedAtoms.includes(atom)),
-  };
+export function buildScanUnsupportedReport(reason: string): ProviderCapabilityReport {
+  return buildCapabilityReport(reason);
 }

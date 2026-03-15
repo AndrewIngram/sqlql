@@ -1,6 +1,6 @@
 ---
 name: software-design-philosophy
-description: 'Manage software complexity through deep modules, information hiding, and strategic programming. Use when the user mentions "module design", "API too complex", "shallow class", "complexity budget", or "strategic vs tactical". Covers deep vs shallow modules, red flags for complexity, and comments as design documentation. For code quality, see clean-code. For boundaries, see clean-architecture.'
+description: 'Manage software complexity through deep modules, information hiding, and strategic programming. Use when the user mentions "module design", "API too complex", "shallow class", "complexity budget", or "strategic vs tactical". Covers deep vs shallow modules, red flags for complexity, and comments as design documentation. For code quality, see clean-code. For boundaries, see clean-architecture. Use as guidance when planning and making structural changes or modifying interfaces'
 license: MIT
 metadata:
   author: wondelai

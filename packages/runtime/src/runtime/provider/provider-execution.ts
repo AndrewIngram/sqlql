@@ -8,7 +8,7 @@ import { maybeRejectFallbackResult } from "./provider-fallback";
 import { resolveSyncProviderCapabilityForRel } from "./provider-capability";
 
 /**
- * Provider execution is the curated runtime surface for provider capability, fallback, timeout, and whole-query execution.
+ * Provider execution is the curated runtime surface for provider capability, fallback, and timeout handling.
  */
 export type { QueryCapabilityResolution } from "./provider-capability";
 export {
@@ -17,7 +17,6 @@ export {
 } from "./provider-capability";
 export { maybeRejectFallbackResult } from "./provider-fallback";
 export { withTimeoutResult } from "./provider-timeout";
-export { maybeExecuteWholeQueryFragmentResult } from "./provider-whole-query";
 
 export function resolveSyncProviderCapabilityForRelResult<TContext>(
   input: QueryInput<TContext>,

@@ -1,245 +1,122 @@
 # Creating a New Adapter
 
-This guide is the practical path for shipping an adapter without implementing a full relational engine up front.
+This guide is the practical path for shipping a provider without implementing a full relational engine up front.
 
-Terminology in this guide:
+The core contract is intentionally small:
 
-- `provider`: the runtime object registered under a name and used by planning/runtime
-- `adapter`: the authoring layer or helper that builds that provider
-- `backend`: the wrapped system, driver, or query builder
+- `canExecute(rel)`: the source of truth for whether the provider can own a rel subtree
+- `compile(rel)`: lowers that canonical rel subtree to a provider-specific plan payload
+- `describeCompiledPlan?(plan)`: optional explain/debug surface
+- `execute(plan)`: runs the provider-specific plan and returns canonical rows
 
-The core model now has three layers:
-
-- route families: coarse maturity stages for docs and onboarding
-- capability atoms: the actual planner/runtime contract
-- fallback policy: whether unsupported or expensive shapes fall back locally, warn, or fail
+Provider-kit helpers should work directly with canonical rel shapes and field policies. Provider authors should not need a second capability language to describe supported subtrees.
 
 ## Minimal Adapter Skeleton
 
-This is the minimum useful shape for a relational adapter. It supports `scan` and rejects `rel` pushdown with structured capability info.
+This is the minimum useful shape for a provider. It supports a narrow single-source rel subtree and rejects broader pushdown with a structured reason.
 
 ```ts
 import type {
-  Provider,
-  ProviderCapabilityAtom,
+  ProviderAdapter,
   ProviderCapabilityReport,
   ProviderCompiledPlan,
-  ProviderFragment,
   QueryRow,
-  TableScanRequest,
 } from "@tupl/provider-kit";
+import { AdapterResult } from "@tupl/provider-kit";
+import { checkSimpleRelScanCapability } from "@tupl/provider-kit/shapes";
+import type { RelNode } from "@tupl/foundation";
 
 type DbContext = {
   tenantId: string;
 };
 
-type CompiledScanPlan = {
-  kind: "scan";
+type CompiledPlan = {
+  kind: "simple_scan";
   sql: string;
   params: unknown[];
-  request: TableScanRequest;
+  rel: RelNode;
 };
 
-const declaredAtoms: readonly ProviderCapabilityAtom[] = [
-  "scan.project",
-  "scan.filter.basic",
-  "scan.filter.set_membership",
-  "scan.sort",
-  "scan.limit_offset",
-];
-
-export function createExampleSqlAdapter(): Provider<DbContext> {
+export function createExampleSqlAdapter(): ProviderAdapter<DbContext> {
   return {
     name: "example-sql",
-    routeFamilies: ["scan"],
-    capabilityAtoms: [...declaredAtoms],
 
-    canExecute(fragment): boolean | ProviderCapabilityReport {
-      switch (fragment.kind) {
-        case "scan":
-          return true;
-        case "rel":
-          return {
-            supported: false,
-            routeFamily: "rel-core",
-            requiredAtoms: ["join.inner"],
-            missingAtoms: ["join.inner"],
-            reason: "This adapter only supports scan pushdown.",
-          };
-        default:
-          return false;
-      }
+    canExecute(rel): boolean | ProviderCapabilityReport {
+      const capability = checkSimpleRelScanCapability(rel);
+      return capability.isOk() ? true : capability.error;
     },
 
-    async compile(fragment): Promise<ProviderCompiledPlan> {
-      if (fragment.kind !== "scan") {
-        throw new Error(`Unsupported fragment kind: ${fragment.kind}`);
+    async compile(rel) {
+      const capability = checkSimpleRelScanCapability(rel);
+      if (capability.isError()) {
+        return AdapterResult.err(
+          new Error(capability.error.reason ?? "Unsupported simple scan pipeline."),
+        );
       }
+      const request = capability.value;
 
-      return {
+      return AdapterResult.ok({
         provider: "example-sql",
-        kind: "scan",
-        payload: compileScanRequest(fragment.request),
-      };
+        kind: "query",
+        payload: compileScanRequest(rel, request),
+      } satisfies ProviderCompiledPlan);
     },
 
-    async execute(compiled, context): Promise<QueryRow[]> {
-      if (compiled.kind !== "scan") {
-        throw new Error(`Unsupported compiled plan kind: ${compiled.kind}`);
+    async execute(compiled, context) {
+      if (compiled.kind !== "query") {
+        return AdapterResult.err(new Error(`Unsupported compiled plan kind: ${compiled.kind}`));
       }
 
-      const plan = compiled.payload as CompiledScanPlan;
-      return runQuery(plan.sql, plan.params, context);
+      const plan = compiled.payload as CompiledPlan;
+      return AdapterResult.ok(await runQuery(plan.sql, plan.params, context));
     },
   };
-}
-
-function compileScanRequest(request: TableScanRequest): CompiledScanPlan {
-  const params: unknown[] = [];
-  const select = request.select.map(quoteIdent).join(", ");
-  const where = (request.where ?? [])
-    .map((clause) => toSqlWhereClause(clause, params))
-    .join(" AND ");
-  const orderBy = (request.orderBy ?? [])
-    .map((term) => `${quoteIdent(term.column)} ${term.direction.toUpperCase()}`)
-    .join(", ");
-
-  const sql = [
-    `select ${select}`,
-    `from ${quoteIdent(request.table)}`,
-    where.length > 0 ? `where ${where}` : "",
-    orderBy.length > 0 ? `order by ${orderBy}` : "",
-    request.limit != null ? `limit ${request.limit}` : "",
-    request.offset != null ? `offset ${request.offset}` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  return {
-    kind: "scan",
-    sql,
-    params,
-    request,
-  };
-}
-
-function toSqlWhereClause(clause: TableScanRequest["where"][number], params: unknown[]): string {
-  switch (clause.op) {
-    case "eq":
-      params.push(clause.value);
-      return `${quoteIdent(clause.column)} = ?`;
-    case "neq":
-      params.push(clause.value);
-      return `${quoteIdent(clause.column)} <> ?`;
-    case "gt":
-    case "gte":
-    case "lt":
-    case "lte": {
-      const op = { gt: ">", gte: ">=", lt: "<", lte: "<=" }[clause.op];
-      params.push(clause.value);
-      return `${quoteIdent(clause.column)} ${op} ?`;
-    }
-    case "in":
-    case "not_in": {
-      const op = clause.op === "in" ? "in" : "not in";
-      const placeholders = clause.values.map(() => "?").join(", ");
-      params.push(...clause.values);
-      return `${quoteIdent(clause.column)} ${op} (${placeholders})`;
-    }
-    case "like":
-    case "not_like": {
-      const op = clause.op === "like" ? "like" : "not like";
-      params.push(clause.value);
-      return `${quoteIdent(clause.column)} ${op} ?`;
-    }
-    case "is_null":
-      return `${quoteIdent(clause.column)} is null`;
-    case "is_not_null":
-      return `${quoteIdent(clause.column)} is not null`;
-    case "is_distinct_from":
-    case "is_not_distinct_from": {
-      const op = clause.op === "is_distinct_from" ? "is distinct from" : "is not distinct from";
-      params.push(clause.value);
-      return `${quoteIdent(clause.column)} ${op} ?`;
-    }
-  }
-}
-
-function quoteIdent(name: string): string {
-  return `\"${name.replaceAll('\"', '\"\"')}\"`;
-}
-
-async function runQuery(sql: string, params: unknown[], _context: DbContext): Promise<QueryRow[]> {
-  void sql;
-  void params;
-  return [];
 }
 ```
 
-That adapter is already usable because unsupported joins, aggregates, and computed expressions can fall back to local logical execution.
+That provider is already useful because unsupported joins, aggregates, windows, and computed expressions can fall back to local logical execution.
 
-For ordinary adapter authoring, stay on `@tupl/provider-kit` and `@tupl/provider-kit/shapes`.
-You should not need `@tupl/schema-model` unless you are working on unusually deep planner/schema integration.
+## SQL-Like Adapters Should Start With `createSqlRelationalProviderAdapter`
 
-## Relational Adapters Should Start With `createSqlRelationalProviderAdapter`
+For SQL-like backends, the normal path is `createSqlRelationalProviderAdapter(...)` from `@tupl/provider-kit`.
 
-For ordinary SQL-like backends, the normal path is `createSqlRelationalProviderAdapter(...)` from
-`@tupl/provider-kit`. It owns the repeated adapter plumbing and recursive rel compilation:
+That helper owns the repeated plumbing:
 
 - entity handle creation and binding
-- shape normalization for declared entities
-- default `scan` / `rel` capability reporting
-- route-family inference and required-atom collection
-- strategy resolution for ordinary `basic` / `set_op` / `with` single-query pushdown
+- ordinary SQL-like subtree strategy selection
+- provider-specific compiled-plan wiring
+- runtime binding orchestration
+- optional lookup optimization hooks
 
 Your provider package should keep only backend-specific work:
 
-- entity config details (`table`, `base`, query-scoping hooks)
-- runtime binding resolution
-- backend `planning` hooks for unusual scan/strategy behavior
-- backend `query` hooks for joins, selections, set ops, and CTEs
-- compiled-plan execution
+- entity config details (`table`, `base`, scoping hooks)
+- field-sensitive support checks
+- optional strategy overrides
+- query-builder translation
+- lookup optimization
 
 Sketch:
 
 ```ts
 import { AdapterResult, createSqlRelationalProviderAdapter } from "@tupl/provider-kit";
 
-const declaredAtoms = [
-  "scan.project",
-  "scan.filter.basic",
-  "scan.filter.set_membership",
-  "scan.sort",
-  "scan.limit_offset",
-  "lookup.bulk",
-  "join.inner",
-  "join.left",
-] as const;
-
 export function createExampleRelationalProvider(options: CreateExampleProviderOptions) {
-  const entityConfigs = resolveEntityConfigs(options);
-
   return createSqlRelationalProviderAdapter({
     name: "example-sql",
-    declaredAtoms,
-    entities: options.entities ?? {},
-    resolveEntity({ entity, config }) {
-      return {
-        entity,
-        table: config.table ?? entity,
-        config,
-      };
-    },
-    backend: exampleSqlBackend,
+    entities: options.entities,
     resolveRuntime(context) {
-      return resolveDb(options, context);
+      return resolveExampleRuntime(options, context);
     },
-    async executeScan({ runtime, request, context }) {
-      return executeScan(runtime, entityConfigs, request, context);
+    queryBackend: exampleQueryBackend,
+    advanced: {
+      resolveRelCompileStrategy(rel, resolvedEntities) {
+        return resolveExampleStrategy(rel, resolvedEntities);
+      },
     },
-    lookupMany({ runtime, request, context }) {
+    async lookupMany({ request, context, resolvedEntities, runtime }) {
       return AdapterResult.tryPromise({
-        try: () => lookupManyWithExample(runtime, entityConfigs, request, context),
+        try: () => executeExampleLookup(runtime, resolvedEntities, request, context),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
     },
@@ -247,17 +124,43 @@ export function createExampleRelationalProvider(options: CreateExampleProviderOp
 }
 ```
 
-Reach for `createRelationalProviderAdapter(...)` only when an adapter is unusual enough that it
-cannot fit the ordinary SQL-like path cleanly, for example when the backend needs provider-specific
-expression lowering instead of the shared rel compiler.
+Defaults:
 
-The key design point is that the public factory takes one entity description and one
-`resolveEntity(...)` callback. The internal resolved-entity map is provider-kit’s job, not adapter
-author boilerplate.
+- `resolveEntity(...)` is optional; the helper uses `config.table ?? entity`
+- `advanced.createScanBinding(...)` is optional for ordinary SQL-like adapters
+- `advanced.resolveRelCompileStrategy(...)` is optional when the default relational strategy rules are sufficient
+- most adapters should only supply `queryBackend` plus runtime/entity wiring; `advanced` is the escape hatch, not the normal path
+
+Reach for `createRelationalProviderAdapter(...)` only when the backend does not fit the ordinary SQL-like path cleanly.
+
+## Optional Helpers
+
+`@tupl/provider-kit/shapes` exists for optional helpers, not for the primary semantic contract.
+
+Use it when it materially simplifies provider code:
+
+- `checkSimpleRelScanCapability(...)` for narrow single-source scan pipelines with structured capability reports
+- `extractSimpleRelScanRequest(...)` if you only need raw extraction
+- field-sensitive validation helpers for projected, filtered, or sorted columns
+- optional lookup optimization helpers for keyed backends
+
+If a provider never needs these helpers, that is fine.
+
+## Unsupported Reports
+
+Use provider-kit report builders from shape helpers instead of inventing provider-local error shapes.
+
+The preferred pattern is:
+
+- extract a supported rel shape
+- validate backend-specific field rules
+- return the helper-produced unsupported report when that fails
+
+That keeps `canExecute(...)` as the source of truth without introducing extra metadata layers.
 
 ## Wiring the Adapter Into a Facade Schema
 
-Once an adapter exposes typed `entities`, the current schema API is:
+Once a provider exposes typed `entities`, the current schema API is:
 
 1. `createSchemaBuilder<TContext>()`
 2. `builder.table(...)` and `builder.view(...)`
@@ -266,300 +169,34 @@ Once an adapter exposes typed `entities`, the current schema API is:
 Example:
 
 ```ts
-import { createDataEntityHandle } from "@tupl/provider-kit";
 import { createExecutableSchema, createSchemaBuilder } from "@tupl/schema";
+import { createExampleProvider } from "./provider";
 
-const ordersEntity = createDataEntityHandle<"id" | "total_cents" | "created_at">({
-  entity: "orders",
-  provider: "example-sql",
-});
-
+const provider = createExampleProvider();
 const builder = createSchemaBuilder<DbContext>();
 
-const myOrders = builder.table("myOrders", ordersEntity, {
-  columns: ({ col }) => ({
-    id: col.id("id"),
-    totalCents: col.integer("total_cents"),
-    createdAt: col.timestamp("created_at"),
-  }),
-});
-
-builder.view("recentOrders", ({ scan }) => scan(myOrders), {
-  columns: ({ col }) => ({
-    id: col.id(myOrders, "id"),
-    totalCents: col.integer(myOrders, "totalCents", { nullable: false }),
-    createdAt: col.timestamp(myOrders, "createdAt", { nullable: false }),
-  }),
+builder.table("orders", provider.entities.orders, {
+  columns: {
+    id: "text",
+    total_cents: "integer",
+    created_at: "timestamp",
+  },
 });
 
 const executableSchema = createExecutableSchema(builder);
 ```
 
-If your adapter returns typed `entities` the way the first-party adapters do, use those handles here instead of calling `createDataEntityHandle(...)` directly.
-If you are documenting or testing an adapter, prefer this builder flow over the older callback-style examples.
+If your provider already returns typed `entities`, use those handles directly rather than building entity handles by hand.
 
-## Route Families
+## Deep-Module Rule
 
-Route families are intentionally coarse:
+If you find yourself importing planner or schema internals into a provider package to decide whether a subtree is pushdownable, stop and move that knowledge into `provider-kit`.
 
-- `scan`
-- `lookup`
-- `aggregate`
-- `rel-core`
-- `rel-advanced`
+The provider package should own:
 
-Use them to describe where an adapter is in its progression. Do not treat them as all-or-nothing promises.
+- backend-specific execution semantics
+- backend-specific payloads
+- backend-specific field support checks
+- backend-specific runtime binding
 
-Example:
-
-- an adapter can be `rel-advanced` in broad terms while only supporting `cte.non_recursive` and `window.rank_basic`
-- it does not need to support every CTE, window, or expression shape in that family
-
-## Capability Atoms
-
-Capability atoms are the planner contract. `canExecute(fragment, context)` should be able to explain support in terms of missing atoms.
-
-Useful starter atoms:
-
-- `scan.project`
-- `scan.filter.basic`
-- `scan.filter.set_membership`
-- `scan.sort`
-- `scan.limit_offset`
-- `lookup.bulk`
-- `aggregate.group_by`
-- `aggregate.having`
-- `join.inner`
-- `join.left`
-- `join.right_full`
-- `set_op.union_all`
-- `set_op.union_distinct`
-- `set_op.intersect`
-- `set_op.except`
-- `cte.non_recursive`
-- `subquery.from`
-- `subquery.correlated`
-- `window.rank_basic`
-- `window.aggregate_default_frame`
-- `window.frame_explicit`
-- `window.navigation`
-- `expr.compare_basic`
-- `expr.like`
-- `expr.in_not_in`
-- `expr.null_distinct`
-- `expr.arithmetic`
-- `expr.case_simple`
-- `expr.case_searched`
-- `expr.string_basic`
-- `expr.numeric_basic`
-- `expr.cast_basic`
-
-## Minimum Viable Adapter
-
-Start with `scan` support:
-
-- projection
-- filter
-- sort
-- limit/offset
-
-For unsupported `rel` fragments, return an unsupported capability report from `canExecute`.
-
-That is enough to make a provider work because `tupl` can fall back to local logical execution.
-
-## Real Build Order
-
-A practical implementation usually looks like this:
-
-1. get a scan-only adapter working
-2. make `canExecute` return structured unsupported reports for `rel`
-3. add `lookupMany` if the backend has efficient keyed access
-4. add same-provider `rel` compilation atom-by-atom
-
-That progression keeps the codebase honest: the docs-facing `routeFamilies` are broad, but the implementation work happens in small, testable pieces.
-
-## Recommended Relational Progression
-
-For relational backends, this is the default order:
-
-1. `scan`
-2. `lookup`
-3. `aggregate`
-4. `rel-core`
-5. selective `rel-advanced`
-
-The important point is granularity:
-
-- add one capability atom at a time
-- do not block on complete `rel-core`
-- do not block on complete `rel-advanced`
-
-Practical sequence:
-
-1. `scan.*`
-2. `lookup.bulk`
-3. `aggregate.group_by`
-4. `join.inner`, `join.left`
-5. set ops and non-recursive CTEs
-6. window atoms and richer expression atoms
-
-## `canExecute` Contract
-
-`canExecute` is the source of truth for a concrete fragment decision.
-
-This is the shape to aim for once you start supporting more than `scan`:
-
-```ts
-canExecute(fragment): boolean | ProviderCapabilityReport {
-  if (fragment.kind === "scan") {
-    return true;
-  }
-
-  const requiredAtoms = collectCapabilityAtomsForFragment(fragment);
-  const missingAtoms = requiredAtoms.filter((atom) => !declaredAtoms.includes(atom));
-
-  if (missingAtoms.length > 0) {
-    return {
-      supported: false,
-      routeFamily: inferRouteFamilyForFragment(fragment),
-      requiredAtoms,
-      missingAtoms,
-      reason: "Rel fragment is not supported for single-query pushdown.",
-    };
-  }
-
-  return true;
-}
-```
-
-The important behavior is:
-
-- declared atoms are metadata
-- the fragment shape still needs a real compile path
-- `missingAtoms` should explain why pushdown stopped
-
-For unsupported fragments, return a structured report where possible:
-
-- `supported: false`
-- `routeFamily`
-- `requiredAtoms`
-- `missingAtoms`
-- `reason`
-- optional `diagnostics`
-- optional estimates such as `estimatedRows` or `estimatedCost`
-
-This gives the planner enough information to:
-
-- push down supported fragments
-- fall back locally when allowed
-- reject expensive or forbidden fallback
-- explain the decision to users and tooling
-
-## Declared Metadata vs Dynamic Checks
-
-Adapters can optionally declare:
-
-- `routeFamilies`
-- `capabilityAtoms`
-- `fallbackPolicy`
-
-Treat those as metadata for docs, tooling, and compatibility reporting.
-
-Do not rely on declared atoms alone. The actual fragment decision still belongs in `canExecute`.
-
-## Fallback Policy
-
-Default behavior is `allow + annotate`:
-
-- local fallback is allowed
-- fallback emits diagnostics
-
-Adapters can tighten this with `fallbackPolicy`.
-
-Important knobs:
-
-- `allowFallback`
-- `warnOnFallback`
-- `rejectOnMissingAtom`
-- `rejectOnEstimatedCost`
-- `maxLocalRows`
-- `maxLookupFanout`
-- `maxJoinExpansionRisk`
-
-Use this when a backend can technically fall back locally but the shape is too expensive to allow silently.
-
-## Diagnostics
-
-Use stable diagnostics instead of ad hoc strings.
-
-Current structure:
-
-- `code`: stable `SQLQL_*`
-- `class`: SQLSTATE-like category
-- `severity`: `error | warning | note`
-- `message`
-- `details`
-
-Use SQLSTATE-like classes as categories only. `tupl` planner and fallback failures are not standard engine SQLSTATEs.
-
-Recommended failure details:
-
-- provider name
-- fragment kind
-- route family
-- required atoms
-- missing atoms
-- estimate fields when available
-
-## Expression Support
-
-The core runtime now supports a first local expression layer for read queries, including:
-
-- `LIKE`, `NOT LIKE`
-- `NOT IN`
-- `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
-- arithmetic `+ - * / %`
-- string concat
-- `LOWER`, `UPPER`, `TRIM`, `LENGTH`, `SUBSTR`
-- `COALESCE`, `NULLIF`
-- `ABS`, `ROUND`
-- `CAST`
-- searched `CASE`
-
-Adapters do not need to push all of these down immediately.
-
-Practical recommendation:
-
-- support the scan filter subset first
-- add computed-expression pushdown atom-by-atom later
-
-If your backend cannot compile computed projections yet, reject them in `canExecute` and let the runtime handle them locally.
-
-## Testing Strategy
-
-Minimum coverage:
-
-1. scan tests
-
-- filter, sort, projection, limit/offset
-
-2. capability tests
-
-- unsupported fragments return stable missing atoms and reasons
-
-3. fallback tests
-
-- unsupported pushdown still produces correct local results when fallback is allowed
-
-4. rejection tests
-
-- expensive or forbidden fallback fails with diagnostics
-
-5. conformance tests
-
-- parity with other first-party adapters for shared atoms
-
-## Related Docs
-
-- [provider-capability-matrix.md](./provider-capability-matrix.md)
-- [building-a-non-relational-adapter.md](./building-a-non-relational-adapter.md)
+It should not own generic rel-shape interrogation that other providers need too.

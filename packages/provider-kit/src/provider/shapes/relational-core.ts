@@ -1,5 +1,10 @@
 import { isRelProjectColumnMapping, type RelNode } from "@tupl/foundation";
 
+/**
+ * Relational-core owns the backend-neutral shapes that SQL-like providers reason about:
+ * single-query pipelines, set-op wrappers, and WITH-body wrappers. Providers may rely on these
+ * derived shapes, but not on planner/runtime ownership or execution policy.
+ */
 export class UnsupportedRelationalPlanError extends Error {
   constructor(message: string) {
     super(message);
@@ -24,7 +29,7 @@ export interface RelationalSetOpWrapper {
 }
 
 export interface RelationalWithBodyWrapper {
-  cteScan: Extract<RelNode, { kind: "scan" }>;
+  cteRef: Extract<RelNode, { kind: "cte_ref" }>;
   project?: Extract<RelNode, { kind: "project" }>;
   sort?: Extract<RelNode, { kind: "sort" }>;
   limitOffset?: Extract<RelNode, { kind: "limit_offset" }>;
@@ -74,6 +79,9 @@ export function canCompileBasicRel(
   const requireColumnProjectMappings = options?.requireColumnProjectMappings ?? false;
 
   switch (node.kind) {
+    case "values":
+    case "cte_ref":
+      return false;
     case "scan":
       return isKnownScan(node.table);
     case "filter":
@@ -88,6 +96,8 @@ export function canCompileBasicRel(
     case "sort":
     case "limit_offset":
       return canCompileBasicRel(node.input, isKnownScan, options);
+    case "correlate":
+      return false;
     case "join":
       return (
         canCompileBasicRel(node.left, isKnownScan, options) &&
@@ -96,7 +106,7 @@ export function canCompileBasicRel(
     case "window":
     case "set_op":
     case "with":
-    case "sql":
+    case "repeat_union":
       return false;
   }
 }
@@ -197,7 +207,7 @@ export function canCompileWithRel<TStrategy extends string>(
   if (!body) {
     return false;
   }
-  if (!body.cteScan.table || !node.ctes.some((cte) => cte.name === body.cteScan.table)) {
+  if (!node.ctes.some((cte) => cte.name === body.cteRef.name)) {
     return false;
   }
 
@@ -267,6 +277,10 @@ export function extractRelPipeline(node: RelNode): RelationalPipeline {
         limitOffset = current;
         current = current.input;
         continue;
+      case "correlate":
+        throw new UnsupportedRelationalPlanError(
+          'Rel node "correlate" is not supported in single-query pushdown.',
+        );
       case "scan":
       case "join":
         return {
@@ -277,10 +291,10 @@ export function extractRelPipeline(node: RelNode): RelationalPipeline {
           ...(limitOffset ? { limitOffset } : {}),
           filters,
         };
+      case "cte_ref":
       case "set_op":
       case "with":
       case "window":
-      case "sql":
         throw new UnsupportedRelationalPlanError(
           `Rel node "${current.kind}" is not supported in single-query pushdown.`,
         );
@@ -317,6 +331,8 @@ export function unwrapSetOpRel(node: RelNode): RelationalSetOpWrapper | null {
         limitOffset = current;
         current = current.input;
         continue;
+      case "correlate":
+        return null;
       case "set_op":
         return {
           setOp: current,
@@ -372,9 +388,11 @@ export function unwrapWithBodyRel(node: RelNode): RelationalWithBodyWrapper | nu
         window = current;
         current = current.input;
         continue;
-      case "scan":
+      case "correlate":
+        return null;
+      case "cte_ref":
         return {
-          cteScan: current,
+          cteRef: current,
           ...(project ? { project } : {}),
           ...(sort ? { sort } : {}),
           ...(limitOffset ? { limitOffset } : {}),

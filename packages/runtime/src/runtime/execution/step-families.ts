@@ -16,7 +16,7 @@ export function tryPlanRemoteFragmentStep<TContext>(
   node: RelNode,
   scopeId: string,
 ): string | null {
-  if (node.kind === "scan" || node.kind === "sql") {
+  if (node.kind === "scan") {
     return null;
   }
 
@@ -49,7 +49,7 @@ export function tryPlanRemoteFragmentStep<TContext>(
       },
     },
     request: {
-      fragment: resolution.fragment.kind,
+      relKind: resolution.fragment.rel.kind,
     },
     outputs: node.output.map((column) => column.name),
     sqlOrigin: "SELECT",

@@ -2,17 +2,34 @@ import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
 import { type RelNode } from "@tupl/foundation";
+import { type FragmentProviderAdapter } from "@tupl/provider-kit";
 import {
-  type FragmentProvider,
-  type LookupProvider,
-  type ProviderFragment,
-} from "@tupl/provider-kit";
+  type LookupManyCapableProviderAdapter,
+  type ProviderLookupManyRequest,
+} from "@tupl/provider-kit/shapes";
 import { type QueryRow, type ScanFilterClause, type TableScanRequest } from "@tupl/schema-model";
 import { executeRelWithProvidersResult } from "@tupl/runtime/executor";
 import { finalizeProviders } from "@tupl/test-support/runtime";
-import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
-type TestProvider = Omit<FragmentProvider, "name"> & Partial<Pick<LookupProvider, "lookupMany">>;
+type TestProvider = Omit<FragmentProviderAdapter, "name"> &
+  Partial<LookupManyCapableProviderAdapter>;
+
+function toScanRequest(rel: RelNode): TableScanRequest | null {
+  if (rel.kind !== "scan") {
+    return null;
+  }
+
+  return {
+    table: rel.table,
+    ...(rel.alias ? { alias: rel.alias } : {}),
+    select: rel.select,
+    ...(rel.where ? { where: rel.where } : {}),
+    ...(rel.orderBy ? { orderBy: rel.orderBy } : {}),
+    ...(rel.limit != null ? { limit: rel.limit } : {}),
+    ...(rel.offset != null ? { offset: rel.offset } : {}),
+  };
+}
 
 function scanRows(rows: QueryRow[], request: TableScanRequest): QueryRow[] {
   let out = rows.filter((row) => applyFilters(row, request.where ?? []));
@@ -159,7 +176,7 @@ function matchesLike(value: string, pattern: string): boolean {
 }
 
 describe("query/local executor", () => {
-  it("returns tagged execution errors from the result API when a provider is missing", async () => {
+  it("returns tagged execution errors from the result API when a provider adapter is missing", async () => {
     const schema = buildEntitySchema({
       orders: {
         provider: "memory",
@@ -199,7 +216,7 @@ describe("query/local executor", () => {
     expect(result.error).toMatchObject({
       _tag: "TuplExecutionError",
       name: "TuplExecutionError",
-      message: "Missing provider: memory",
+      message: "Missing provider adapter: memory",
     });
   });
 
@@ -235,32 +252,34 @@ describe("query/local executor", () => {
         canExecute() {
           return true;
         },
-        async compile(fragment: ProviderFragment) {
-          return Result.ok({ provider: "orders_provider", kind: fragment.kind, payload: fragment });
+        async compile(rel: RelNode) {
+          return Result.ok({ provider: "orders_provider", kind: "rel", payload: rel });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(ordersRows, fragment.request));
+          return Result.ok(scanRows(ordersRows, request));
         },
       } satisfies TestProvider,
       users_provider: {
         canExecute() {
           return true;
         },
-        async compile(fragment: ProviderFragment) {
-          return Result.ok({ provider: "users_provider", kind: fragment.kind, payload: fragment });
+        async compile(rel: RelNode) {
+          return Result.ok({ provider: "users_provider", kind: "rel", payload: rel });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(usersRows, fragment.request));
+          return Result.ok(scanRows(usersRows, request));
         },
-        async lookupMany(request) {
+        async lookupMany(request: ProviderLookupManyRequest) {
           const keys = new Set(request.keys);
           return Result.ok(usersRows.filter((row) => keys.has(row.id)));
         },
@@ -345,8 +364,8 @@ describe("query/local executor", () => {
         canExecute() {
           return true;
         },
-        async compile(fragment: ProviderFragment) {
-          return Result.ok({ provider: "memory", kind: fragment.kind, payload: fragment });
+        async compile(rel: RelNode) {
+          return Result.ok({ provider: "memory", kind: "rel", payload: rel });
         },
         async execute() {
           return Result.err(new Error("Downstream provider failed."));
@@ -390,18 +409,19 @@ describe("query/local executor", () => {
 
     const providers = finalizeProviders({
       memory: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
-          return Result.ok({ provider: "memory", kind: fragment.kind, payload: fragment });
+        async compile(rel: RelNode) {
+          return Result.ok({ provider: "memory", kind: "rel", payload: rel });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows([{ value: "oops" }], fragment.request));
+          return Result.ok(scanRows([{ value: "oops" }], request));
         },
       } satisfies TestProvider,
     });
@@ -461,49 +481,6 @@ describe("query/local executor", () => {
     });
   });
 
-  it("returns tagged planning errors for invalid view lowering", async () => {
-    const schema = buildSchema((builder) => {
-      builder.view("broken_view", ({ scan }) => scan("missing_table"), {
-        columns: {
-          id: { source: "missing_table.id" },
-        },
-      });
-    });
-
-    const rel: RelNode = {
-      id: "scan_1",
-      kind: "scan",
-      convention: "local",
-      table: "broken_view",
-      alias: "v",
-      select: ["id"],
-      output: [{ name: "v.id" }],
-    };
-
-    const result = await executeRelWithProvidersResult(
-      rel,
-      schema,
-      {},
-      {},
-      {
-        maxExecutionRows: 1000,
-        maxLookupKeysPerBatch: 1000,
-        maxLookupBatches: 10,
-      },
-    );
-
-    expect(Result.isError(result)).toBe(true);
-    if (Result.isOk(result)) {
-      throw new Error("Expected broken view execution to fail.");
-    }
-
-    expect(result.error).toMatchObject({
-      _tag: "TuplPlanningError",
-      message: "Unknown table in view rel scan: missing_table",
-      operation: "expand relational views",
-    });
-  });
-
   it("executes filter + aggregate nodes locally over provider scans", async () => {
     const schema = buildEntitySchema({
       orders: {
@@ -524,22 +501,23 @@ describe("query/local executor", () => {
 
     const providers = finalizeProviders({
       memory: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "memory",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(rows, fragment.request));
+          return Result.ok(scanRows(rows, request));
         },
       } satisfies TestProvider,
     });
@@ -612,22 +590,23 @@ describe("query/local executor", () => {
 
     const providers = finalizeProviders({
       memory: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "memory",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(tableRows[fragment.table] ?? [], fragment.request));
+          return Result.ok(scanRows(tableRows[request.table] ?? [], request));
         },
       } satisfies TestProvider,
     });
@@ -689,6 +668,158 @@ describe("query/local executor", () => {
     expect(result).toEqual([{ id: "a" }, { id: "b" }, { id: "c" }]);
   });
 
+  it("executes grouped scalar-subquery join/filter shapes locally", async () => {
+    const schema = buildEntitySchema({
+      orders: {
+        provider: "memory",
+        columns: {
+          id: "text",
+          user_id: "text",
+          total_cents: "integer",
+        },
+      },
+    });
+
+    const rows: QueryRow[] = [
+      { id: "ord_1", user_id: "usr_1", total_cents: 1200 },
+      { id: "ord_2", user_id: "usr_1", total_cents: 1800 },
+      { id: "ord_3", user_id: "usr_2", total_cents: 2400 },
+      { id: "ord_4", user_id: "usr_3", total_cents: 9900 },
+    ];
+
+    const providers = finalizeProviders({
+      memory: {
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
+        },
+        async compile(rel: RelNode) {
+          return Result.ok({
+            provider: "memory",
+            kind: "rel",
+            payload: rel,
+          });
+        },
+        async execute(plan) {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
+            return Result.ok([]);
+          }
+          return Result.ok(scanRows(rows, request));
+        },
+      } satisfies TestProvider,
+    });
+
+    const rel: RelNode = {
+      id: "project_root",
+      kind: "project",
+      convention: "local",
+      input: {
+        id: "filter_scalar",
+        kind: "filter",
+        convention: "local",
+        input: {
+          id: "join_scalar",
+          kind: "join",
+          convention: "local",
+          joinType: "inner",
+          left: {
+            id: "scan_outer",
+            kind: "scan",
+            convention: "local",
+            table: "orders",
+            alias: "o",
+            select: ["id", "user_id", "total_cents"],
+            output: [{ name: "o.id" }, { name: "o.user_id" }, { name: "o.total_cents" }],
+          },
+          right: {
+            id: "project_inner",
+            kind: "project",
+            convention: "local",
+            input: {
+              id: "aggregate_inner",
+              kind: "aggregate",
+              convention: "local",
+              input: {
+                id: "scan_inner",
+                kind: "scan",
+                convention: "local",
+                table: "orders",
+                alias: "i",
+                select: ["user_id", "total_cents"],
+                output: [{ name: "i.user_id" }, { name: "i.total_cents" }],
+              },
+              groupBy: [{ alias: "i", column: "user_id" }],
+              metrics: [
+                {
+                  fn: "max",
+                  as: "__tupl_scalar_metric",
+                  column: { alias: "i", column: "total_cents" },
+                },
+              ],
+              output: [{ name: "user_id" }, { name: "__tupl_scalar_metric" }],
+            },
+            columns: [
+              {
+                kind: "column",
+                source: { column: "user_id" },
+                output: "__tupl_scalar_corr_key",
+              },
+              {
+                kind: "column",
+                source: { column: "__tupl_scalar_metric" },
+                output: "__tupl_scalar_metric",
+              },
+            ],
+            output: [{ name: "__tupl_scalar_corr_key" }, { name: "__tupl_scalar_metric" }],
+          },
+          leftKey: { alias: "o", column: "user_id" },
+          rightKey: { column: "__tupl_scalar_corr_key" },
+          output: [
+            { name: "o.id" },
+            { name: "o.user_id" },
+            { name: "o.total_cents" },
+            { name: "__tupl_scalar_corr_key" },
+            { name: "__tupl_scalar_metric" },
+          ],
+        },
+        expr: {
+          kind: "function",
+          name: "eq",
+          args: [
+            { kind: "column", ref: { alias: "o", column: "total_cents" } },
+            { kind: "column", ref: { column: "__tupl_scalar_metric" } },
+          ],
+        },
+        output: [
+          { name: "o.id" },
+          { name: "o.user_id" },
+          { name: "o.total_cents" },
+          { name: "__tupl_scalar_corr_key" },
+          { name: "__tupl_scalar_metric" },
+        ],
+      },
+      columns: [{ kind: "column", source: { alias: "o", column: "id" }, output: "id" }],
+      output: [{ name: "id" }],
+    };
+
+    const result = (
+      await executeRelWithProvidersResult(
+        rel,
+        schema,
+        providers,
+        {},
+        {
+          maxExecutionRows: 1000,
+          maxLookupKeysPerBatch: 1000,
+          maxLookupBatches: 10,
+        },
+      )
+    ).unwrap();
+
+    expect(result).toEqual([{ id: "ord_2" }, { id: "ord_3" }, { id: "ord_4" }]);
+  });
+
   it("executes WITH nodes via local cte materialization", async () => {
     const schema = buildEntitySchema({
       users: {
@@ -709,22 +840,23 @@ describe("query/local executor", () => {
 
     const providers = finalizeProviders({
       memory: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "memory",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(rows, fragment.request));
+          return Result.ok(scanRows(rows, request));
         },
       } satisfies TestProvider,
     });
@@ -769,10 +901,10 @@ describe("query/local executor", () => {
         kind: "project",
         convention: "local",
         input: {
-          id: "body_scan",
-          kind: "scan",
+          id: "body_cte_ref",
+          kind: "cte_ref",
           convention: "local",
-          table: "active_users",
+          name: "active_users",
           alias: "au",
           select: ["id", "email"],
           output: [{ name: "au.id" }, { name: "au.email" }],
@@ -834,22 +966,23 @@ describe("query/local executor", () => {
 
     const providers = finalizeProviders({
       memory: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "memory",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(tableRows[fragment.table] ?? [], fragment.request));
+          return Result.ok(scanRows(tableRows[request.table] ?? [], request));
         },
       } satisfies TestProvider,
     });
@@ -928,22 +1061,23 @@ describe("query/local executor", () => {
 
     const providers = finalizeProviders({
       memory: {
-        canExecute(fragment: ProviderFragment) {
-          return fragment.kind === "scan";
+        canExecute(rel: RelNode) {
+          return rel.kind === "scan";
         },
-        async compile(fragment: ProviderFragment) {
+        async compile(rel: RelNode) {
           return Result.ok({
             provider: "memory",
-            kind: fragment.kind,
-            payload: fragment,
+            kind: "rel",
+            payload: rel,
           });
         },
         async execute(plan) {
-          const fragment = plan.payload as ProviderFragment;
-          if (fragment.kind !== "scan") {
+          const rel = plan.payload as RelNode;
+          const request = toScanRequest(rel);
+          if (!request) {
             return Result.ok([]);
           }
-          return Result.ok(scanRows(rows, fragment.request));
+          return Result.ok(scanRows(rows, request));
         },
       } satisfies TestProvider,
     });

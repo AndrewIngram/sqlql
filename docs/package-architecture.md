@@ -4,7 +4,7 @@
 
 - `@tupl/foundation`: relational model primitives, diagnostics, and value helpers
 - `@tupl/provider-kit`: provider contracts, adapter-authoring helpers, entity binding, and reusable provider-shape helpers
-- `@tupl/schema-model`: schema DSL, normalization, and provider binding validation
+- `@tupl/schema-model`: schema DSL, core schema/query contracts, and explicit subpaths for DSL internals, normalization, mapping, planning, and validation
 - `@tupl/planner`: SQL parsing, lowering, and physical planning
 - `@tupl/runtime`: query execution, guardrails, constraints, and sessions
 - `@tupl/schema`: canonical application-facing surface for schema authors
@@ -26,8 +26,8 @@ Allowed dependency directions:
 Layer invariants:
 
 - `@tupl/foundation` owns the relational vocabulary, diagnostics, and value helpers. Callers may rely on its data model, but must not assume execution or schema-building behavior.
-- `@tupl/provider-kit` owns provider contracts, adapter-authoring helpers, entity handles, capability reporting, provider-shape analysis, and provider testing helpers. Callers may build providers against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
-- `@tupl/schema-model` owns logical schema authoring and normalization. Callers may rely on schema DSL behavior and normalized bindings, but must not assume planner or executor internals.
+- `@tupl/provider-kit` owns provider contracts, adapter-authoring helpers, entity handles, optional capability-analysis helpers, provider-shape analysis, and provider testing helpers. Callers may build providers against it, but must not assume how schemas are normalized or how runtime sessions are orchestrated.
+- `@tupl/schema-model` owns logical schema authoring and schema/query contracts. Its root stays focused on schema-builder entrypoints, query/request contracts, and simple table behavior; DSL-token detail, planning hooks, normalization, mapping, enum resolution, definition helpers, and validation live on explicit subpaths.
 - `@tupl/planner` owns SQL lowering and physical planning. Callers may rely on relational planning output, but must not assume runtime guardrail policy or provider execution semantics.
 - `@tupl/runtime` owns executable-schema construction, guardrails, query orchestration, and sessions. Callers may rely on execution contracts, but must not depend on planner-internal shapes beyond the published explain surface.
 - `@tupl/schema` owns the application-facing facade. It should expose the documented schema/runtime workflow, not mirror the full lower-layer export surface.
@@ -46,7 +46,11 @@ Cross-module rules:
 Consumer guidance:
 
 - Provider implementations should prefer `@tupl/provider-kit`, `@tupl/provider-kit/shapes`, and `@tupl/provider-kit/testing` for ordinary adapter work.
+- Ordinary schema consumers should stay on `@tupl/schema-model` root or, preferably, `@tupl/schema`; advanced tooling should opt into `@tupl/schema-model/dsl`, `@tupl/schema-model/planning`, `@tupl/schema-model/normalized`, or `@tupl/schema-model/table-planning` explicitly.
 - Ordinary SQL-like provider adapters should start with `createSqlRelationalProviderAdapter(...)`; lower-level `createRelationalProviderAdapter(...)` remains for unusual adapters that do not fit that shape.
+- The SQL-relational helper should keep provider roots close to manual provider authoring: top-level lifecycle/config fields, one nested `queryBackend` for backend query translation, and an `advanced` escape hatch only for real backend exceptions.
+- The primary provider contract is rel-first: `canExecute(rel)`, `compile(rel)`, optional `describeCompiledPlan(plan)`, and `execute(plan)`.
+- Provider authoring should prefer rel-shape and field-policy helpers over any second capability language.
 - `@tupl/foundation` remains available for primitive relational helpers, but it is not the primary extension boundary.
 - Provider implementations should not normally import `@tupl/schema-model`; that package owns schema internals, not the ordinary adapter-authoring surface.
 - Provider conformance belongs on `@tupl/provider-kit/testing`; internal test fixtures do not.

@@ -201,6 +201,10 @@ export interface TableMethods<
   TColumn extends string = string,
   TColumns extends TableColumns = any,
 > {
+  /**
+   * Ordinary table behavior lives here. Planning hooks intentionally live on the explicit
+   * table-planning subpath so schema authors do not need planner-aware method shapes by default.
+   */
   scan(
     request: TableScanRequest<TTable, TColumn, TColumns>,
     context: TContext,
@@ -213,18 +217,6 @@ export interface TableMethods<
     request: TableAggregateRequest<TTable, TColumn, TColumns>,
     context: TContext,
   ): Promise<QueryRow[]>;
-  planScan?(
-    request: import("./planning-contracts").PlannedScanRequest<TTable, TColumn, TColumns>,
-    context: TContext,
-  ): import("./planning-contracts").ScanPlanDecision<TTable, TColumn, TColumns>;
-  planLookup?(
-    request: import("./planning-contracts").PlannedLookupRequest<TTable, TColumn, TColumns>,
-    context: TContext,
-  ): import("./planning-contracts").LookupPlanDecision<TTable, TColumn, TColumns>;
-  planAggregate?(
-    request: import("./planning-contracts").PlannedAggregateRequest<TTable, TColumn, TColumns>,
-    context: TContext,
-  ): import("./planning-contracts").AggregatePlanDecision<TTable, TColumn, TColumns>;
 }
 
 export type TableMethodsMap<TContext = unknown> = Record<

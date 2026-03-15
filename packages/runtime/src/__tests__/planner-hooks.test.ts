@@ -12,6 +12,7 @@ import {
   type TableLookupRequest,
   type TableScanRequest,
 } from "@tupl/schema-model";
+import type { TablePlanningMethodsForSchema } from "@tupl/schema-model/table-planning";
 import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
@@ -54,7 +55,7 @@ describe("query/planner-hooks", () => {
           };
         },
       },
-    });
+    } satisfies TablePlanningMethodsForSchema<typeof schema, typeof EMPTY_CONTEXT>);
 
     const result = await queryWithMethods({
       schema,
@@ -138,7 +139,7 @@ describe("query/planner-hooks", () => {
           };
         },
       },
-    });
+    } satisfies TablePlanningMethodsForSchema<typeof schema, typeof EMPTY_CONTEXT>);
 
     const result = await queryWithMethods({
       schema,
@@ -184,7 +185,7 @@ describe("query/planner-hooks", () => {
           };
         },
       },
-    });
+    } satisfies TablePlanningMethodsForSchema<typeof schema, typeof EMPTY_CONTEXT>);
 
     const result = await queryWithMethods({
       schema,
@@ -235,7 +236,7 @@ describe("query/planner-hooks", () => {
           };
         },
       },
-    });
+    } satisfies TablePlanningMethodsForSchema<typeof schema, typeof EMPTY_CONTEXT>);
 
     const result = await queryWithMethods({
       schema,
@@ -285,7 +286,7 @@ describe("query/planner-hooks", () => {
           };
         },
       },
-    });
+    } satisfies TablePlanningMethodsForSchema<typeof schema, typeof EMPTY_CONTEXT>);
 
     const result = await queryWithMethods({
       schema,

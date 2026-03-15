@@ -41,6 +41,64 @@ export function buildScanStep(
   return id;
 }
 
+export function buildCteRefStep(
+  state: PlanBuildState,
+  node: Extract<RelNode, { kind: "cte_ref" }>,
+  scopeId: string,
+): string {
+  const id = nextPlanId(state, "scan");
+  state.steps.push({
+    id,
+    kind: "scan",
+    dependsOn: [],
+    summary: `Read CTE ${node.alias ?? node.name} (${node.name})`,
+    phase: "fetch",
+    operation: {
+      name: "cte_ref",
+      details: {
+        name: node.name,
+        alias: node.alias ?? node.name,
+      },
+    },
+    request: {
+      select: node.select,
+      ...(node.where ? { where: node.where } : {}),
+      ...(node.orderBy ? { orderBy: node.orderBy } : {}),
+      ...(node.limit != null ? { limit: node.limit } : {}),
+      ...(node.offset != null ? { offset: node.offset } : {}),
+    },
+    outputs: node.output.map((column) => column.name),
+    sqlOrigin: "FROM",
+    scopeId,
+  });
+  return id;
+}
+
+export function buildValuesStep(
+  state: PlanBuildState,
+  node: Extract<RelNode, { kind: "values" }>,
+  scopeId: string,
+): string {
+  const id = nextPlanId(state, "projection");
+  state.steps.push({
+    id,
+    kind: "projection",
+    dependsOn: [],
+    summary: "Materialize literal rows",
+    phase: "fetch",
+    operation: {
+      name: "values",
+      details: {
+        rowCount: node.rows.length,
+      },
+    },
+    outputs: node.output.map((column) => column.name),
+    sqlOrigin: "SELECT",
+    scopeId,
+  });
+  return id;
+}
+
 export function buildFilterStep(
   state: PlanBuildState,
   node: Extract<RelNode, { kind: "filter" }>,
@@ -234,31 +292,6 @@ export function buildLimitOffsetStep(
     },
     outputs: node.output.map((column) => column.name),
     sqlOrigin: "ORDER BY",
-    scopeId,
-  });
-  return id;
-}
-
-export function buildSqlStep(
-  state: PlanBuildState,
-  node: Extract<RelNode, { kind: "sql" }>,
-  scopeId: string,
-): string {
-  const id = nextPlanId(state, "remote_fragment");
-  state.steps.push({
-    id,
-    kind: "remote_fragment",
-    dependsOn: [],
-    summary: "Execute SQL-shaped relational fragment",
-    phase: "fetch",
-    operation: {
-      name: "provider_fragment",
-      details: { fragment: "sql" },
-    },
-    request: {
-      tables: node.tables,
-    },
-    sqlOrigin: "SELECT",
     scopeId,
   });
   return id;

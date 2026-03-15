@@ -1,6 +1,7 @@
+import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
-import { type ProviderFragment, type QueryRow, type TableScanRequest } from "@tupl/provider-kit";
+import { type QueryRow, type TableScanRequest } from "@tupl/provider-kit";
 import type { RelNode } from "@tupl/foundation";
 import { createKyselyProvider, type KyselyDatabaseLike } from "../index";
 
@@ -203,6 +204,34 @@ function createMockKyselyDb(
   return { db, calls };
 }
 
+function buildProjectedScanRel(input: {
+  provider: string;
+  table: string;
+  select: string[];
+  where?: TableScanRequest["where"];
+}): RelNode {
+  return {
+    id: `project_${input.table}`,
+    kind: "project",
+    convention: `provider:${input.provider}`,
+    input: {
+      id: `scan_${input.table}`,
+      kind: "scan",
+      convention: `provider:${input.provider}`,
+      table: input.table,
+      select: input.select,
+      output: input.select.map((name) => ({ name })),
+      ...(input.where ? { where: input.where } : {}),
+    },
+    columns: input.select.map((column) => ({
+      kind: "column" as const,
+      source: { column },
+      output: column,
+    })),
+    output: input.select.map((name) => ({ name })),
+  };
+}
+
 function buildJoinProjectRel(): RelNode {
   return {
     id: "project_1",
@@ -283,10 +312,10 @@ function buildWithWindowRel(): RelNode {
         kind: "window",
         convention: "provider:dbProvider",
         input: {
-          id: "scan_cte",
-          kind: "scan",
+          id: "cte_ref_cte",
+          kind: "cte_ref",
           convention: "provider:dbProvider",
-          table: "vendor_totals",
+          name: "vendor_totals",
           alias: "vt",
           select: ["total_cents", "email"],
           output: [{ name: "total_cents" }, { name: "email" }],
@@ -397,14 +426,14 @@ describe("kysely adapter", () => {
       where: [{ op: "eq", column: "user_id", value: "u1" }],
     };
 
-    const scanFragment: ProviderFragment = {
-      kind: "scan",
+    const scanRel: RelNode = buildProjectedScanRel({
       provider: "dbProvider",
       table: "orders",
-      request: scanRequest,
-    };
+      select: scanRequest.select,
+      where: scanRequest.where,
+    });
     const scanContext = { orgId: "org_1", db };
-    const scanPlan = (await provider.compile(scanFragment, scanContext)).unwrap();
+    const scanPlan = (await provider.compile(scanRel, scanContext)).unwrap();
     const scanRows = (await provider.execute(scanPlan, scanContext)).unwrap();
     expect(scanRows).toEqual([{ id: "o1", user_id: "u1" }]);
 
@@ -426,6 +455,23 @@ describe("kysely adapter", () => {
     expect(whereColumns).toContain("orders_raw.org_id");
     expect(whereColumns).toContain("orders_raw.user_id");
     expect(whereColumns).toContain("orders_raw.id");
+
+    const missingLookup = await provider.lookupMany(
+      {
+        table: "missing",
+        key: "id",
+        keys: ["o1"],
+        select: ["id"],
+      },
+      scanContext,
+    );
+    expect(Result.isError(missingLookup)).toBe(true);
+    expect(Result.isError(missingLookup) ? missingLookup.error : null).toMatchObject({
+      _tag: "TuplProviderBindingError",
+      provider: "kysely",
+      table: "missing",
+      message: "Unknown Kysely entity config: missing",
+    });
   });
 
   it("fails clearly when a context-resolved db binding is missing at runtime", async () => {
@@ -442,22 +488,37 @@ describe("kysely adapter", () => {
 
     const plan = (
       await provider.compile(
-        {
-          kind: "scan",
+        buildProjectedScanRel({
           provider: "dbProvider",
           table: "orders",
-          request: {
-            table: "orders",
-            select: ["id"],
-          },
-        },
+          select: ["id"],
+        }),
         {},
       )
     ).unwrap();
 
-    await expect(
-      Promise.resolve(provider.execute(plan, {})).then((result) => result.unwrap()),
-    ).rejects.toThrow(
+    const result = await provider.execute(plan, {});
+
+    expect(Result.isError(result)).toBe(true);
+    expect(Result.isError(result) ? result.error.message : "").toContain(
+      "Kysely provider runtime binding did not resolve to a valid database instance.",
+    );
+
+    if (!provider.lookupMany) {
+      throw new Error("Expected lookupMany to be implemented.");
+    }
+
+    const lookupResult = await provider.lookupMany(
+      {
+        table: "orders",
+        key: "id",
+        keys: ["o1"],
+        select: ["id"],
+      },
+      {},
+    );
+    expect(Result.isError(lookupResult)).toBe(true);
+    expect(Result.isError(lookupResult) ? lookupResult.error.message : "").toContain(
       "Kysely provider runtime binding did not resolve to a valid database instance.",
     );
   });
@@ -505,11 +566,7 @@ describe("kysely adapter", () => {
       },
     });
 
-    const relFragment: ProviderFragment = {
-      kind: "rel",
-      provider: "dbProvider",
-      rel: buildJoinProjectRel(),
-    };
+    const relFragment: RelNode = buildJoinProjectRel();
 
     expect(provider.canExecute(relFragment, {})).toBe(true);
     const plan = (await provider.compile(relFragment, {})).unwrap();
@@ -547,20 +604,11 @@ describe("kysely adapter", () => {
       output: [{ name: "id" }],
     };
 
-    const result = provider.canExecute(
-      {
-        kind: "rel",
-        provider: "kysely",
-        rel: withNode,
-      },
-      {},
-    );
+    const result = provider.canExecute(withNode, {});
 
     expect(result).toEqual(
       expect.objectContaining({
         supported: false,
-        routeFamily: "rel-advanced",
-        requiredAtoms: expect.arrayContaining(["cte.non_recursive"]),
         reason: "Rel fragment is not supported for single-query Kysely pushdown.",
       }),
     );
@@ -576,14 +624,7 @@ describe("kysely adapter", () => {
       },
     });
 
-    const result = provider.canExecute(
-      {
-        kind: "rel",
-        provider: "kysely",
-        rel: buildWithWindowRel(),
-      },
-      {},
-    );
+    const result = provider.canExecute(buildWithWindowRel(), {});
 
     expect(result).toBe(true);
   });
@@ -605,16 +646,7 @@ describe("kysely adapter", () => {
       },
     });
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "rel",
-          provider: "dbProvider",
-          rel: buildAggregateRel(),
-        },
-        {},
-      )
-    ).unwrap();
+    const plan = (await provider.compile(buildAggregateRel(), {})).unwrap();
     const rows = (await provider.execute(plan, {})).unwrap();
 
     expect(rows).toEqual([{ user_id: "u1", order_count: 2, total_spend: 4500 }]);
@@ -636,15 +668,11 @@ describe("kysely adapter", () => {
 
     const plan = (
       await provider.compile(
-        {
-          kind: "rel",
-          provider: "dbProvider",
-          rel: buildAggregateRel({
-            fn: "avg",
-            column: { alias: "o", column: "total_cents" },
-            as: "average_spend",
-          }),
-        },
+        buildAggregateRel({
+          fn: "avg",
+          column: { alias: "o", column: "total_cents" },
+          as: "average_spend",
+        }),
         {},
       )
     ).unwrap();

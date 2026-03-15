@@ -27,7 +27,7 @@ describe("query/unsupported", () => {
     );
   });
 
-  it("rejects correlated subqueries", async () => {
+  it("supports decorrelatable correlated EXISTS subqueries", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
@@ -43,16 +43,18 @@ describe("query/unsupported", () => {
                 SELECT u.id
                 FROM users u
                 WHERE u.id = o.user_id
+                  AND u.team_id = 'team_smb'
               )
+              ORDER BY o.id ASC
             `,
             EMPTY_CONTEXT,
           ),
-        ).rejects.toThrow("Correlated subqueries are not yet supported.");
+        ).resolves.toEqual([{ id: "ord_3" }]);
       },
     );
   });
 
-  it("rejects recursive CTEs", async () => {
+  it("supports decorrelatable correlated NOT EXISTS subqueries", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
@@ -62,21 +64,24 @@ describe("query/unsupported", () => {
         await expect(
           harness.runTupl(
             `
-              WITH RECURSIVE n AS (
-                SELECT id FROM orders
-                UNION ALL
-                SELECT id FROM n
+              SELECT o.id
+              FROM orders o
+              WHERE NOT EXISTS (
+                SELECT u.id
+                FROM users u
+                WHERE u.id = o.user_id
+                  AND u.team_id = 'team_smb'
               )
-              SELECT id FROM n
+              ORDER BY o.id ASC
             `,
             EMPTY_CONTEXT,
           ),
-        ).rejects.toThrow("Recursive CTEs are not yet supported.");
+        ).resolves.toEqual([{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_4" }]);
       },
     );
   });
 
-  it("rejects FROM subqueries", async () => {
+  it("supports decorrelatable correlated IN subqueries", async () => {
     await withQueryHarness(
       {
         schema: commerceSchema,
@@ -86,12 +91,158 @@ describe("query/unsupported", () => {
         await expect(
           harness.runTupl(
             `
-              SELECT s.id
-              FROM (SELECT id FROM orders) s
+              SELECT o.id
+              FROM orders o
+              WHERE o.user_id IN (
+                SELECT u.id
+                FROM users u
+                WHERE u.team_id = 'team_smb'
+                  AND u.id = o.user_id
+              )
+              ORDER BY o.id ASC
             `,
             EMPTY_CONTEXT,
           ),
-        ).rejects.toThrow("Unsupported FROM clause entry.");
+        ).resolves.toEqual([{ id: "ord_3" }]);
+      },
+    );
+  });
+
+  it("supports decorrelatable correlated NOT IN subqueries", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              SELECT o.id
+              FROM orders o
+              WHERE o.user_id NOT IN (
+                SELECT u.id
+                FROM users u
+                WHERE u.team_id = 'team_smb'
+                  AND u.id = o.user_id
+              )
+              ORDER BY o.id ASC
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).resolves.toEqual([{ id: "ord_1" }, { id: "ord_2" }, { id: "ord_4" }]);
+      },
+    );
+  });
+
+  it("supports decorrelatable correlated scalar aggregate predicates", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              SELECT o.id
+              FROM orders o
+              WHERE o.total_cents = (
+                SELECT MAX(i.total_cents)
+                FROM orders i
+                WHERE i.user_id = o.user_id
+              )
+              ORDER BY o.id ASC
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).resolves.toEqual([{ id: "ord_2" }, { id: "ord_3" }, { id: "ord_4" }]);
+      },
+    );
+  });
+
+  it("supports decorrelatable correlated scalar aggregate projections", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              SELECT
+                o.id,
+                (
+                  SELECT MAX(i.total_cents)
+                  FROM orders i
+                  WHERE i.user_id = o.user_id
+                ) AS user_max_total
+              FROM orders o
+              ORDER BY o.id ASC
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).resolves.toEqual([
+          { id: "ord_1", user_max_total: 1800 },
+          { id: "ord_2", user_max_total: 1800 },
+          { id: "ord_3", user_max_total: 2400 },
+          { id: "ord_4", user_max_total: 9900 },
+        ]);
+      },
+    );
+  });
+
+  it("rejects forward references across sibling CTEs", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              WITH first_cte AS (
+                SELECT id
+                FROM second_cte
+              ),
+              second_cte AS (
+                SELECT id
+                FROM orders
+              )
+              SELECT id
+              FROM first_cte
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).rejects.toThrow("Unknown table: second_cte");
+      },
+    );
+  });
+
+  it("rejects non-ROWS window frame modes", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        await expect(
+          harness.runTupl(
+            `
+              SELECT
+                id,
+                SUM(total_cents) OVER (
+                  PARTITION BY org_id
+                  ORDER BY created_at
+                  RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS running_total
+              FROM orders
+            `,
+            EMPTY_CONTEXT,
+          ),
+        ).rejects.toThrow("Unsupported window frame mode: RANGE");
       },
     );
   });

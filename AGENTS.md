@@ -1,5 +1,14 @@
 # AGENTS.md
 
+Use this file as the repo entrypoint, not the full knowledge base.
+
+Canonical docs:
+
+- [Architecture map](./ARCHITECTURE.md)
+- [Docs index](./docs/index.md)
+- [Design docs index](./docs/design-docs/index.md)
+- [Execution plans](./docs/exec-plans/active/README.md)
+
 ## Verification
 
 For any non-trivial code change, always run:
@@ -14,63 +23,42 @@ Do this before finalizing the work unless the user explicitly asks not to.
 Notes:
 
 - `pnpm typecheck` is the canonical workspace typecheck and must cover all packages (`pnpm -r typecheck`).
-- use `pnpm typecheck:root` only when you explicitly want the root tsconfig check by itself.
-- when you need local CI parity for verification, run `pnpm verify:ci`.
+- Use `pnpm typecheck:root` only when you explicitly want the root tsconfig check by itself.
+- Use `pnpm verify:ci` when you need local CI parity.
 
-## Code coverage
+## Current-State Policy
 
-When code coverage is needed:
+- Optimize for one canonical current-state implementation, not compatibility with historical local states.
+- Do not preserve or introduce compatibility bridges, migration shims, silent fallbacks, or dual behavior unless the user explicitly asks for that support.
+- Prefer one explicit codepath with fail-fast diagnostics.
 
-- run `pnpm test:coverage` locally
-- expect terminal coverage output plus `coverage/index.html` and `coverage/lcov.info`
-- in GitHub Actions, coverage is produced by the `Coverage Report` job in `.github/workflows/ci.yml`
-- the CI job merges coverage from the existing fast and slow Vitest jobs and uploads the `coverage-report` artifact
+The deeper design rationale lives in [core beliefs](./docs/design-docs/core-beliefs.md) and [planner invariants](./docs/design-docs/planner-invariants.md).
 
-## Reporting
+## Package Boundaries
 
-If any verification step fails:
+Keep the canonical package layering acyclic:
 
-- fix the failure when it is in scope
-- otherwise report the failure clearly in the final response
+- `@tupl/foundation`
+- `@tupl/provider-kit`
+- `@tupl/schema-model`
+- `@tupl/planner`
+- `@tupl/runtime`
+- `@tupl/schema`
 
-If a verification step cannot be run, state that explicitly and explain why.
+Within those six packages, only import downward along that layering.
 
-## Hard cut and refactor policy
+See [package architecture](./docs/package-architecture.md) for the detailed contract.
 
-- This application currently has no external installed user base; optimize for one canonical current-state implementation, not compatibility with historical local states.
-- Do not preserve or introduce compatibility bridges, migration shims, fallback paths, compact adapters, or dual behavior for old local states unless the user explicitly asks for that support.
-- Prefer:
-- one canonical current-state codepath
-- fail-fast diagnostics
-- explicit recovery steps over:
-- automatic migration
-- compatibility glue
-- silent fallbacks
-- "temporary" second paths
-- If temporary migration or compatibility code is introduced for debugging or a narrowly scoped transition, it must be called out in the same diff with:
-- why it exists
-- why the canonical path is insufficient
-- exact deletion criteria
-- the ADR/task that tracks its removal
-- Default stance across the app: delete old-state compatibility code rather than carrying it forward.
+## Workflow Rules
 
-## Package boundaries
+- Substantial architectural work should start with a checked-in active execution plan under [`docs/exec-plans/active`](./docs/exec-plans/active/README.md).
+- Completed architectural work should update the relevant durable design docs in the same branch and move the plan to [`docs/exec-plans/completed`](./docs/exec-plans/completed).
+- Mechanical enforcement for “plan coverage by diff” is intentionally deferred for now and tracked in [tech debt](./docs/exec-plans/tech-debt-tracker.md).
+- Be suspicious of casts. They are often a sign that a boundary or helper is failing to preserve the right type information.
+- Keep casts only when they are clearly narrowing something the type system cannot express directly; otherwise prefer fixing the owning type surface.
 
-- Keep the canonical package layering acyclic:
-  - `@tupl/foundation`
-  - `@tupl/provider-kit`
-  - `@tupl/schema-model`
-  - `@tupl/planner`
-  - `@tupl/runtime`
-  - `@tupl/schema`
-- Within those six packages, only import downward along that layering.
-- Application-facing docs and examples should use `@tupl/schema` plus first-party provider packages unless a lower-level package is explicitly required for adapter-authoring or internal tooling.
-- Do not introduce new `@tupl/core` or `@tupl-internal/*` references.
+## Repo-Local Skills
 
-## Skills
-
-### Available skills
-
-- `better-result`: Use when migrating library code from thrown or rejected error flows to typed Result-based flows with better-result. (file: `/Users/andrewingram/Code/tupl/.agents/skills/better-result/SKILL.md`)
-- `security-audit`: Findings-first security auditing for TypeScript or Node libraries and runtimes exposed to untrusted or public interfaces. (file: `/Users/andrewingram/Code/tupl/.agents/skills/security-audit/SKILL.md`)
-- `typescript`: Use when changing TypeScript types, refactoring signatures, or reviewing typing style. Prefer inference for internal functions and locals; keep explicit return types only when they carry API intent or are required for correctness. (file: `/Users/andrewingram/Code/tupl/.agents/skills/typescript/SKILL.md`)
+- [`better-result`](./.agents/skills/better-result/SKILL.md): migrate expected library failures to typed `Result` flows.
+- [`software-design-philosophy`](./.agents/skills/software-design-philosophy/SKILL.md): keep modules deep, hide complexity, avoid shallow interfaces.
+- [`typescript`](./.agents/skills/typescript/SKILL.md): prefer inference for internal code; keep explicit return types only when they carry API intent.

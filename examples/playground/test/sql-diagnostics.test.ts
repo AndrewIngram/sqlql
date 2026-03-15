@@ -39,6 +39,6 @@ describe("playground/sql-diagnostics", () => {
     if (compiled.ok) {
       throw new Error("Expected compile failure.");
     }
-    expect(compiled.issues[0]).toBe("Unknown column: o.missing_column");
+    expect(compiled.issues[0]).toBe("Unknown column in relational plan: my_orders.missing_column");
   });
 });

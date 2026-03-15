@@ -1,14 +1,9 @@
 import { Result, type Result as BetterResult } from "better-result";
 
-import type {
-  FragmentProvider,
-  LookupProvider,
-  Provider,
-  ProviderOperationResult,
-} from "./contracts";
+import type { ProviderOperationResult } from "./contracts";
 
 /**
- * Provider operations centralize Result handling and capability predicates for provider contracts.
+ * Provider operations centralize Result handling and capability predicates for adapter contracts.
  */
 export const AdapterResult = Result;
 export type AdapterResult<T, E = Error> = BetterResult<T, E>;
@@ -23,21 +18,4 @@ export function unwrapProviderOperationResult<T, E>(outcome: ProviderOperationRe
   }
 
   return outcome.value;
-}
-
-export function supportsFragmentExecution<TContext>(
-  provider: Provider<TContext>,
-): provider is FragmentProvider<TContext> {
-  return (
-    "compile" in provider &&
-    typeof provider.compile === "function" &&
-    "execute" in provider &&
-    typeof provider.execute === "function"
-  );
-}
-
-export function supportsLookupMany<TContext>(
-  provider: Provider<TContext>,
-): provider is LookupProvider<TContext> {
-  return "lookupMany" in provider && typeof provider.lookupMany === "function";
 }

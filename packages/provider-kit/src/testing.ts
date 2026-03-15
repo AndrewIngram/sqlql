@@ -1,11 +1,10 @@
-import { stringifyUnknownValue, type QueryRow } from "@tupl/foundation";
+import { stringifyUnknownValue, type QueryRow, type RelNode } from "@tupl/foundation";
 
 import {
   normalizeCapability,
   unwrapProviderOperationResult,
-  type FragmentProvider,
+  type FragmentProviderAdapter,
   type ProviderCapabilityReport,
-  type ProviderFragment,
 } from "./index";
 
 export interface ProviderConformanceCase {
@@ -15,18 +14,14 @@ export interface ProviderConformanceCase {
 
 export interface ProviderConformanceOptions<
   TContext,
-  TProvider extends FragmentProvider<TContext>,
+  TProvider extends FragmentProviderAdapter<TContext>,
   TBinding = void,
 > {
   provider: TProvider | ((binding: TBinding) => TProvider);
   providerBinding?: TBinding;
   context: TContext;
-  scan: {
-    fragment: Extract<ProviderFragment, { kind: "scan" }>;
-    expectedRows: QueryRow[];
-  };
   rel: {
-    fragment: Extract<ProviderFragment, { kind: "rel" }>;
+    node: RelNode;
     expectedRows: QueryRow[];
   };
 }
@@ -37,7 +32,7 @@ export interface ProviderConformanceOptions<
  */
 export function createProviderConformanceCases<
   TContext,
-  TProvider extends FragmentProvider<TContext>,
+  TProvider extends FragmentProviderAdapter<TContext>,
   TBinding = void,
 >(options: ProviderConformanceOptions<TContext, TProvider, TBinding>): ProviderConformanceCase[] {
   const resolveProvider = () =>
@@ -47,20 +42,11 @@ export function createProviderConformanceCases<
 
   return [
     {
-      name: "executes scan fragments",
-      async run() {
-        const provider = resolveProvider();
-        await assertFragmentSupported(provider, options.scan.fragment, options.context);
-        const rows = await executeFragment(provider, options.scan.fragment, options.context);
-        assertRowsEqual("scan fragment", rows, options.scan.expectedRows);
-      },
-    },
-    {
       name: "executes relational fragments",
       async run() {
         const provider = resolveProvider();
-        await assertFragmentSupported(provider, options.rel.fragment, options.context);
-        const rows = await executeFragment(provider, options.rel.fragment, options.context);
+        await assertRelSupported(provider, options.rel.node, options.context);
+        const rows = await executeRel(provider, options.rel.node, options.context);
         assertRowsEqual("rel fragment", rows, options.rel.expectedRows);
       },
     },
@@ -68,11 +54,11 @@ export function createProviderConformanceCases<
       name: "preserves projected row shape for relational fragments",
       async run() {
         const provider = resolveProvider();
-        const rows = await executeFragment(provider, options.rel.fragment, options.context);
+        const rows = await executeRel(provider, options.rel.node, options.context);
         const expectedKeys =
           Object.keys(options.rel.expectedRows[0] ?? {}).length > 0
             ? Object.keys(options.rel.expectedRows[0] ?? {})
-            : options.rel.fragment.rel.output.map((column) => column.name);
+            : options.rel.node.output.map((column) => column.name);
 
         for (const row of rows) {
           const actualKeys = Object.keys(row);
@@ -95,28 +81,26 @@ export function createProviderConformanceCases<
   ];
 }
 
-async function assertFragmentSupported<TContext>(
-  provider: FragmentProvider<TContext>,
-  fragment: ProviderFragment,
+async function assertRelSupported<TContext>(
+  provider: FragmentProviderAdapter<TContext>,
+  rel: RelNode,
   context: TContext,
 ) {
-  const capability = normalizeCapability(
-    await Promise.resolve(provider.canExecute(fragment, context)),
-  );
+  const capability = normalizeCapability(await Promise.resolve(provider.canExecute(rel, context)));
   if (!capabilitySupported(capability)) {
     throw new Error(
-      `Provider ${provider.name} reported unsupported fragment ${fragment.kind}: ${describeCapability(capability)}.`,
+      `Provider ${provider.name} reported unsupported rel: ${describeCapability(capability)}.`,
     );
   }
 }
 
-async function executeFragment<TContext>(
-  provider: FragmentProvider<TContext>,
-  fragment: ProviderFragment,
+async function executeRel<TContext>(
+  provider: FragmentProviderAdapter<TContext>,
+  rel: RelNode,
   context: TContext,
 ): Promise<QueryRow[]> {
   const compiled = unwrapProviderOperationResult(
-    await Promise.resolve(provider.compile(fragment, context)),
+    await Promise.resolve(provider.compile(rel, context)),
   );
   return unwrapProviderOperationResult(await Promise.resolve(provider.execute(compiled, context)));
 }
@@ -131,9 +115,6 @@ function describeCapability(capability: boolean | ProviderCapabilityReport): str
   }
   if (capability.reason) {
     return capability.reason;
-  }
-  if (capability.missingAtoms?.length) {
-    return `missing atoms ${capability.missingAtoms.join(", ")}`;
   }
   return "unsupported";
 }

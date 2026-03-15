@@ -2,18 +2,26 @@ import Database from "better-sqlite3";
 
 import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
-import { stringifyUnknownValue, type DataEntityColumnMap } from "@tupl/foundation";
+import {
+  stringifyUnknownValue,
+  type DataEntityColumnMap,
+  type RelNode,
+  type RelScanNode,
+} from "@tupl/foundation";
 import {
   bindProviderEntities,
   createDataEntityHandle,
-  type Provider,
-  type ProviderFragment,
-  type ProviderMap,
+  extractSimpleRelScanRequest,
+  type ProviderAdapter,
+  type ProvidersMap,
 } from "@tupl/provider-kit";
+import type {
+  LookupManyCapableProviderAdapter,
+  ProviderLookupManyRequest,
+} from "@tupl/provider-kit/shapes";
 import {
   type ConstraintValidationOptions,
   createExecutableSchema,
-  type ExecutableSchemaQueryInput,
   type ExecutableSchema,
   type ExplainResult,
   type QueryGuardrails,
@@ -25,29 +33,30 @@ import {
 } from "@tupl/runtime/session";
 import {
   createSchemaBuilder,
-  getNormalizedTableBinding,
-  isNormalizedSourceColumnBinding,
   toSqlDDL,
-  type AggregatePlanDecision,
-  type LookupPlanDecision,
-  type NormalizedColumnBinding,
-  type PlannedAggregateRequest,
-  type PlannedLookupRequest,
-  type PlannedScanRequest,
   type QueryRow,
   type ScanFilterClause,
   type ScanOrderBy,
-  type ScanPlanDecision,
-  type SchemaColumnLensDefinition,
   type SchemaDefinition,
   type TableAggregateMetric,
   type TableAggregateRequest,
   type TableColumnDefinition,
   type TableLookupRequest,
-  type TableMethodsMap,
-  type TableName,
   type TableScanRequest,
 } from "@tupl/schema-model";
+import type { SchemaColumnLensDefinition } from "@tupl/schema-model/dsl";
+import type { TablePlanningMethodsMap } from "@tupl/schema-model/table-planning";
+import { isNormalizedSourceColumnBinding } from "@tupl/schema-model/mapping";
+import type { NormalizedColumnBinding, TableName } from "@tupl/schema-model/normalized";
+import { getNormalizedTableBinding } from "@tupl/schema-model/normalization";
+import type {
+  AggregatePlanDecision,
+  LookupPlanDecision,
+  PlannedAggregateRequest,
+  PlannedLookupRequest,
+  PlannedScanRequest,
+  ScanPlanDecision,
+} from "@tupl/schema-model/planning";
 
 import { aggregateArrayRows, scanArrayRows } from "./methods";
 
@@ -58,36 +67,63 @@ import { aggregateArrayRows, scanArrayRows } from "./methods";
 type ProviderInput<TContext> = {
   name?: string;
   entities?: Record<string, unknown>;
-  routeFamilies?: readonly string[];
-  capabilityAtoms?: readonly string[];
   fallbackPolicy?: unknown;
-  canExecute(fragment: ProviderFragment, context: TContext): unknown;
-  estimate?(fragment: ProviderFragment, context: TContext): unknown;
-  compile?(fragment: ProviderFragment, context: TContext): unknown;
+  canExecute(rel: RelNode, context: TContext): unknown;
+  estimate?(rel: RelNode, context: TContext): unknown;
+  compile?(rel: RelNode, context: TContext): unknown;
+  describeCompiledPlan?(plan: unknown, context: TContext): unknown;
   execute?(plan: unknown, context: TContext): unknown;
-  lookupMany?(request: unknown, context: TContext): unknown;
+} & Partial<LookupManyCapableProviderAdapter<TContext>>;
+
+type TestExecutableSchema<TContext, TSchema extends SchemaDefinition> = Omit<
+  ExecutableSchema<TContext, TSchema>,
+  "query" | "explain"
+> & {
+  query(input: Parameters<ExecutableSchema<TContext, TSchema>["query"]>[0]): Promise<QueryRow[]>;
+  queryResult: ExecutableSchema<TContext, TSchema>["query"];
+  explain(
+    input: Parameters<ExecutableSchema<TContext, TSchema>["explain"]>[0],
+  ): Promise<ExplainResult>;
+  explainResult: ExecutableSchema<TContext, TSchema>["explain"];
 };
 
-type UnwrappedExecutableSchema<
-  TContext,
-  TSchema extends SchemaDefinition = SchemaDefinition,
-> = Omit<ExecutableSchema<TContext, TSchema>, "query" | "explain"> & {
-  query(input: ExecutableSchemaQueryInput<TContext>): Promise<QueryRow[]>;
-  explain(input: ExecutableSchemaQueryInput<TContext>): ExplainResult;
-};
+function augmentExecutableSchema<TContext, TSchema extends SchemaDefinition>(
+  executableSchema: ExecutableSchema<TContext, TSchema>,
+): TestExecutableSchema<TContext, TSchema> {
+  const queryResult = executableSchema.query.bind(executableSchema);
+  const explainResult = executableSchema.explain.bind(executableSchema);
+
+  return Object.assign(executableSchema, {
+    query(input: Parameters<typeof queryResult>[0]) {
+      return queryResult(input).then(unwrapResult);
+    },
+    queryResult,
+    explain(input: Parameters<typeof explainResult>[0]) {
+      return explainResult(input).then(unwrapResult);
+    },
+    explainResult,
+  }) as TestExecutableSchema<TContext, TSchema>;
+}
+
+function unwrapResult<T, E>(result: import("better-result").Result<T, E>) {
+  if (Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
+}
 
 export function finalizeProviders<TContext>(
   providers: Record<string, ProviderInput<TContext>>,
-): Record<string, Provider<TContext>> {
+): Record<string, ProviderAdapter<TContext>> {
   for (const [providerName, adapter] of Object.entries(providers)) {
-    const boundAdapter = adapter as Provider<TContext>;
+    const boundAdapter = adapter as ProviderAdapter<TContext>;
     if (!boundAdapter.name) {
       boundAdapter.name = providerName;
     }
     bindProviderEntities(boundAdapter);
   }
 
-  return providers as Record<string, Provider<TContext>>;
+  return providers as Record<string, ProviderAdapter<TContext>>;
 }
 
 function toEntityColumns(
@@ -230,12 +266,12 @@ function getCalculatedColumnOptions(
 export function createExecutableSchemaFromProviders<TContext, TSchema extends SchemaDefinition>(
   schema: TSchema,
   providers: Record<string, ProviderInput<TContext>>,
-): UnwrappedExecutableSchema<TContext> {
+) {
   const providerEntries = Object.entries(providers);
   const singleProviderName = providerEntries.length === 1 ? providerEntries[0]?.[0] : undefined;
 
   for (const [providerName, adapter] of providerEntries) {
-    const boundAdapter = adapter as Provider<TContext>;
+    const boundAdapter = adapter as ProviderAdapter<TContext>;
     if (!boundAdapter.name) {
       boundAdapter.name = providerName;
     }
@@ -289,7 +325,7 @@ export function createExecutableSchemaFromProviders<TContext, TSchema extends Sc
     if (!adapter) {
       throw new Error(`No provider registered for table ${tableName}: ${providerName}`);
     }
-    const boundAdapter = adapter as Provider<TContext>;
+    const boundAdapter = adapter as ProviderAdapter<TContext>;
 
     if (!boundAdapter.entities?.[tableName]) {
       boundAdapter.entities ??= {};
@@ -357,62 +393,70 @@ export function createExecutableSchemaFromProviders<TContext, TSchema extends Sc
     });
   }
 
-  return withUnwrappedExecutableSchema(unwrapResult(createExecutableSchema(builder)));
+  return augmentExecutableSchema(unwrapResult(createExecutableSchema(builder)));
 }
 
 export function createMethodsProvider<TContext>(
   schema: SchemaDefinition,
-  methods: TableMethodsMap<TContext>,
+  methods: TablePlanningMethodsMap<TContext>,
   providerName = "memory",
-): Provider<TContext> {
-  const provider: Provider<TContext> = {
+): ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
+  const adapter: ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> = {
     name: providerName,
     entities: {},
-    canExecute(fragment) {
-      switch (fragment.kind) {
-        case "scan":
-          return !!methods[fragment.table]?.scan;
-        case "aggregate":
-          return !!methods[fragment.table]?.aggregate;
-        case "rel":
-          return false;
-        default:
-          return false;
+    canExecute(rel) {
+      const executable = extractMethodsExecutableRel(rel);
+      if (!executable) {
+        return false;
       }
+
+      const method = methods[executable.table];
+      if (!method) {
+        return false;
+      }
+
+      return executable.kind === "scan" ? !!method.scan : !!method.aggregate;
     },
-    async compile(fragment) {
+    async compile(rel) {
       return Result.ok({
         provider: providerName,
-        kind: fragment.kind,
-        payload: fragment,
+        kind: "rel",
+        payload: rel,
       });
     },
     async execute(plan, context) {
-      const fragment = plan.payload as ProviderFragment;
-      switch (fragment.kind) {
-        case "scan": {
-          const method = methods[fragment.table];
-          if (!method?.scan) {
-            return Result.err(
-              new Error(`No table methods registered for table: ${fragment.table}`),
-            );
-          }
-          return Result.ok(await executePlannedScan(method, fragment.request, context));
-        }
-        case "aggregate": {
-          const method = methods[fragment.table];
-          if (!method?.aggregate) {
-            return Result.err(
-              new Error(`No aggregate method registered for table: ${fragment.table}`),
-            );
-          }
-          return Result.ok(await executePlannedAggregate(method, fragment.request, context));
-        }
-        case "rel":
-          return Result.err(new Error("Methods-based provider does not support rel fragments."));
+      if (plan.kind !== "rel") {
+        return Result.err(new Error(`Unsupported methods provider compiled plan: ${plan.kind}`));
       }
+
+      const rel = plan.payload as RelNode;
+      const executable = extractMethodsExecutableRel(rel);
+      if (!executable) {
+        return Result.err(new Error("Methods-based provider does not support this rel fragment."));
+      }
+
+      const method = methods[executable.table];
+      if (!method) {
+        return Result.err(new Error(`No table methods registered for table: ${executable.table}`));
+      }
+
+      if (executable.kind === "scan") {
+        if (!method.scan) {
+          return Result.err(
+            new Error(`No table scan method registered for table: ${executable.table}`),
+          );
+        }
+        return Result.ok(await executePlannedScan(method, executable.request, context));
+      }
+
+      if (!method.aggregate) {
+        return Result.err(
+          new Error(`No aggregate method registered for table: ${executable.table}`),
+        );
+      }
+      return Result.ok(await executePlannedAggregate(method, executable.request, context));
     },
-    async lookupMany(request, context) {
+    async lookupMany(request: ProviderLookupManyRequest, context: TContext) {
       const method = methods[request.table];
       if (!method?.lookup) {
         return Result.ok([]);
@@ -436,22 +480,22 @@ export function createMethodsProvider<TContext>(
   };
 
   for (const tableName of Object.keys(schema.tables)) {
-    provider.entities![tableName] = createDataEntityHandle({
+    adapter.entities![tableName] = createDataEntityHandle({
       entity: tableName,
       provider: providerName,
-      providerInstance: provider,
+      providerInstance: adapter,
       columns: toEntityColumns(schema.tables[tableName]!.columns),
     });
   }
 
-  return bindProviderEntities(provider);
+  return bindProviderEntities(adapter);
 }
 
 export function createExecutableMethodsSchema<TContext, TSchema extends SchemaDefinition>(
   schema: TSchema,
-  methods: TableMethodsMap<TContext>,
+  methods: TablePlanningMethodsMap<TContext>,
   providerName = "memory",
-): UnwrappedExecutableSchema<TContext> {
+) {
   const provider = createMethodsProvider(schema, methods, providerName);
   const builder = createSchemaBuilder<TContext>();
 
@@ -470,11 +514,109 @@ export function createExecutableMethodsSchema<TContext, TSchema extends SchemaDe
     });
   }
 
-  return withUnwrappedExecutableSchema(unwrapResult(createExecutableSchema(builder)));
+  return augmentExecutableSchema(unwrapResult(createExecutableSchema(builder)));
+}
+
+function extractMethodsExecutableRel(rel: RelNode):
+  | {
+      kind: "scan";
+      table: string;
+      request: TableScanRequest;
+    }
+  | {
+      kind: "aggregate";
+      table: string;
+      request: TableAggregateRequest;
+    }
+  | null {
+  if (rel.kind === "scan") {
+    return {
+      kind: "scan",
+      table: rel.table,
+      request: toMethodsScanRequest(rel),
+    };
+  }
+
+  if (rel.kind !== "aggregate") {
+    return null;
+  }
+
+  const extracted = extractAggregateMethodsInput(rel.input);
+  if (!extracted) {
+    return null;
+  }
+
+  return {
+    kind: "aggregate",
+    table: extracted.scan.table,
+    request: {
+      table: extracted.scan.table,
+      ...(extracted.scan.alias ? { alias: extracted.scan.alias } : {}),
+      ...(extracted.where.length > 0 || (extracted.scan.where?.length ?? 0) > 0
+        ? {
+            where: [...(extracted.scan.where ?? []), ...extracted.where],
+          }
+        : {}),
+      ...(rel.groupBy.length > 0
+        ? {
+            groupBy: rel.groupBy.map((column) => column.column),
+          }
+        : {}),
+      metrics: rel.metrics.map((metric) => ({
+        fn: metric.fn,
+        as: metric.as,
+        ...(metric.distinct ? { distinct: true } : {}),
+        ...(metric.column ? { column: metric.column.column } : {}),
+      })),
+    },
+  };
+}
+
+function toMethodsScanRequest(scan: RelScanNode): TableScanRequest {
+  return {
+    table: scan.table,
+    ...(scan.alias ? { alias: scan.alias } : {}),
+    select: scan.select,
+    ...(scan.where ? { where: scan.where } : {}),
+    ...(scan.orderBy ? { orderBy: scan.orderBy } : {}),
+    ...(scan.limit != null ? { limit: scan.limit } : {}),
+    ...(scan.offset != null ? { offset: scan.offset } : {}),
+  };
+}
+
+function extractAggregateMethodsInput(node: RelNode): {
+  scan: RelScanNode;
+  where: ScanFilterClause[];
+} | null {
+  const where: ScanFilterClause[] = [];
+  let current = node;
+
+  while (current.kind === "filter") {
+    if (current.expr) {
+      return null;
+    }
+    if (current.where) {
+      where.push(...current.where);
+    }
+    current = current.input;
+  }
+
+  if (current.kind !== "scan") {
+    return null;
+  }
+
+  if (current.orderBy?.length || current.limit != null || current.offset != null) {
+    return null;
+  }
+
+  return {
+    scan: current,
+    where,
+  };
 }
 
 async function executePlannedScan<TContext>(
-  method: NonNullable<TableMethodsMap<TContext>[string]>,
+  method: NonNullable<TablePlanningMethodsMap<TContext>[string]>,
   request: TableScanRequest,
   context: TContext,
 ): Promise<QueryRow[]> {
@@ -506,7 +648,7 @@ async function executePlannedScan<TContext>(
 }
 
 async function executePlannedLookup<TContext>(
-  method: TableMethodsMap<TContext>[string],
+  method: TablePlanningMethodsMap<TContext>[string],
   request: TableLookupRequest,
   context: TContext,
 ): Promise<QueryRow[]> {
@@ -712,7 +854,7 @@ function splitLookupRequest(
 }
 
 async function executePlannedAggregate<TContext>(
-  method: NonNullable<TableMethodsMap<TContext>[string]>,
+  method: NonNullable<TablePlanningMethodsMap<TContext>[string]>,
   request: TableAggregateRequest,
   context: TContext,
 ): Promise<QueryRow[]> {
@@ -750,7 +892,7 @@ async function executePlannedAggregate<TContext>(
 
 export function queryWithMethods<TContext>(input: {
   schema: SchemaDefinition;
-  methods: TableMethodsMap<TContext>;
+  methods: TablePlanningMethodsMap<TContext>;
   context: TContext;
   sql: string;
   queryGuardrails?: Partial<QueryGuardrails>;
@@ -887,7 +1029,7 @@ function collectAggregateScanColumns(request: TableAggregateRequest): string[] {
 
 export function createMethodsSession<TContext>(input: {
   schema: SchemaDefinition;
-  methods: TableMethodsMap<TContext>;
+  methods: TablePlanningMethodsMap<TContext>;
   context: TContext;
   sql: string;
   queryGuardrails?: Partial<QueryGuardrails>;
@@ -912,11 +1054,11 @@ export function createMethodsSession<TContext>(input: {
 }
 
 export function createSessionFromExecutableSchema<TContext>(
-  executableSchema: UnwrappedExecutableSchema<TContext>,
+  executableSchema: ExecutableSchema<TContext> | TestExecutableSchema<TContext, SchemaDefinition>,
   input: ExecutableSchemaSessionInput<TContext>,
 ) {
   return unwrapResult(
-    createExecutableSchemaSession(executableSchema as unknown as ExecutableSchema<TContext>, input),
+    createExecutableSchemaSession(executableSchema as ExecutableSchema<TContext>, input),
   );
 }
 
@@ -942,7 +1084,7 @@ export function createQueryHarness<
 >(options: {
   schema: TSchema;
   rowsByTable: RowsByTable<TSchema>;
-  providers?: ProviderMap<TContext>;
+  providers?: ProvidersMap<TContext>;
 }): QueryHarness<TSchema, TContext> {
   const schema = options.schema;
   const rowsByTable = options.rowsByTable as Record<string, QueryRow[]>;
@@ -978,7 +1120,7 @@ export async function withQueryHarness<
   options: {
     schema: TSchema;
     rowsByTable: RowsByTable<TSchema>;
-    providers?: ProviderMap<TContext>;
+    providers?: ProvidersMap<TContext>;
   },
   fn: (harness: QueryHarness<TSchema, TContext>) => Promise<TResult>,
 ): Promise<TResult> {
@@ -1020,34 +1162,6 @@ function createControlDatabase<TSchema extends SchemaDefinition>(
   return db;
 }
 
-function unwrapResult<T, E>(result: Result<T, E>): T {
-  if (Result.isError(result)) {
-    throw result.error;
-  }
-
-  return result.value;
-}
-
-async function unwrapPromiseResult<T, E>(result: Promise<Result<T, E>>): Promise<T> {
-  return unwrapResult(await result);
-}
-
-function withUnwrappedExecutableSchema<TContext, TSchema extends SchemaDefinition>(
-  executableSchema: ExecutableSchema<TContext, TSchema>,
-): UnwrappedExecutableSchema<TContext, TSchema> {
-  const originalQuery = executableSchema.query.bind(executableSchema);
-  const originalExplain = executableSchema.explain.bind(executableSchema);
-
-  return Object.assign(executableSchema, {
-    query(input: Parameters<typeof originalQuery>[0]) {
-      return unwrapPromiseResult(originalQuery(input));
-    },
-    explain(input: Parameters<typeof originalExplain>[0]) {
-      return unwrapResult(originalExplain(input));
-    },
-  }) as UnwrappedExecutableSchema<TContext, TSchema>;
-}
-
 function quoteIdentifier(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
@@ -1066,31 +1180,40 @@ function normalizeSqliteValue(value: unknown): unknown {
 
 function createMemoryProvider<TContext>(
   rowsByTable: Record<string, QueryRow[]>,
-): Provider<TContext> {
+): ProviderAdapter<TContext> & LookupManyCapableProviderAdapter<TContext> {
   return {
     name: "memory",
-    canExecute(fragment) {
-      return fragment.kind === "scan";
+    canExecute(rel) {
+      return (
+        extractSimpleRelScanRequest(rel) !== null ||
+        extractMethodsExecutableRel(rel)?.kind === "aggregate"
+      );
     },
-    async compile(fragment) {
-      if (fragment.kind !== "scan") {
-        return Result.err(new Error(`Unsupported memory provider fragment: ${fragment.kind}`));
-      }
+    async compile(rel) {
       return Result.ok({
         provider: "memory",
-        kind: "scan",
-        payload: fragment,
+        kind: "rel",
+        payload: rel,
       });
     },
     async execute(plan) {
-      if (plan.kind !== "scan") {
+      if (plan.kind !== "rel") {
         return Result.err(new Error(`Unsupported memory provider compiled plan: ${plan.kind}`));
       }
 
-      const fragment = plan.payload as Extract<ProviderFragment, { kind: "scan" }>;
-      return Result.ok(scanRows(rowsByTable[fragment.table] ?? [], fragment.request));
+      const rel = plan.payload as RelNode;
+      const directScan = extractSimpleRelScanRequest(rel);
+      if (directScan) {
+        return Result.ok(scanRows(rowsByTable[directScan.table] ?? [], directScan));
+      }
+
+      const executable = extractMethodsExecutableRel(rel);
+      if (!executable || executable.kind !== "aggregate") {
+        return Result.err(new Error("Unsupported memory provider rel fragment."));
+      }
+      return Result.ok(aggregateArrayRows(rowsByTable[executable.table] ?? [], executable.request));
     },
-    async lookupMany(request) {
+    async lookupMany(request: ProviderLookupManyRequest) {
       const scanRequest: TableScanRequest = {
         table: request.table,
         select: request.select,

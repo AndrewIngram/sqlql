@@ -1,7 +1,7 @@
 import { describe, it } from "vitest";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
-import { type ProviderFragment, type QueryRow } from "@tupl/provider-kit";
+import { type QueryRow } from "@tupl/provider-kit";
 import {
   createProviderConformanceCases,
   type ProviderConformanceCase,
@@ -393,24 +393,66 @@ function createMockObjectionKnex(rowsByJoin: Map<string, QueryRow[]>): KnexLike 
   } as KnexLike;
 }
 
-function buildScanFragment(providerName: string): Extract<ProviderFragment, { kind: "scan" }> {
-  return {
-    kind: "scan",
-    provider: providerName,
-    table: "orders",
-    request: {
-      table: "orders",
-      select: ["id", "total_cents"],
-    },
-  };
+function buildProviderRel(providerName: string): RelNode {
+  return rewriteConventions(buildRel(), providerName);
 }
 
-function buildRelFragment(providerName: string): Extract<ProviderFragment, { kind: "rel" }> {
-  return {
-    kind: "rel",
-    provider: providerName,
-    rel: buildRel(),
-  };
+function rewriteConventions(rel: RelNode, providerName: string): RelNode {
+  const convention = `provider:${providerName}` as const;
+
+  switch (rel.kind) {
+    case "scan":
+      return { ...rel, convention };
+    case "project":
+    case "filter":
+    case "sort":
+    case "limit_offset":
+      return { ...rel, convention, input: rewriteConventions(rel.input, providerName) };
+    case "join":
+      return {
+        ...rel,
+        convention,
+        left: rewriteConventions(rel.left, providerName),
+        right: rewriteConventions(rel.right, providerName),
+      };
+    case "aggregate":
+    case "window":
+      return { ...rel, convention, input: rewriteConventions(rel.input, providerName) };
+    case "set_op":
+      return {
+        ...rel,
+        convention,
+        left: rewriteConventions(rel.left, providerName),
+        right: rewriteConventions(rel.right, providerName),
+      };
+    case "with":
+      return {
+        ...rel,
+        convention,
+        ctes: rel.ctes.map((cte) => ({
+          ...cte,
+          query: rewriteConventions(cte.query, providerName),
+        })),
+        body: rewriteConventions(rel.body, providerName),
+      };
+    case "repeat_union":
+      return {
+        ...rel,
+        convention,
+        seed: rewriteConventions(rel.seed, providerName),
+        iterative: rewriteConventions(rel.iterative, providerName),
+      };
+    case "correlate":
+      return {
+        ...rel,
+        convention,
+        left: rewriteConventions(rel.left, providerName),
+        right: rewriteConventions(rel.right, providerName),
+      };
+    case "cte_ref":
+    case "values":
+      return { ...rel, convention };
+  }
 }
 
 function registerConformanceSuite(title: string, cases: ProviderConformanceCase[]) {
@@ -420,12 +462,6 @@ function registerConformanceSuite(title: string, cases: ProviderConformanceCase[
     }
   });
 }
-
-const expectedScanRows = [
-  { id: "o1", total_cents: 1500 },
-  { id: "o2", total_cents: 3000 },
-  { id: "o3", total_cents: 700 },
-];
 
 const qualifiedOrdersScanRows = [
   { "orders.id": "o1", "orders.total_cents": 1500 },
@@ -495,12 +531,8 @@ describe("provider conformance", () => {
         },
       }),
       context: {},
-      scan: {
-        fragment: buildScanFragment("drizzle"),
-        expectedRows: expectedScanRows,
-      },
       rel: {
-        fragment: buildRelFragment("drizzle"),
+        node: buildProviderRel("drizzle"),
         expectedRows: expectedRelRows,
       },
     }),
@@ -564,12 +596,8 @@ describe("provider conformance", () => {
         },
       }),
       context: {},
-      scan: {
-        fragment: buildScanFragment("kysely"),
-        expectedRows: expectedScanRows,
-      },
       rel: {
-        fragment: buildRelFragment("kysely"),
+        node: buildProviderRel("kysely"),
         expectedRows: expectedRelRows,
       },
     }),
@@ -626,12 +654,8 @@ describe("provider conformance", () => {
         });
       })(),
       context: {},
-      scan: {
-        fragment: buildScanFragment("objection"),
-        expectedRows: expectedScanRows,
-      },
       rel: {
-        fragment: buildRelFragment("objection"),
+        node: buildProviderRel("objection"),
         expectedRows: expectedRelRows,
       },
     }),

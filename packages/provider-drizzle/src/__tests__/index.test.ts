@@ -1,7 +1,8 @@
+import { Result } from "better-result";
 import { describe, expect, it } from "vitest";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
-import { type ProviderFragment, type QueryRow } from "@tupl/provider-kit";
+import { type QueryRow, type ScanFilterClause } from "@tupl/provider-kit";
 import {
   createDrizzleProvider,
   impossibleCondition,
@@ -161,6 +162,34 @@ function createJoinCapableDb(
   };
 
   return { db, calls };
+}
+
+function buildProjectedScanRel(input: {
+  provider: string;
+  table: string;
+  select: string[];
+  where?: ScanFilterClause[];
+}) {
+  return {
+    id: `project_${input.table}`,
+    kind: "project" as const,
+    convention: `provider:${input.provider}` as const,
+    input: {
+      id: `scan_${input.table}`,
+      kind: "scan" as const,
+      convention: `provider:${input.provider}` as const,
+      table: input.table,
+      select: input.select,
+      output: input.select.map((name) => ({ name })),
+      ...(input.where ? { where: input.where } : {}),
+    },
+    columns: input.select.map((column) => ({
+      kind: "column" as const,
+      source: { column },
+      output: column,
+    })),
+    output: input.select.map((name) => ({ name })),
+  } satisfies RelNode;
 }
 
 function flattenSqlTokens(value: unknown): unknown[] {
@@ -629,10 +658,10 @@ function buildWithWindowRel(): RelNode {
             kind: "window",
             convention: "provider:drizzle",
             input: {
-              id: "scan_ranked_orders",
-              kind: "scan",
+              id: "cte_ref_ranked_orders",
+              kind: "cte_ref",
               convention: "provider:drizzle",
-              table: "ranked_orders",
+              name: "ranked_orders",
               alias: "ro",
               select: ["id", "total_cents"],
               output: [],
@@ -684,50 +713,26 @@ describe("drizzle adapter", () => {
       provider: "warehouse",
     });
 
-    const scanFragment: ProviderFragment = {
-      kind: "scan",
+    const scanRel: RelNode = buildProjectedScanRel({
       provider: "warehouse",
       table: "users",
-      request: {
-        table: "users",
-        select: ["id"],
-      },
-    };
-    expect(provider.canExecute(scanFragment, {})).toBe(true);
+      select: ["id"],
+    });
+    expect(provider.canExecute(scanRel, {})).toBe(true);
 
-    const unknownScan: ProviderFragment = {
-      ...scanFragment,
-      table: "missing",
-      request: {
-        table: "missing",
-        select: ["id"],
-      },
-    };
-    expect(provider.canExecute(unknownScan, {})).toBe(false);
-
-    const sqlRel: RelNode = {
-      id: "sql_1",
-      kind: "sql",
+    const unknownScan: RelNode = {
+      id: "scan_missing",
+      kind: "scan",
       convention: "provider:warehouse",
-      sql: "SELECT 1",
-      tables: ["users"],
-      output: [],
+      table: "missing",
+      select: ["id"],
+      output: [{ name: "id" }],
     };
-    const relFragment: ProviderFragment = {
-      kind: "rel",
-      provider: "warehouse",
-      rel: sqlRel,
-    };
-    expect(provider.canExecute(relFragment, {})).toEqual(
+    expect(provider.canExecute(unknownScan, {})).toEqual(
       expect.objectContaining({
         supported: false,
-        routeFamily: "rel-core",
-        reason: "rel fragment must not contain sql nodes.",
       }),
     );
-    await expect(
-      Promise.resolve(provider.compile(relFragment, {})).then((result) => result.unwrap()),
-    ).rejects.toThrow("Unsupported relational fragment for drizzle provider.");
   });
 
   it("derives columns from the table object when columns are omitted", async () => {
@@ -762,15 +767,11 @@ describe("drizzle adapter", () => {
 
     const plan = (
       await provider.compile(
-        {
-          kind: "scan",
+        buildProjectedScanRel({
           provider: "drizzle",
           table: "users",
-          request: {
-            table: "users",
-            select: ["user_id", "email"],
-          },
-        },
+          select: ["user_id", "email"],
+        }),
         {},
       )
     ).unwrap();
@@ -802,15 +803,11 @@ describe("drizzle adapter", () => {
 
     const plan = (
       await provider.compile(
-        {
-          kind: "scan",
+        buildProjectedScanRel({
           provider: "drizzle",
           table: "users",
-          request: {
-            table: "users",
-            select: ["id"],
-          },
-        },
+          select: ["id"],
+        }),
         { db },
       )
     ).unwrap();
@@ -834,24 +831,36 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "scan",
-          provider: "drizzle",
-          table: "users",
-          request: {
-            table: "users",
-            select: ["id"],
-          },
-        },
-        {},
-      )
-    ).unwrap();
+    const result = await provider.compile(
+      buildProjectedScanRel({
+        provider: "drizzle",
+        table: "users",
+        select: ["id"],
+      }),
+      {},
+    );
 
-    await expect(
-      Promise.resolve(provider.execute(plan, {})).then((result) => result.unwrap()),
-    ).rejects.toThrow(
+    expect(Result.isError(result)).toBe(true);
+    expect(Result.isError(result) ? result.error.message : "").toContain(
+      "Drizzle provider runtime binding did not resolve to a valid database instance.",
+    );
+
+    const lookupMany = provider.lookupMany?.bind(provider);
+    if (!lookupMany) {
+      throw new Error("Expected drizzle lookupMany to be defined.");
+    }
+
+    const lookupResult = await lookupMany(
+      {
+        table: "users",
+        key: "id",
+        keys: ["u1"],
+        select: ["id"],
+      },
+      {},
+    );
+    expect(Result.isError(lookupResult)).toBe(true);
+    expect(Result.isError(lookupResult) ? lookupResult.error.message : "").toContain(
       "Drizzle provider runtime binding did not resolve to a valid database instance.",
     );
   });
@@ -868,24 +877,16 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "scan",
-          provider: "drizzle",
-          table: "users",
-          request: {
-            table: "users",
-            select: ["id"],
-          },
-        },
-        {},
-      )
-    ).unwrap();
-
-    await expect(
-      Promise.resolve(provider.execute(plan, {})).then((result) => result.unwrap()),
-    ).rejects.toThrow(
+    const result = await provider.compile(
+      buildProjectedScanRel({
+        provider: "drizzle",
+        table: "users",
+        select: ["id"],
+      }),
+      {},
+    );
+    expect(Result.isError(result)).toBe(true);
+    expect(Result.isError(result) ? result.error.message : "").toContain(
       'Unable to derive columns for table "users". Provide an explicit columns map.',
     );
   });
@@ -1047,19 +1048,22 @@ describe("drizzle adapter", () => {
     expect(tokens).toContain("u1");
     expect(tokens).toContain("u3");
 
-    await expect(
-      Promise.resolve(
-        lookupMany(
-          {
-            table: "missing",
-            key: "id",
-            keys: ["u1"],
-            select: ["id"],
-          },
-          {},
-        ),
-      ).then((result) => result.unwrap()),
-    ).rejects.toThrow("Unknown drizzle table config: missing");
+    const missingLookup = await lookupMany(
+      {
+        table: "missing",
+        key: "id",
+        keys: ["u1"],
+        select: ["id"],
+      },
+      {},
+    );
+    expect(Result.isError(missingLookup)).toBe(true);
+    expect(Result.isError(missingLookup) ? missingLookup.error : null).toMatchObject({
+      _tag: "TuplProviderBindingError",
+      provider: "drizzle",
+      table: "missing",
+      message: "Unknown drizzle table config: missing",
+    });
   });
 
   it("infers dialect from table metadata and rejects mixed dialect providers", () => {
@@ -1122,10 +1126,10 @@ describe("drizzle adapter", () => {
         },
       ],
       body: {
-        id: "scan_2",
-        kind: "scan",
+        id: "cte_ref_2",
+        kind: "cte_ref",
         convention: "provider:drizzle",
-        table: "scoped_orders",
+        name: "scoped_orders",
         select: ["id"],
         output: [{ name: "id" }],
       },
@@ -1179,15 +1183,11 @@ describe("drizzle adapter", () => {
       select: (...args: Parameters<typeof withCapableDb.select>) => withCapableDb.select(...args),
     } satisfies DrizzleQueryExecutor;
 
-    expect(
-      await Promise.resolve(
-        provider.canExecute({ kind: "rel", provider: "drizzle", rel }, { db: withCapableDb }),
-      ),
-    ).toBe(true);
+    expect(await Promise.resolve(provider.canExecute(rel, { db: withCapableDb }))).toBe(true);
     await expect(
-      Promise.resolve(
-        provider.compile({ kind: "rel", provider: "drizzle", rel }, { db: withoutWithDb }),
-      ).then((result) => result.unwrap()),
+      Promise.resolve(provider.compile(rel, { db: withoutWithDb })).then((result) =>
+        result.unwrap(),
+      ),
     ).rejects.toThrow(
       'Drizzle database instance does not support required APIs for "with" rel pushdown.',
     );
@@ -1271,16 +1271,7 @@ describe("drizzle adapter", () => {
       output: [],
     };
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "rel",
-          provider: "drizzle",
-          rel,
-        },
-        {},
-      )
-    ).unwrap();
+    const plan = (await provider.compile(rel, {})).unwrap();
     const rows = (await provider.execute(plan, {})).unwrap();
 
     expect(rows).toEqual([
@@ -1394,18 +1385,9 @@ describe("drizzle adapter", () => {
       output: [],
     };
 
-    expect(provider.canExecute({ kind: "rel", provider: "drizzle", rel }, {})).toBe(true);
+    expect(provider.canExecute(rel, {})).toBe(true);
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "rel",
-          provider: "drizzle",
-          rel,
-        },
-        {},
-      )
-    ).unwrap();
+    const plan = (await provider.compile(rel, {})).unwrap();
     const rows = (await provider.execute(plan, {})).unwrap();
 
     expect(rows).toEqual([
@@ -1436,16 +1418,7 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "rel",
-          provider: "drizzle",
-          rel: buildAggregateRel(),
-        },
-        {},
-      )
-    ).unwrap();
+    const plan = (await provider.compile(buildAggregateRel(), {})).unwrap();
     const rows = (await provider.execute(plan, {})).unwrap();
 
     expect(rows).toEqual([{ user_id: "u1", order_count: 2, total_spend: 4500 }]);
@@ -1479,16 +1452,7 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "rel",
-          provider: "drizzle",
-          rel: buildSetOpRel(),
-        },
-        {},
-      )
-    ).unwrap();
+    const plan = (await provider.compile(buildSetOpRel(), {})).unwrap();
     const rows = (await provider.execute(plan, {})).unwrap();
 
     expect(rows).toEqual([{ id: "o1" }, { id: "o2" }]);
@@ -1524,16 +1488,7 @@ describe("drizzle adapter", () => {
       },
     });
 
-    const plan = (
-      await provider.compile(
-        {
-          kind: "rel",
-          provider: "drizzle",
-          rel: buildWithWindowRel(),
-        },
-        {},
-      )
-    ).unwrap();
+    const plan = (await provider.compile(buildWithWindowRel(), {})).unwrap();
     const rows = (await provider.execute(plan, {})).unwrap();
 
     expect(rows).toEqual([{ id: "o2", spend_rank: 1 }]);
@@ -1561,24 +1516,20 @@ describe("drizzle adapter", () => {
     const plan = (
       await provider.compile(
         {
-          kind: "rel",
-          provider: "drizzle",
-          rel: {
-            id: "project_orders",
-            kind: "project",
+          id: "project_orders",
+          kind: "project",
+          convention: "provider:drizzle",
+          input: {
+            id: "scan_orders",
+            kind: "scan",
             convention: "provider:drizzle",
-            input: {
-              id: "scan_orders",
-              kind: "scan",
-              convention: "provider:drizzle",
-              table: "orders",
-              alias: "o",
-              select: ["id"],
-              output: [],
-            },
-            columns: [{ source: { alias: "o", column: "id" }, output: "id" }],
+            table: "orders",
+            alias: "o",
+            select: ["id"],
             output: [],
           },
+          columns: [{ source: { alias: "o", column: "id" }, output: "id" }],
+          output: [],
         },
         {},
       )

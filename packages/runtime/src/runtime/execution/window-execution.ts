@@ -2,7 +2,7 @@ import { Result } from "better-result";
 
 import type { RelNode } from "@tupl/foundation";
 
-import { evaluateAggregateMetricResult } from "./expression-eval";
+import { evaluateAggregateMetricResult, evaluateRelExprResult } from "./expression-eval";
 import {
   executeRelNodeResult,
   type RelExecutionContext,
@@ -87,8 +87,27 @@ function applyWindowFunction(
         continue;
       }
 
+      if (fn.fn === "first_value") {
+        const frameEntries = resolveFrameEntries(entries, idx, fn);
+        const first = frameEntries[0];
+        row[fn.as] = first ? evaluateWindowExpr(fn.value, first.row) : null;
+        continue;
+      }
+
+      if (fn.fn === "lag" || fn.fn === "lead") {
+        const step = fn.offset ?? 1;
+        const targetIndex = fn.fn === "lag" ? idx - step : idx + step;
+        const target = entries[targetIndex];
+        row[fn.as] = target
+          ? evaluateWindowExpr(fn.value, target.row)
+          : fn.defaultExpr
+            ? evaluateWindowExpr(fn.defaultExpr, entry.row)
+            : null;
+        continue;
+      }
+
       const aggregateFn = fn as Extract<typeof fn, { fn: "count" | "sum" | "avg" | "min" | "max" }>;
-      const frameEntries = aggregateFn.orderBy.length > 0 ? entries.slice(0, idx + 1) : entries;
+      const frameEntries = resolveFrameEntries(entries, idx, aggregateFn);
       const values = aggregateFn.column
         ? frameEntries.map(
             (current) => readRowValue(current.row, toColumnKey(aggregateFn.column!)) ?? null,
@@ -112,6 +131,53 @@ function applyWindowFunction(
   }
 
   return out;
+}
+
+function resolveFrameEntries(
+  entries: Array<{ row: InternalRow; index: number }>,
+  idx: number,
+  fn: Extract<RelNode, { kind: "window" }>["functions"][number],
+) {
+  const frame = fn.frame;
+  if (!frame) {
+    return fn.orderBy.length > 0 ? entries.slice(0, idx + 1) : entries;
+  }
+
+  const startIndex = resolveFrameBoundaryIndex(frame.start, idx, entries.length, "start");
+  const endIndex = resolveFrameBoundaryIndex(frame.end, idx, entries.length, "end");
+  return entries.slice(startIndex, endIndex);
+}
+
+function resolveFrameBoundaryIndex(
+  bound: NonNullable<Extract<RelNode, { kind: "window" }>["functions"][number]["frame"]>["start"],
+  idx: number,
+  length: number,
+  position: "start" | "end",
+) {
+  const rawIndex = (() => {
+    switch (bound.kind) {
+      case "unbounded_preceding":
+        return 0;
+      case "preceding":
+        return position === "end" ? idx - (bound.offset ?? 0) + 1 : idx - (bound.offset ?? 0);
+      case "current_row":
+        return position === "end" ? idx + 1 : idx;
+      case "following":
+        return position === "end" ? idx + (bound.offset ?? 0) + 1 : idx + (bound.offset ?? 0);
+      case "unbounded_following":
+        return length;
+    }
+  })();
+
+  return Math.max(0, Math.min(length, rawIndex));
+}
+
+function evaluateWindowExpr(expr: import("@tupl/foundation").RelExpr, row: InternalRow) {
+  const result = evaluateRelExprResult(expr, row, new Map());
+  if (Result.isError(result)) {
+    throw result.error;
+  }
+  return result.value;
 }
 
 function compareWindowEntries(

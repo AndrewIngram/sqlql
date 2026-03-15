@@ -47,6 +47,8 @@ export interface PlaygroundQueryPreset {
   label: string;
   sql: string;
   description?: string;
+  category?: string;
+  highlights?: string[];
 }
 
 export interface PlaygroundScenarioPreset {
@@ -65,6 +67,8 @@ export interface CatalogQueryEntry {
   label: string;
   sql: string;
   description?: string;
+  category?: string;
+  highlights?: string[];
 }
 
 export interface QueryCompatibility {

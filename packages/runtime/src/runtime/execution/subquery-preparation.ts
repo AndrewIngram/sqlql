@@ -1,10 +1,9 @@
 import { Result } from "better-result";
+import type { Result as BetterResult } from "better-result";
 
-import type { RelExpr, RelNode } from "@tupl/foundation";
+import type { RelExpr, RelNode, TuplError } from "@tupl/foundation";
 
 import { executeRelNodeResult, type RelExecutionContext } from "./local-execution";
-import type { TuplExecutionError, TuplGuardrailError, TuplPlanningError } from "@tupl/foundation";
-import type { Result as BetterResult } from "better-result";
 
 /**
  * Subquery preparation owns pre-execution and memoization of scalar and EXISTS subqueries.
@@ -12,12 +11,10 @@ import type { Result as BetterResult } from "better-result";
 export async function prepareSubqueryResultsResult<TContext>(
   node: RelNode,
   context: RelExecutionContext<TContext>,
-): Promise<BetterResult<void, TuplPlanningError | TuplExecutionError | TuplGuardrailError>> {
+): Promise<BetterResult<void, TuplError>> {
   const visited = new Set<string>();
 
-  const prepareExpr = async (
-    expr: RelExpr,
-  ): Promise<BetterResult<void, TuplPlanningError | TuplExecutionError | TuplGuardrailError>> => {
+  const prepareExpr = async (expr: RelExpr): Promise<BetterResult<void, TuplError>> => {
     switch (expr.kind) {
       case "literal":
       case "column":
@@ -61,8 +58,16 @@ export async function prepareSubqueryResultsResult<TContext>(
 
   switch (node.kind) {
     case "scan":
-    case "sql":
+    case "values":
+    case "cte_ref":
       return Result.ok(undefined);
+    case "correlate": {
+      const leftResult = await prepareSubqueryResultsResult(node.left, context);
+      if (Result.isError(leftResult)) {
+        return leftResult;
+      }
+      return prepareSubqueryResultsResult(node.right, context);
+    }
     case "filter": {
       const inputResult = await prepareSubqueryResultsResult(node.input, context);
       if (Result.isError(inputResult)) {
@@ -113,6 +118,13 @@ export async function prepareSubqueryResultsResult<TContext>(
         }
       }
       return prepareSubqueryResultsResult(node.body, context);
+    }
+    case "repeat_union": {
+      const seedResult = await prepareSubqueryResultsResult(node.seed, context);
+      if (Result.isError(seedResult)) {
+        return seedResult;
+      }
+      return prepareSubqueryResultsResult(node.iterative, context);
     }
   }
 }

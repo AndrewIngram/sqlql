@@ -1,7 +1,9 @@
 import { isRelProjectColumnMapping, type RelExpr, type RelNode } from "@tupl/foundation";
-import type { SqlRelationalScanBinding } from "@tupl/provider-kit";
 import {
-  UnsupportedRelationalPlanError,
+  UnsupportedSqlRelationalPlanError,
+  type SqlRelationalScanBinding,
+} from "@tupl/provider-kit/relational-sql";
+import {
   canCompileBasicRel,
   canCompileSetOpRel,
   canCompileWithRel,
@@ -17,7 +19,7 @@ import {
 import { sql, type AnyColumn, type SQL } from "drizzle-orm";
 
 import { resolveColumns } from "../backend/table-columns";
-import type { DrizzleColumnMap, ResolvedEntityConfig } from "../types";
+import type { DrizzleColumnMap, DrizzleProviderTableConfig, ResolvedEntityConfig } from "../types";
 
 export interface DrizzleRelCompiledPlan {
   strategy: DrizzleRelCompileStrategy;
@@ -26,7 +28,7 @@ export interface DrizzleRelCompiledPlan {
 
 export type DrizzleRelCompileStrategy = "basic" | "set_op" | "with";
 
-export class UnsupportedSingleQueryPlanError extends UnsupportedRelationalPlanError {}
+export class UnsupportedSingleQueryPlanError extends UnsupportedSqlRelationalPlanError {}
 
 export interface ScanBinding<TContext>
   extends RelationalScanBindingBase, SqlRelationalScanBinding<ResolvedEntityConfig<TContext>> {
@@ -87,6 +89,21 @@ export function resolveDrizzleRelCompileStrategy(
         resolveDrizzleRelCompileStrategy(branch, entityConfigs),
       ),
   });
+}
+
+export function resolveDrizzleEntityConfigs<TContext>(
+  tableConfigs: Record<string, DrizzleProviderTableConfig<TContext>>,
+): Record<string, ResolvedEntityConfig<TContext>> {
+  return Object.fromEntries(
+    Object.entries(tableConfigs).map(([entity, config]) => [
+      entity,
+      {
+        entity,
+        table: entity,
+        config,
+      },
+    ]),
+  );
 }
 
 export function buildSingleQueryPlan<TContext>(

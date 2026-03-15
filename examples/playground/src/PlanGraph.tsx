@@ -25,6 +25,7 @@ import {
   type PlanNodeData,
   type PlanScopeNodeData,
 } from "@/plan-graph-model";
+import { presentStep } from "@/plan-step-presentation";
 
 interface PlanGraphProps {
   steps: QueryExecutionPlanStep[];
@@ -39,72 +40,7 @@ interface PlanGraphProps {
   containerClassName?: string;
 }
 
-type StepExecutionClass = "domain_call" | "local_over_fetched_rows" | "internal_op";
-
-function isCteScanStep(step: QueryExecutionPlanStep): boolean {
-  if (step.kind !== "scan" || step.operation?.name !== "scan") {
-    return false;
-  }
-
-  const details = step.operation.details;
-  if (!details || typeof details !== "object") {
-    return false;
-  }
-
-  const isCte = (details as { isCte?: unknown }).isCte;
-  return isCte === true;
-}
-
-function classifyStepExecution(
-  step: QueryExecutionPlanStep,
-  state: QueryStepState | null,
-): StepExecutionClass {
-  if (step.kind.startsWith("local_")) {
-    return "internal_op";
-  }
-
-  if (isCteScanStep(step)) {
-    return "local_over_fetched_rows";
-  }
-
-  if (state?.routeUsed === "local") {
-    if (step.kind === "scan" || step.phase === "fetch") {
-      return "local_over_fetched_rows";
-    }
-    return "internal_op";
-  }
-
-  if (state?.routeUsed) {
-    if (
-      ["scan", "lookup", "aggregate", "provider_fragment", "lookup_join"].includes(state.routeUsed)
-    ) {
-      return "domain_call";
-    }
-    return "internal_op";
-  }
-
-  if (
-    step.kind === "aggregate" &&
-    Array.isArray((step.pushdown as { routeCandidates?: unknown })?.routeCandidates) &&
-    ((step.pushdown as { routeCandidates?: string[] }).routeCandidates ?? []).length === 1 &&
-    (step.pushdown as { routeCandidates?: string[] }).routeCandidates?.[0] === "local"
-  ) {
-    return "local_over_fetched_rows";
-  }
-
-  if (
-    step.phase === "fetch" ||
-    step.kind === "scan" ||
-    step.kind === "remote_fragment" ||
-    step.kind === "lookup_join"
-  ) {
-    return "domain_call";
-  }
-
-  return "internal_op";
-}
-
-function classLabel(stepClass: StepExecutionClass): string {
+function classLabel(stepClass: ReturnType<typeof presentStep>["executionClass"]): string {
   switch (stepClass) {
     case "domain_call":
       return "domain call";
@@ -115,7 +51,7 @@ function classLabel(stepClass: StepExecutionClass): string {
   }
 }
 
-function classContainerStyles(stepClass: StepExecutionClass): string {
+function classContainerStyles(stepClass: ReturnType<typeof presentStep>["executionClass"]): string {
   switch (stepClass) {
     case "domain_call":
       return "border-emerald-300 bg-emerald-50";
@@ -126,7 +62,7 @@ function classContainerStyles(stepClass: StepExecutionClass): string {
   }
 }
 
-function classHandleStyles(stepClass: StepExecutionClass): string {
+function classHandleStyles(stepClass: ReturnType<typeof presentStep>["executionClass"]): string {
   switch (stepClass) {
     case "domain_call":
       return "!bg-emerald-500";
@@ -139,7 +75,8 @@ function classHandleStyles(stepClass: StepExecutionClass): string {
 
 const StepNode = memo(function StepNode({ data }: NodeProps): React.JSX.Element {
   const stepData = data as PlanNodeData;
-  const stepClass = classifyStepExecution(stepData.step, stepData.state);
+  const presentation = presentStep(stepData.step, stepData.state);
+  const stepClass = presentation.executionClass;
 
   return (
     <div
@@ -162,20 +99,49 @@ const StepNode = memo(function StepNode({ data }: NodeProps): React.JSX.Element 
         className={cn("!h-2 !w-2", classHandleStyles(stepClass))}
       />
 
-      <div className="mb-2">
-        <div className="truncate font-mono text-[11px] font-semibold text-slate-700">
-          {stepData.step.id}
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-slate-900">
+            {presentation.operator}
+          </div>
+          <div className="truncate font-mono text-[11px] font-semibold text-slate-600">
+            {stepData.step.id}
+          </div>
+        </div>
+        <div className="rounded border border-white/70 bg-white/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+          {presentation.clause}
         </div>
       </div>
 
-      <div className="mb-1 text-sm font-semibold text-slate-900">{stepData.step.kind}</div>
-      <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">
-        {classLabel(stepClass)}
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+          {presentation.placement}
+        </span>
+        <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+          {classLabel(stepClass)}
+        </span>
       </div>
-      <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">
-        {stepData.step.phase}
+
+      <div className="mb-2 line-clamp-3 font-mono text-[11px] leading-5 text-slate-800">
+        {presentation.signature}
       </div>
-      <div className="line-clamp-3 text-[12px] text-slate-700">{stepData.step.summary}</div>
+
+      {presentation.outputsPreview ? (
+        <div className="mb-2 line-clamp-1 text-[11px] text-slate-600">
+          <span className="font-semibold text-slate-700">out:</span> {presentation.outputsPreview}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap gap-1">
+        {presentation.facts.map((fact) => (
+          <span
+            key={fact}
+            className="rounded border border-white/70 bg-white/70 px-1.5 py-0.5 text-[10px] text-slate-600"
+          >
+            {fact}
+          </span>
+        ))}
+      </div>
     </div>
   );
 });

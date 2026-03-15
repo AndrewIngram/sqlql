@@ -70,8 +70,8 @@ export function createRelExecutionSession<TContext>(
       () =>
         executeRelWithProvidersResult(
           rel,
-          input.schema,
-          input.providers,
+          input.preparedSchema.schema,
+          input.preparedSchema.providers,
           input.context,
           {
             maxExecutionRows: guardrails.maxExecutionRows,

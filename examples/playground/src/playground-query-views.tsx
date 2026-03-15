@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type React from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { normalizePhysicalPlanForSnapshot, normalizeRelForSnapshot } from "@tupl/planner";
+import type { ExplainResult } from "@tupl/schema";
 
 import type { ExecutedProviderOperation } from "./types";
 import { Badge } from "./components/ui/badge";
@@ -213,5 +215,105 @@ export function StepSection({
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-3 space-y-2">{children}</CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function normalizeExplainFragments(explain: ExplainResult) {
+  return explain.fragments.map((fragment) => ({
+    id: fragment.id,
+    convention: fragment.convention,
+    ...(fragment.provider ? { provider: fragment.provider } : {}),
+    rel: normalizeRelForSnapshot(fragment.rel),
+  }));
+}
+
+function normalizeExplainProviderPlans(explain: ExplainResult) {
+  return explain.providerPlans.map((providerPlan) => ({
+    fragmentId: providerPlan.fragmentId,
+    provider: providerPlan.provider,
+    kind: providerPlan.kind,
+    rel: normalizeRelForSnapshot(providerPlan.rel),
+    ...(providerPlan.description
+      ? { description: providerPlan.description }
+      : { descriptionUnavailable: true }),
+  }));
+}
+
+export function TranslationExplainPanel({
+  explain,
+}: {
+  explain: ExplainResult | null;
+}): React.JSX.Element {
+  const normalizedInitialRel = useMemo(
+    () => (explain ? normalizeRelForSnapshot(explain.initialRel) : null),
+    [explain],
+  );
+  const normalizedRewrittenRel = useMemo(
+    () => (explain ? normalizeRelForSnapshot(explain.rewrittenRel) : null),
+    [explain],
+  );
+  const normalizedPhysicalPlan = useMemo(
+    () => (explain ? normalizePhysicalPlanForSnapshot(explain.physicalPlan) : null),
+    [explain],
+  );
+  const normalizedFragments = useMemo(
+    () => (explain ? normalizeExplainFragments(explain) : []),
+    [explain],
+  );
+  const normalizedProviderPlans = useMemo(
+    () => (explain ? normalizeExplainProviderPlans(explain) : []),
+    [explain],
+  );
+
+  if (!explain) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-none border-r bg-slate-50 px-4 text-sm text-slate-500">
+        No translation artifacts available yet.
+      </div>
+    );
+  }
+
+  return (
+    <ScrollArea className="h-full border-r bg-slate-50">
+      <div className="space-y-3 p-3">
+        <div className="rounded-md border bg-white px-3 py-2 text-xs text-slate-600">
+          Planner nodes:{" "}
+          <span className="font-medium text-slate-900">{explain.plannerNodeCount}</span>
+        </div>
+
+        <StepSection title="SQL" defaultOpen>
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border bg-white p-3 font-mono text-xs text-slate-700">
+            {explain.sql}
+          </pre>
+        </StepSection>
+
+        <StepSection title="Initial Rel" defaultOpen={false}>
+          <JsonBlock value={normalizedInitialRel} />
+        </StepSection>
+
+        <StepSection title="Rewritten Rel" defaultOpen={false}>
+          <JsonBlock value={normalizedRewrittenRel} />
+        </StepSection>
+
+        <StepSection title="Physical Fragments" defaultOpen={false}>
+          <JsonBlock
+            value={{
+              physicalPlan: normalizedPhysicalPlan,
+              fragments: normalizedFragments,
+            }}
+          />
+        </StepSection>
+
+        <StepSection title="Provider Plans" defaultOpen={false}>
+          <JsonBlock value={normalizedProviderPlans} />
+        </StepSection>
+
+        {explain.diagnostics.length > 0 ? (
+          <StepSection title="Diagnostics" defaultOpen={false}>
+            <JsonBlock value={explain.diagnostics} />
+          </StepSection>
+        ) : null}
+      </div>
+    </ScrollArea>
   );
 }

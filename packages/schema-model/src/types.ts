@@ -72,6 +72,11 @@ export type {
   TableScanRequest,
 } from "./contracts/query-contracts";
 export type {
+  TablePlanningMethods,
+  TablePlanningMethodsForSchema,
+  TablePlanningMethodsMap,
+} from "./contracts/table-planning-contracts";
+export type {
   AggregatePlanDecision,
   LookupPlanDecision,
   PlanRejectDecision,

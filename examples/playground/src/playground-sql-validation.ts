@@ -328,5 +328,3 @@ export function validateSelectReferences(
 
   return null;
 }
-
-export { relContainsSqlNode as hasSqlNode } from "@tupl/foundation";

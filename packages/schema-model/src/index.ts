@@ -1,32 +1,18 @@
 /**
- * Schema model owns the facade DSL, normalization, and provider binding validation.
- * Callers should treat its exports as the logical schema contract, not as a source of execution behavior.
+ * Schema model root owns the logical schema contract: DSL entrypoints, schema/query types,
+ * timestamps, and DDL helpers. DSL-token detail, planning hooks, normalization, mapping,
+ * definition, enum-link resolution, and validation live behind explicit subpaths.
  */
 export { asIso8601Timestamp, type Iso8601TimestampString, type TimestampValue } from "./timestamps";
 export type {
   AggregateFunction,
-  AggregatePlanDecision,
   CheckConstraint,
   ColumnDefinition,
   ColumnValue,
   FilterClauseBase,
   ForeignKeyConstraint,
-  LookupPlanDecision,
-  NormalizedCalculatedColumnBinding,
-  NormalizedColumnBinding,
-  NormalizedPhysicalTableBinding,
-  NormalizedSourceColumnBinding,
-  NormalizedTableBinding,
-  NormalizedViewTableBinding,
   NullFilterClause,
   PhysicalDialect,
-  PlanRejectDecision,
-  PlannedAggregateMetricTerm,
-  PlannedAggregateRequest,
-  PlannedFilterTerm,
-  PlannedLookupRequest,
-  PlannedOrderTerm,
-  PlannedScanRequest,
   PrimaryKeyConstraint,
   QueryRow,
   ReferentialAction,
@@ -34,24 +20,11 @@ export type {
   ScanFilterClause,
   ScanFilterOperator,
   ScanOrderBy,
-  ScanPlanDecision,
   SchemaBuilder,
-  SchemaCalculatedColumnDefinition,
-  SchemaColRefToken,
-  SchemaColumnLensDefinition,
   SchemaDataEntityHandle,
   SchemaDefinition,
-  SchemaDslTableToken,
-  SchemaTypedColumnDefinition,
   SchemaValueCoercion,
   SchemaValueCoercionName,
-  SchemaViewAggregateMetric,
-  SchemaViewAggregateNode,
-  SchemaViewEqExpr,
-  SchemaViewJoinNode,
-  SchemaViewRelNode,
-  SchemaViewRelNodeInput,
-  SchemaViewScanNode,
   SqlScalarType,
   SqlTypeValue,
   TableAggregateMetric,
@@ -64,45 +37,9 @@ export type {
   TableMethods,
   TableMethodsForSchema,
   TableMethodsMap,
-  TableName,
   TableRow,
   TableScanRequest,
   UniqueConstraint,
 } from "./types";
 export { createSchemaBuilder, defineTableMethods, isSchemaBuilder } from "./dsl/builder";
-export {
-  buildRegisteredSchemaDefinition,
-  createPhysicalBindingFromEntity,
-  createTableDefinitionFromEntity,
-  finalizeSchemaDefinition,
-  getNormalizedColumnBindings,
-  getNormalizedColumnSourceMap,
-  getNormalizedTableBinding,
-  resolveNormalizedColumnSource,
-  resolveTableProvider,
-  validateProviderBindings,
-} from "./normalization";
-export {
-  coerceValue,
-  isNormalizedSourceColumnBinding,
-  mapProviderRowsToLogical,
-  mapProviderRowsToRelOutput,
-  normalizeProviderRowValue,
-} from "./mapping/mapping";
-export {
-  resolveSchemaLinkedEnums,
-  type EnumLinkReference,
-  type ResolveSchemaLinkedEnumsOptions,
-} from "./enums";
-export { validateRelAgainstSchema, validateSchemaConstraints } from "./constraints";
-export {
-  getTable,
-  resolveColumnDefinition,
-  resolveColumnType,
-  resolveTableColumnDefinition,
-  resolveTableForeignKeys,
-  resolveTablePrimaryKeyConstraint,
-  resolveTableUniqueConstraints,
-  type ResolvedColumnDefinition,
-} from "./definition";
 export { toSqlDDL, type SqlDdlOptions } from "./ddl";

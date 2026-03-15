@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { commerceRows, commerceSchema } from "@tupl/test-support/fixtures";
 import { withQueryHarness } from "@tupl/test-support/runtime";
+import { buildEntitySchema } from "@tupl/test-support/schema";
 
 const EMPTY_CONTEXT = {} as const;
 
@@ -81,6 +82,129 @@ describe("query/ctes", () => {
         const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
         expect(actual).toEqual(expected);
         expect(actual).toEqual([{ order_count: 0 }]);
+      },
+    );
+  });
+
+  it("supports recursive CTE queries with sqlite parity", async () => {
+    const sql = `
+      WITH RECURSIVE reachable AS (
+        SELECT source_id AS node_id
+        FROM edges
+        WHERE source_id = 1
+        UNION ALL
+        SELECT e.target_id AS node_id
+        FROM reachable r
+        JOIN edges e ON e.source_id = r.node_id
+      )
+      SELECT node_id
+      FROM reachable
+      ORDER BY node_id ASC
+    `;
+
+    await withQueryHarness(
+      {
+        schema: buildEntitySchema({
+          edges: {
+            columns: {
+              source_id: { type: "integer", nullable: false },
+              target_id: { type: "integer", nullable: false },
+            },
+          },
+        }),
+        rowsByTable: {
+          edges: [
+            { source_id: 1, target_id: 2 },
+            { source_id: 2, target_id: 3 },
+            { source_id: 3, target_id: 4 },
+          ],
+        },
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([{ node_id: 1 }, { node_id: 2 }, { node_id: 3 }, { node_id: 4 }]);
+      },
+    );
+  });
+
+  it("supports SELECT without FROM with sqlite parity", async () => {
+    const sql = `
+      SELECT 1 AS answer, 2 + 3 AS sum_value
+    `;
+
+    await withQueryHarness(
+      {
+        schema: buildEntitySchema({}),
+        rowsByTable: {},
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([{ answer: 1, sum_value: 5 }]);
+      },
+    );
+  });
+
+  it("supports Fibonacci recursive CTE queries with sqlite parity", async () => {
+    const sql = `
+      WITH RECURSIVE fib AS (
+        SELECT 0 AS n, 1 AS next_n, 1 AS depth
+        UNION ALL
+        SELECT next_n, n + next_n, depth + 1
+        FROM fib
+        WHERE depth < 10
+      )
+      SELECT n
+      FROM fib
+      ORDER BY depth ASC
+    `;
+
+    await withQueryHarness(
+      {
+        schema: buildEntitySchema({}),
+        rowsByTable: {},
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { n: 0 },
+          { n: 1 },
+          { n: 1 },
+          { n: 2 },
+          { n: 3 },
+          { n: 5 },
+          { n: 8 },
+          { n: 13 },
+          { n: 21 },
+          { n: 34 },
+        ]);
+      },
+    );
+  });
+
+  it("supports FROM subqueries with sqlite parity", async () => {
+    const sql = `
+      SELECT scoped.id
+      FROM (
+        SELECT id, total_cents
+        FROM orders
+        WHERE org_id = 'org_1'
+      ) scoped
+      WHERE scoped.total_cents >= 1800
+      ORDER BY scoped.id ASC
+    `;
+
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(sql, EMPTY_CONTEXT);
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([{ id: "ord_2" }, { id: "ord_3" }]);
       },
     );
   });

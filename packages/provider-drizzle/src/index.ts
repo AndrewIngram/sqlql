@@ -1,28 +1,31 @@
 import {
-  AdapterResult,
   createSqlRelationalProviderAdapter,
-  type FragmentProvider,
-  type LookupProvider,
+  type FragmentProviderAdapter,
 } from "@tupl/provider-kit";
+import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
 
-import { executeLookupMany } from "./execution/lookup-execution";
-import { executeScan } from "./execution/scan-execution";
+import { executeLookupManyResult } from "./execution/lookup-execution";
 import {
-  inferDrizzleDialect,
-  isPromiseLike,
-  isRuntimeBindingResolver,
-  isStrategyAvailableOnDrizzleDb,
   resolveDrizzleDbMaybeSync,
+  inferDrizzleDialect,
+  isStrategyAvailableOnDrizzleDb,
 } from "./backend/runtime-checks";
 import { deriveEntityColumnsFromTable } from "./backend/table-columns";
 import { impossibleCondition, runDrizzleScan } from "./backend/query-helpers";
-import { drizzleSqlRelationalBackend } from "./planning/rel-builder";
+import { drizzleQueryTranslationBackend } from "./planning/rel-builder";
+import {
+  type ScanBinding,
+  buildSingleQueryPlan,
+  resolveDrizzleRelCompileStrategy,
+  createScanBinding,
+} from "./planning/rel-strategy";
 import type {
   CreateDrizzleProviderOptions,
   DrizzleProviderEntities,
   DrizzleProviderTableConfig,
   DrizzleQueryExecutor,
 } from "./types";
+import type { DrizzleTranslatedQuery } from "./planning/rel-builder";
 
 export type {
   CreateDrizzleProviderOptions,
@@ -45,59 +48,56 @@ export function createDrizzleProvider<
   >,
 >(
   options: CreateDrizzleProviderOptions<TContext, TTables>,
-): FragmentProvider<TContext> &
-  LookupProvider<TContext> & {
-    entities: DrizzleProviderEntities<TTables>;
-  } {
+): FragmentProviderAdapter<TContext> & {
+  lookupMany: LookupManyCapableProviderAdapter<TContext>["lookupMany"];
+  entities: DrizzleProviderEntities<TTables>;
+} {
   const providerName = options.name ?? "drizzle";
   const tableConfigs = options.tables as Record<string, DrizzleProviderTableConfig<TContext>>;
   const dialect = options.dialect ?? inferDrizzleDialect(options.db, tableConfigs);
   void dialect;
 
-  return createSqlRelationalProviderAdapter({
-    name: providerName,
-    entities: options.tables as TTables,
-    resolveEntity({ entity, config }) {
-      return {
-        entity,
-        table: entity,
-        config,
-      };
+  return createSqlRelationalProviderAdapter<
+    TContext,
+    TTables,
+    {
+      entity: string;
+      table: string;
+      config: DrizzleProviderTableConfig<TContext>;
     },
-    backend: drizzleSqlRelationalBackend,
-    resolveRuntime: (context: TContext) => resolveDrizzleDbMaybeSync(options, context),
+    ScanBinding<TContext>,
+    DrizzleQueryExecutor,
+    DrizzleTranslatedQuery,
+    DrizzleProviderEntities<TTables>
+  >({
+    name: providerName,
+    entities: options.tables,
+    resolveRuntime(context) {
+      return resolveDrizzleDbMaybeSync(options, context);
+    },
     unsupportedRelCompileMessage: "Unsupported relational fragment for drizzle provider.",
     unsupportedRelReasonMessage: "Rel fragment is not supported for single-query drizzle pushdown.",
+    queryBackend: drizzleQueryTranslationBackend,
     resolveEntityColumns({ config }) {
       return deriveEntityColumnsFromTable(config.table);
     },
-    isStrategySupported({ context, strategy }) {
+    advanced: {
+      createScanBinding,
+      buildSingleQueryPlan,
+      resolveRelCompileStrategy(rel, resolvedEntities) {
+        return resolveDrizzleRelCompileStrategy(rel, resolvedEntities);
+      },
+    },
+    isStrategySupported({ strategy, runtime }) {
       if (strategy == null) {
         return "Rel fragment is not supported for single-query drizzle pushdown.";
       }
-      const evaluateWithDb = (db: DrizzleQueryExecutor): true | string =>
-        isStrategyAvailableOnDrizzleDb(strategy, db)
-          ? true
-          : `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`;
-
-      if (!isRuntimeBindingResolver(options.db)) {
-        return evaluateWithDb(options.db);
-      }
-
-      const db = resolveDrizzleDbMaybeSync(options, context);
-      return isPromiseLike(db) ? db.then(evaluateWithDb) : evaluateWithDb(db);
+      return isStrategyAvailableOnDrizzleDb(strategy, runtime)
+        ? true
+        : `Drizzle database instance does not support required APIs for "${strategy}" rel pushdown.`;
     },
-    async executeScan({ runtime, request, context }) {
-      return executeScan(runtime, options, request, context);
+    async lookupMany({ request, context, runtime }) {
+      return executeLookupManyResult(runtime, options, request, context);
     },
-    async lookupMany({ request, context }) {
-      return AdapterResult.tryPromise({
-        try: () => executeLookupMany(options, request, context),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
-    },
-  }) as FragmentProvider<TContext> &
-    LookupProvider<TContext> & {
-      entities: DrizzleProviderEntities<TTables>;
-    };
+  });
 }
