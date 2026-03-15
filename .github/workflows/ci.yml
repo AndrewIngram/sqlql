@@ -58,9 +58,15 @@ jobs:
       - name: Run workspace typecheck
         run: pnpm typecheck
 
-  test-fast:
-    name: Test (Fast)
+  test-ci:
+    name: Test (CI)
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -77,69 +83,88 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Find shared Vitest cache artifact
+        id: cache_seed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request?.head?.ref || process.env.GITHUB_REF_NAME || "";
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "ci.yml",
+              branch,
+              status: "success",
+              per_page: 100,
+            });
+
+            let runId = "";
+            for (const run of runs) {
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              if (artifacts.some((artifact) => artifact.name === "vitest-cache-ci" && !artifact.expired)) {
+                runId = String(run.id);
+                break;
+              }
+            }
+
+            core.setOutput("run-id", runId);
+
+      - name: Restore shared Vitest cache
+        if: steps.cache_seed.outputs.run-id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-cache-ci
+          path: .vite-ci-cache-seed
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.cache_seed.outputs.run-id }}
+
+      - name: Seed Vitest cache for this job
+        if: steps.cache_seed.outputs.run-id != ''
+        run: |
+          mkdir -p node_modules/.vite-ci/vitest
+          cp -a .vite-ci-cache-seed/. node_modules/.vite-ci/vitest/
+
       - name: Restore Vitest cache
         uses: actions/cache@v4
         with:
-          path: node_modules/.vite-fast/vitest
-          key: ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref_name }}
+          path: node_modules/.vite-ci/vitest
+          key: ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-${{ github.ref_name }}-shard-${{ matrix.shard }}
           restore-keys: |
-            ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-main
-            ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-${{ github.ref_name }}-shard-${{ matrix.shard }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-main-shard-${{ matrix.shard }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-${{ github.ref_name }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-main-
 
-      - name: Run fast tests
-        run: pnpm test:fast:ci
+      - name: Run CI tests
+        run: |
+          pnpm test:ci --shard=${{ matrix.shard }}/4
+          mv .vitest-reports/test-ci.json .vitest-reports/test-ci-${{ matrix.shard }}-of-4.json
 
-      - name: Upload fast Vitest blob report
+      - name: Upload CI Vitest blob report
         uses: actions/upload-artifact@v4
         with:
-          name: vitest-blob-fast
-          path: .vitest-reports/test-fast.json
+          name: vitest-blob-ci-${{ matrix.shard }}-of-4
+          path: .vitest-reports/test-ci-${{ matrix.shard }}-of-4.json
           if-no-files-found: error
 
-  test-playground-slow:
-    name: Test (Playground Slow)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Restore Vitest cache
-        uses: actions/cache@v4
-        with:
-          path: node_modules/.vite-playground-slow/vitest
-          key: ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref_name }}
-          restore-keys: |
-            ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-main
-            ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-
-
-      - name: Run slow playground tests
-        run: pnpm test:playground:slow:ci
-
-      - name: Upload slow Vitest blob report
+      - name: Upload CI Vitest cache snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: vitest-blob-playground-slow
-          path: .vitest-reports/test-playground-slow.json
+          name: vitest-cache-ci-${{ matrix.shard }}-of-4
+          path: node_modules/.vite-ci/vitest
           if-no-files-found: error
 
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest
     needs:
-      - test-fast
-      - test-playground-slow
+      - test-ci
     permissions:
       actions: read
       contents: read
@@ -161,17 +186,79 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Download fast Vitest blob report
+      - name: Prepare Vitest reports directory
+        run: |
+          rm -rf .vitest-reports
+          mkdir -p .vitest-reports
+
+      - name: Prepare Vitest cache merge directory
+        run: |
+          rm -rf .vite-ci-cache
+          mkdir -p .vite-ci-cache
+
+      - name: Download CI Vitest blob report
         uses: actions/download-artifact@v4
         with:
-          name: vitest-blob-fast
+          name: vitest-blob-ci-1-of-4
           path: .vitest-reports
 
-      - name: Download slow Vitest blob report
+      - name: Download CI Vitest blob report (shard 2)
         uses: actions/download-artifact@v4
         with:
-          name: vitest-blob-playground-slow
+          name: vitest-blob-ci-2-of-4
           path: .vitest-reports
+
+      - name: Download CI Vitest blob report (shard 3)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-blob-ci-3-of-4
+          path: .vitest-reports
+
+      - name: Download CI Vitest blob report (shard 4)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-blob-ci-4-of-4
+          path: .vitest-reports
+
+      - name: Download CI cache artifacts (shard 1)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-cache-ci-1-of-4
+          path: .vite-ci-cache/shard-1
+
+      - name: Download CI cache artifacts (shard 2)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-cache-ci-2-of-4
+          path: .vite-ci-cache/shard-2
+
+      - name: Download CI cache artifacts (shard 3)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-cache-ci-3-of-4
+          path: .vite-ci-cache/shard-3
+
+      - name: Download CI cache artifacts (shard 4)
+        uses: actions/download-artifact@v4
+        with:
+          name: vitest-cache-ci-4-of-4
+          path: .vite-ci-cache/shard-4
+
+      - name: Merge shard cache directories
+        run: |
+          mkdir -p .vite-ci/vitest
+          for shardDir in .vite-ci-cache/shard-*; do
+            if [ -d "$shardDir" ]; then
+              cp -a "$shardDir"/. .vite-ci/vitest/
+            fi
+          done
+
+      - name: Upload merged shard cache artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-cache-ci
+          path: .vite-ci/vitest
+          if-no-files-found: error
 
       - name: Merge reports and generate coverage output
         run: pnpm exec vitest --merge-reports=.vitest-reports --reporter=default --coverage

@@ -610,8 +610,6 @@ describe("package boundaries", () => {
     const files = [
       "tsconfig.json",
       "vitest.config.ts",
-      "vitest.fast.config.ts",
-      "vitest.playground-slow.config.ts",
       "examples/playground/tsconfig.json",
       "examples/playground/vite.config.ts",
     ];

@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
@@ -102,15 +102,7 @@ const workspaceAliases = [
   },
 ] as const;
 
-export const SLOW_PLAYGROUND_TEST_FILES = [
-  "examples/playground/test/preset-queries.test.ts",
-  "examples/playground/test/provider-pushdown.test.ts",
-  "examples/playground/test/session-replay.test.ts",
-  "examples/playground/test/validation.test.ts",
-  "examples/playground/test/workspace-typecheck.test.ts",
-];
-
-export const sharedCoverageConfig = {
+const sharedCoverageConfig = {
   provider: "v8" as const,
   reporter: ["text", "html", "lcov", "json-summary"] as const,
   reportsDirectory: "coverage",
@@ -125,10 +117,16 @@ export default defineConfig({
     include: [
       "src/**/__tests__/**/*.test.ts",
       "packages/*/src/**/__tests__/**/*.test.ts",
+      "test/compliance/*.test.ts",
+      "test/query/*.test.ts",
       "test/providers/*.test.ts",
       "examples/playground/test/**/*.test.ts",
     ],
-    exclude: ["packages/runtime/src/__tests__/compliance/standards-gaps.todo.test.ts"],
+    exclude: [
+      ...configDefaults.exclude,
+      "packages/runtime/src/__tests__/compliance/standards-gaps.todo.test.ts",
+    ],
     coverage: sharedCoverageConfig,
+    testTimeout: 30_000,
   },
 });
