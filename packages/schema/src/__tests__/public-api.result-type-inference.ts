@@ -5,7 +5,7 @@ import { AdapterResult, type ProviderOperationResult } from "@tupl/provider-kit"
 import type { TuplProviderBindingError } from "@tupl/runtime";
 import { createExecutableSchemaSession, type QuerySession } from "@tupl/runtime/session";
 import { createSchemaBuilder, type QueryRow, type SchemaDefinition } from "@tupl/schema";
-import { resolveTableProvider } from "@tupl/schema-model";
+import { resolveTableProvider } from "@tupl/schema-model/normalization";
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;

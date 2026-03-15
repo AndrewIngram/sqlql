@@ -1,10 +1,10 @@
 import type { RelColumnRef, RelExpr, RelNode } from "@tupl/foundation";
+import { type SchemaDefinition } from "@tupl/schema-model";
 import {
   createPhysicalBindingFromEntity,
   getNormalizedColumnSourceMap,
   getNormalizedTableBinding,
-  type SchemaDefinition,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/normalization";
 
 import type { AliasToSourceMap } from "../planner-types";
 

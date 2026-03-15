@@ -1,6 +1,6 @@
 import type { RelColumnRef, RelNode } from "@tupl/foundation";
 import type { SchemaDefinition, SchemaViewRelNode } from "@tupl/schema-model";
-import { createTableDefinitionFromEntity } from "@tupl/schema-model";
+import { createTableDefinitionFromEntity } from "@tupl/schema-model/normalization";
 
 /**
  * View lowering owns translation from normalized schema-view definitions into generic relational IR.

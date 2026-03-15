@@ -33,8 +33,6 @@ import {
 } from "@tupl/runtime/session";
 import {
   createSchemaBuilder,
-  getNormalizedTableBinding,
-  isNormalizedSourceColumnBinding,
   toSqlDDL,
   type AggregatePlanDecision,
   type LookupPlanDecision,
@@ -56,6 +54,8 @@ import {
   type TableName,
   type TableScanRequest,
 } from "@tupl/schema-model";
+import { isNormalizedSourceColumnBinding } from "@tupl/schema-model/mapping";
+import { getNormalizedTableBinding } from "@tupl/schema-model/normalization";
 
 import { aggregateArrayRows, scanArrayRows } from "./methods";
 

@@ -1,14 +1,16 @@
+import type {
+  CheckConstraint,
+  QueryRow,
+  SchemaDefinition,
+  TableColumnDefinition,
+  UniqueConstraint,
+} from "@tupl/schema-model";
 import {
   getTable,
   resolveColumnDefinition,
   resolveTablePrimaryKeyConstraint,
   resolveTableUniqueConstraints,
-  type CheckConstraint,
-  type QueryRow,
-  type SchemaDefinition,
-  type TableColumnDefinition,
-  type UniqueConstraint,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/definition";
 
 export type ConstraintValidationMode = "off" | "warn" | "error";
 

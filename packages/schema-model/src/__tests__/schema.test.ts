@@ -6,13 +6,15 @@ import {
   asIso8601Timestamp,
   createSchemaBuilder,
   defineTableMethods,
-  finalizeSchemaDefinition,
-  getNormalizedTableBinding,
-  mapProviderRowsToLogical,
-  resolveSchemaLinkedEnums,
-  resolveTableColumnDefinition,
   toSqlDDL,
 } from "@tupl/schema-model";
+import { resolveTableColumnDefinition } from "@tupl/schema-model/definition";
+import { resolveSchemaLinkedEnums } from "@tupl/schema-model/enums";
+import { mapProviderRowsToLogical } from "@tupl/schema-model/mapping";
+import {
+  finalizeSchemaDefinition,
+  getNormalizedTableBinding,
+} from "@tupl/schema-model/normalization";
 import { buildSchema, buildEntitySchema } from "@tupl/test-support/schema";
 
 function unwrapResult<T, E>(result: Result<T, E>): T {

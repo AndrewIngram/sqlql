@@ -3,7 +3,8 @@ import { Result } from "better-result";
 import { lowerSqlToRelResult } from "@tupl/planner";
 import type { QueryExecutionPlan, QuerySession, QueryStepEvent } from "@tupl/runtime/session";
 import type { ExplainResult, QueryRow, SchemaDefinition } from "@tupl/schema";
-import { resolveSchemaLinkedEnums, resolveTableColumnDefinition } from "@tupl/schema-model";
+import { resolveTableColumnDefinition } from "@tupl/schema-model/definition";
+import { resolveSchemaLinkedEnums } from "@tupl/schema-model/enums";
 
 import { DOWNSTREAM_ROWS_SCHEMA } from "./downstream-model";
 import {

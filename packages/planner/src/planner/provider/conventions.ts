@@ -1,11 +1,8 @@
 import type { RelJoinNode, RelNode, RelScanNode } from "@tupl/foundation";
 import type { ProvidersMap } from "@tupl/provider-kit";
 import { Result } from "better-result";
-import {
-  getNormalizedTableBinding,
-  resolveTableProvider,
-  type SchemaDefinition,
-} from "@tupl/schema-model";
+import type { SchemaDefinition } from "@tupl/schema-model";
+import { getNormalizedTableBinding, resolveTableProvider } from "@tupl/schema-model/normalization";
 import { resolveScanProviderName, resolveSingleProvider } from "./provider-ownership";
 
 /**

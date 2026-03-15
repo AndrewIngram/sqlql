@@ -2,13 +2,11 @@ import { Result } from "better-result";
 
 import { TuplRuntimeError, type TuplResult } from "@tupl/foundation";
 import { type ProviderAdapter, type ProvidersMap } from "@tupl/provider-kit";
+import { isSchemaBuilder, type SchemaBuilder, type SchemaDefinition } from "@tupl/schema-model";
 import {
   finalizeSchemaDefinition,
   getNormalizedTableBinding,
-  isSchemaBuilder,
-  type SchemaBuilder,
-  type SchemaDefinition,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/normalization";
 
 import type { ExecutableSchema } from "./contracts";
 import { bindExecutableSchemaSessionAccess } from "./executable-schema-runtime";

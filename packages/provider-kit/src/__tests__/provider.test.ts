@@ -17,7 +17,10 @@ import type {
   LookupManyCapableProviderAdapter,
   ProviderLookupManyRequest,
 } from "@tupl/provider-kit/shapes";
-import { getNormalizedTableBinding, validateProviderBindings } from "@tupl/schema-model";
+import {
+  getNormalizedTableBinding,
+  validateProviderBindings,
+} from "@tupl/schema-model/normalization";
 import {
   createExecutableSchemaFromProviders,
   createSessionFromExecutableSchema,

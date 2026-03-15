@@ -1,10 +1,10 @@
 import type { RelNode } from "@tupl/foundation";
+import { type SchemaDefinition } from "@tupl/schema-model";
+import { isNormalizedSourceColumnBinding } from "@tupl/schema-model/mapping";
 import {
   getNormalizedColumnBindings,
   getNormalizedTableBinding,
-  isNormalizedSourceColumnBinding,
-  type SchemaDefinition,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/normalization";
 
 import { compileViewRelForPlanner } from "./view-lowering";
 import { nextRelId } from "../physical/planner-ids";

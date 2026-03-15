@@ -1,7 +1,7 @@
 import type { RelNode } from "@tupl/foundation";
 import { Result } from "better-result";
 import { supportsLookupMany } from "@tupl/provider-kit/shapes";
-import { getNormalizedTableBinding, resolveTableProvider } from "@tupl/schema-model";
+import { getNormalizedTableBinding, resolveTableProvider } from "@tupl/schema-model/normalization";
 
 import type { QuerySessionInput } from "../session/contracts";
 import { isPromiseLike } from "../policy";

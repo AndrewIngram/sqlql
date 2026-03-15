@@ -9,17 +9,19 @@ import {
   type ProviderAdapter,
 } from "@tupl/provider-kit";
 import {
-  createPhysicalBindingFromEntity,
-  createTableDefinitionFromEntity,
-  mapProviderRowsToLogical,
-  resolveNormalizedColumnSource,
-  getNormalizedTableBinding,
-  resolveTableProvider,
   type NormalizedPhysicalTableBinding,
   type QueryRow,
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/schema-model";
+import { mapProviderRowsToLogical } from "@tupl/schema-model/mapping";
+import {
+  createPhysicalBindingFromEntity,
+  createTableDefinitionFromEntity,
+  getNormalizedTableBinding,
+  resolveNormalizedColumnSource,
+  resolveTableProvider,
+} from "@tupl/schema-model/normalization";
 
 import {
   tryExecutionStep,

@@ -12,14 +12,14 @@ import {
   type ProviderAdapter,
 } from "@tupl/provider-kit";
 import { supportsLookupMany } from "@tupl/provider-kit/shapes";
+import { mapProviderRowsToLogical } from "@tupl/schema-model/mapping";
 import {
   createPhysicalBindingFromEntity,
   createTableDefinitionFromEntity,
   getNormalizedTableBinding,
-  mapProviderRowsToLogical,
   resolveNormalizedColumnSource,
   resolveTableProvider,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/normalization";
 
 import {
   tryExecutionStep,

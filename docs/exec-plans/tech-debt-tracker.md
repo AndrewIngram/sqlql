@@ -9,11 +9,6 @@ These are the current architecture and process questions that remain intentional
 - Current state: `explain()` may compile provider-owned fragments to produce provider plan descriptions.
 - Question: should `explain()` stay on that model, or should providers get a describe-only path that avoids compile-time side effects?
 
-### `@tupl/schema-model` root breadth
-
-- Current state: the application-facing `@tupl/schema` facade is narrow, but `@tupl/schema-model` still mixes DSL, normalization, and binding-resolution exports at the package root.
-- Question: should the root be narrowed and internal/advanced concepts moved to explicit subpaths?
-
 ### Non-`ROWS` window frames
 
 - Current state: `RANGE` and `GROUPS` frame modes are explicitly rejected.

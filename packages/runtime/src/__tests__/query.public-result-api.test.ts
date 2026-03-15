@@ -7,7 +7,8 @@ import { createExecutableSchemaSession } from "@tupl/runtime/session";
 import type { QueryRow, SchemaDefinition } from "@tupl/schema-model";
 import { createDataEntityHandle, type ProviderAdapter } from "@tupl/provider-kit";
 import type { LookupManyCapableProviderAdapter } from "@tupl/provider-kit/shapes";
-import { createSchemaBuilder, resolveTableProvider } from "@tupl/schema-model";
+import { createSchemaBuilder } from "@tupl/schema-model";
+import { resolveTableProvider } from "@tupl/schema-model/normalization";
 import { createExecutableSchemaFromProviders } from "@tupl/test-support/runtime";
 import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";
 

@@ -27,6 +27,30 @@ const workspaceAliases = [
     replacement: resolve(rootDir, "../../packages/schema-model/src/index.ts"),
   },
   {
+    find: /^@tupl\/schema-model\/constraints$/,
+    replacement: resolve(rootDir, "../../packages/schema-model/src/constraints.ts"),
+  },
+  {
+    find: /^@tupl\/schema-model\/ddl$/,
+    replacement: resolve(rootDir, "../../packages/schema-model/src/ddl.ts"),
+  },
+  {
+    find: /^@tupl\/schema-model\/definition$/,
+    replacement: resolve(rootDir, "../../packages/schema-model/src/definition.ts"),
+  },
+  {
+    find: /^@tupl\/schema-model\/enums$/,
+    replacement: resolve(rootDir, "../../packages/schema-model/src/enums.ts"),
+  },
+  {
+    find: /^@tupl\/schema-model\/mapping$/,
+    replacement: resolve(rootDir, "../../packages/schema-model/src/mapping/index.ts"),
+  },
+  {
+    find: /^@tupl\/schema-model\/normalization$/,
+    replacement: resolve(rootDir, "../../packages/schema-model/src/normalization.ts"),
+  },
+  {
     find: /^@tupl\/planner$/,
     replacement: resolve(rootDir, "../../packages/planner/src/index.ts"),
   },

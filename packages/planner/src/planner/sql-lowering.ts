@@ -1,7 +1,8 @@
 import { Result } from "better-result";
 
 import { type RelNode } from "@tupl/foundation";
-import { validateRelAgainstSchema, type SchemaDefinition } from "@tupl/schema-model";
+import type { SchemaDefinition } from "@tupl/schema-model";
+import { validateRelAgainstSchema } from "@tupl/schema-model/constraints";
 import { parseSqliteSelectAstResult } from "./sqlite-parser/parser";
 import { toRelLoweringError } from "./planner-errors";
 import { validateQueryShapeResult } from "./query-shape-validation";

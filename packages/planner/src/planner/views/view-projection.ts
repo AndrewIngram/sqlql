@@ -1,9 +1,7 @@
 import type { RelExpr, RelNode } from "@tupl/foundation";
-import {
-  getNormalizedColumnBindings,
-  isNormalizedSourceColumnBinding,
-  type NormalizedColumnBinding,
-} from "@tupl/schema-model";
+import { type NormalizedColumnBinding } from "@tupl/schema-model";
+import { isNormalizedSourceColumnBinding } from "@tupl/schema-model/mapping";
+import { getNormalizedColumnBindings } from "@tupl/schema-model/normalization";
 
 import { nextRelId } from "../physical/planner-ids";
 import type { ViewAliasColumnMap } from "../planner-types";

@@ -13,6 +13,11 @@ import * as runtime from "@tupl/runtime";
 import * as runtimeExecutor from "@tupl/runtime/executor";
 import * as runtimeSession from "@tupl/runtime/session";
 import * as schema from "@tupl/schema";
+import * as schemaModel from "@tupl/schema-model";
+import * as schemaModelDefinition from "@tupl/schema-model/definition";
+import * as schemaModelEnums from "@tupl/schema-model/enums";
+import * as schemaModelMapping from "@tupl/schema-model/mapping";
+import * as schemaModelNormalization from "@tupl/schema-model/normalization";
 import type {
   QueryRow as ProviderQueryRow,
   RelationalProviderOptions as ProviderRelationalProviderOptions,
@@ -98,6 +103,16 @@ describe("public package imports", () => {
     expect("AggregatePlanDecision" in schema).toBe(false);
   });
 
+  it("keeps schema-model root focused on schema authoring contracts", () => {
+    expect(typeof schemaModel.createSchemaBuilder).toBe("function");
+    expect(typeof schemaModel.defineTableMethods).toBe("function");
+    expect(typeof schemaModel.toSqlDDL).toBe("function");
+    expect("getNormalizedTableBinding" in schemaModel).toBe(false);
+    expect("mapProviderRowsToLogical" in schemaModel).toBe(false);
+    expect("resolveSchemaLinkedEnums" in schemaModel).toBe(false);
+    expect("resolveTableColumnDefinition" in schemaModel).toBe(false);
+  });
+
   it("exposes adapter-authoring contracts from provider-kit", () => {
     expect(typeof providerKit.createDataEntityHandle).toBe("function");
     expect(typeof providerKit.createRelationalProviderAdapter).toBe("function");
@@ -111,6 +126,10 @@ describe("public package imports", () => {
     expect(typeof runtimeExecutor.executeRelWithProvidersResult).toBe("function");
     expect(typeof runtimeSession.createExecutableSchemaSession).toBe("function");
     expect(typeof providerKitTesting.createProviderConformanceCases).toBe("function");
+    expect(typeof schemaModelNormalization.getNormalizedTableBinding).toBe("function");
+    expect(typeof schemaModelMapping.mapProviderRowsToLogical).toBe("function");
+    expect(typeof schemaModelEnums.resolveSchemaLinkedEnums).toBe("function");
+    expect(typeof schemaModelDefinition.resolveTableColumnDefinition).toBe("function");
   });
 
   it("keeps session observation off the runtime root surface", () => {

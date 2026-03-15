@@ -1,4 +1,5 @@
-import { resolveColumnDefinition, type SchemaDefinition } from "@tupl/schema-model";
+import type { SchemaDefinition } from "@tupl/schema-model";
+import { resolveColumnDefinition } from "@tupl/schema-model/definition";
 
 import type { Binding, LiteralFilter } from "./planner-types";
 

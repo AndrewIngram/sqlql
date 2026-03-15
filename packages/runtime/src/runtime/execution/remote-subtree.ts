@@ -8,7 +8,7 @@ import {
   type ProviderAdapter,
 } from "@tupl/provider-kit";
 import { buildProviderFragmentForRelResult } from "@tupl/planner";
-import { mapProviderRowsToRelOutput } from "@tupl/schema-model";
+import { mapProviderRowsToRelOutput } from "@tupl/schema-model/mapping";
 
 import {
   tryExecutionStep,

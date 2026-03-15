@@ -1,12 +1,11 @@
 import type { RelScanNode, ScanFilterClause } from "@tupl/foundation";
+import { type ColumnDefinition, type SchemaDefinition } from "@tupl/schema-model";
 import {
-  type ColumnDefinition,
   createPhysicalBindingFromEntity,
   createTableDefinitionFromEntity,
   getNormalizedTableBinding,
   resolveNormalizedColumnSource,
-  type SchemaDefinition,
-} from "@tupl/schema-model";
+} from "@tupl/schema-model/normalization";
 
 /**
  * Provider scan normalization owns physical-entity scan rewriting and enum filter translation.

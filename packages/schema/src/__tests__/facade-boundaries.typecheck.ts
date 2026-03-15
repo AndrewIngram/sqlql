@@ -1,11 +1,11 @@
 import { buildScanUnsupportedReport } from "@tupl/provider-kit/shapes";
 import { createSchemaBuilder, createExecutableSchema, type QueryGuardrails } from "@tupl/schema";
 import {
-  getNormalizedTableBinding,
   type PlannedAggregateRequest,
   type PlannedLookupRequest,
   type PlannedScanRequest,
 } from "@tupl/schema-model";
+import { getNormalizedTableBinding } from "@tupl/schema-model/normalization";
 
 // @ts-expect-error schema facade should not expose normalization helpers
 import { getNormalizedTableBinding as _schemaFacadeBinding } from "@tupl/schema";

@@ -3,7 +3,8 @@ import { Result, type Result as BetterResult } from "better-result";
 import type { RelNode } from "@tupl/foundation";
 import { unwrapProviderOperationResult, type FragmentProviderAdapter } from "@tupl/provider-kit";
 import type { ProviderRelTarget } from "@tupl/planner";
-import { mapProviderRowsToRelOutput, type QueryRow } from "@tupl/schema-model";
+import type { QueryRow } from "@tupl/schema-model";
+import { mapProviderRowsToRelOutput } from "@tupl/schema-model/mapping";
 
 import type { QueryGuardrails, TuplDiagnostic } from "../contracts";
 import type { QuerySessionInput, QueryStepEvent, QueryStepState } from "../session/contracts";

@@ -2,11 +2,9 @@ import { Result, type Result as BetterResult } from "better-result";
 
 import { type RelNode, type TuplError } from "@tupl/foundation";
 import { buildLogicalQueryPlanResult, buildPhysicalQueryPlanResult } from "@tupl/planner";
-import {
-  resolveSchemaLinkedEnums,
-  validateProviderBindings,
-  type QueryRow,
-} from "@tupl/schema-model";
+import type { QueryRow } from "@tupl/schema-model";
+import { resolveSchemaLinkedEnums } from "@tupl/schema-model/enums";
+import { validateProviderBindings } from "@tupl/schema-model/normalization";
 
 import type { ExplainFragment, ExplainResult, QueryInput } from "./contracts";
 import { unwrapQueryResult } from "./diagnostics";

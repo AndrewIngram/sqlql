@@ -1,10 +1,7 @@
 import type { RelNode, RelScanNode } from "@tupl/foundation";
 import { Result } from "better-result";
-import {
-  getNormalizedTableBinding,
-  resolveTableProvider,
-  type SchemaDefinition,
-} from "@tupl/schema-model";
+import type { SchemaDefinition } from "@tupl/schema-model";
+import { getNormalizedTableBinding, resolveTableProvider } from "@tupl/schema-model/normalization";
 
 /**
  * These nodes are execution-locality barriers, not syntax restrictions. They may appear in valid
