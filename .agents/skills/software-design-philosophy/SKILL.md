@@ -4,7 +4,7 @@ description: 'Manage software complexity through deep modules, information hidin
 license: MIT
 metadata:
   author: wondelai
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # A Philosophy of Software Design Framework
@@ -15,9 +15,117 @@ A practical framework for managing the fundamental challenge of software enginee
 
 **The greatest limitation in writing software is our ability to understand the systems we are creating.** Complexity is the enemy. It makes systems hard to understand, hard to modify, and a source of bugs. Every design decision should be evaluated by asking: "Does this increase or decrease the overall complexity of the system?" The goal is not zero complexity -- that is impossible in useful software -- but to minimize unnecessary complexity and concentrate necessary complexity where it can be managed.
 
-## Scoring
+## Review Mode
 
-**Goal: 10/10.** When reviewing or creating software designs, rate them 0-10 based on adherence to the principles below. A 10/10 means deep modules with clean abstractions, excellent information hiding, strategic thinking about complexity, and comments that capture design intent. Lower scores indicate shallow modules, information leakage, tactical shortcuts, or missing design documentation. Always provide the current score and specific improvements needed to reach 10/10.
+This skill works best as a **repeatable design-review rubric**, not as an open-ended philosophy essay. When using it, always declare the review scope first and keep the score anchored to that exact scope.
+
+Valid review scopes:
+
+- `repo`: overall architecture and package/module boundaries
+- `package`: one package or subsystem
+- `module`: one file or one tightly related cluster of files
+- `diff`: only the current change under review
+
+If the user does not specify a scope, default to the smallest scope that matches the question. Do **not** silently score a whole codebase when the actual task is about one package or one change.
+
+## Scoring Rubric
+
+**Goal: 10/10.** Score using the five dimensions below, each worth `0`, `1`, or `2` points. Always report the sub-scores and total; do not give a single floating, impressionistic number without the breakdown.
+
+| Dimension | 0 | 1 | 2 |
+|---------|---|---|---|
+| **Interface Simplicity** | Public surface is broad, irregular, or caller-heavy | Mixed: some clean entrypoints, some leaky or over-configured ones | Public surface is compact, regular, and hides complexity |
+| **Information Hiding** | Important decisions are duplicated or leak across modules | Some ownership is clear, but shared knowledge still leaks | Design decisions are owned in one place and changes stay local |
+| **Change Amplification** | Routine changes require edits in many places | Some shared paths are centralized, but not consistently | Common changes are localized behind deep modules |
+| **Unknown Unknowns / Clarity** | It is hard to tell where behavior lives or what must change | Structure is partly discoverable but still surprising | Boundaries, invariants, and likely edit points are obvious |
+| **Commented Intent** | Comments are absent, stale, or restate code | Some intent is documented, but unevenly | Comments capture abstraction, invariants, and why where needed |
+
+Scoring rules:
+
+- `9-10`: strong design, only targeted refinements needed
+- `7-8`: good design with meaningful complexity debt
+- `5-6`: mixed design; several structural issues interfere with changes
+- `3-4`: complexity is actively slowing work
+- `0-2`: design is unstable or largely tactical
+
+Never change the score unless the same scope is being measured with the same rubric.
+
+## Required Evidence
+
+Every finding and every recommendation must be backed by concrete evidence from the scoped code. Do not make abstract claims like "this feels shallow" without showing why.
+
+For each finding, provide:
+
+1. `Symptom`: change amplification, cognitive load, or unknown unknowns
+2. `Evidence`: specific files, interfaces, call sites, repeated logic, or duplicated concepts
+3. `Why it matters`: what future change is harder because of this
+4. `Suggested fix`: the smallest structural change that would improve the score
+5. `Risk of over-correction`: how this fix could make another dimension worse
+
+If you cannot provide evidence, do not score that issue heavily.
+
+## Anti-Goodhart Rules
+
+This skill exists to reduce real complexity, not to maximize a number cosmetically.
+
+Do not reward changes that:
+
+- merely move code without reducing dependencies or caller burden
+- merge modules into a larger but less coherent "god module"
+- add comments that restate the code but do not capture design intent
+- add wrappers, indirection, or configurability without hiding meaningful complexity
+- improve one local abstraction while worsening package boundaries or caller complexity elsewhere
+
+A recommendation is only good if it improves one or more rubric dimensions **without materially regressing another**. If there is a tradeoff, state it explicitly.
+
+## Improvement Loop
+
+To create a virtuous feedback loop, use this sequence:
+
+1. `Fix scope`: state exactly what is being reviewed
+2. `Score current state`: provide the 5-part rubric with evidence
+3. `Choose one bottleneck`: pick the highest-leverage issue, not a laundry list
+4. `Predict score movement`: explain which rubric dimensions should improve and which might regress
+5. `Make the change`
+6. `Re-score the same scope`: use the same rubric and compare before/after
+
+Do not claim improvement unless the after-score references the same scope and evidence standard as the before-score.
+
+## Recommendation Priority
+
+Prioritize suggestions in this order:
+
+1. Remove duplicated knowledge or repeated policy
+2. Narrow or simplify interfaces that force callers to know too much
+3. Move complexity downward into deeper modules
+4. Add comments that capture abstraction or invariants
+5. Rename or reshape for clarity
+
+Prefer one high-confidence structural recommendation over many speculative ones.
+
+## Tie-Breakers
+
+When principles conflict, resolve them with these tie-breakers:
+
+- Prefer lower caller complexity over local implementation neatness
+- Prefer one deeper module over several shallow cooperating modules
+- Prefer explicit ownership of knowledge over temporal decomposition
+- Prefer preserving package and architecture boundaries over local consolidation
+- Prefer measurable reduction in change amplification over aesthetic consistency
+
+If a recommendation would violate an established architectural invariant, flag it as a non-starter unless the review scope explicitly includes architecture change.
+
+## Output Contract
+
+When using this skill for a review, the output should follow this shape:
+
+1. `Scope`
+2. `Score` with sub-scores and total
+3. `Findings` ordered by severity or leverage
+4. `Best next move` with expected score impact
+5. `Re-score guidance` describing how to evaluate the change afterward
+
+Do not present the score first without first stating the scope.
 
 ## The Software Design Framework
 
@@ -209,6 +317,19 @@ See: [references/strategic-programming.md](references/strategic-programming.md)
 | Does each module hide at least one important design decision? | Modules are organized around code, not around information | Reorganize so each module owns a specific piece of knowledge |
 | Can a new team member understand module boundaries without reading implementations? | Abstractions are not documented or are too leaky | Improve interface comments and simplify interfaces until they are self-evident |
 | Are you spending 10-20% of time on design improvement? | Technical debt is accumulating with every feature | Adopt a strategic mindset; include design improvement in every PR |
+
+## Repeatable Review Checklist
+
+Use this checklist before finalizing a score or recommendation:
+
+- Did I state the exact review scope?
+- Did I use the 5-dimension rubric instead of an ad hoc score?
+- Did each finding include concrete evidence?
+- Did I identify the complexity symptom involved?
+- Did I explain what future change becomes easier or harder?
+- Did I check for over-correction risk?
+- Am I recommending the highest-leverage change, not just the easiest cosmetic one?
+- If I am comparing scores, am I scoring the same scope before and after?
 
 ## Reference Files
 
