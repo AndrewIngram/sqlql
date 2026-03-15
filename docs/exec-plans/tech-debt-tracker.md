@@ -14,10 +14,25 @@ These are the current architecture and process questions that remain intentional
 - Current state: `RANGE` and `GROUPS` frame modes are explicitly rejected.
 - Question: implement correct semantics later or continue treating them as out of scope?
 
+### Recursive CTE iteration guardrail
+
+- Current state: recursive CTE execution stops after 256 iterations with a hardcoded runtime limit.
+- Question: keep that fixed safety valve, or surface it as an explicit query/runtime guardrail alongside the existing row and timeout controls?
+
 ### Provider-local barrier traversal consistency
 
 - Current state: some planner/runtime/provider-normalization switches intentionally treat local-only barrier nodes like `correlate` and `repeat_union` as unreachable in provider-owned paths and return early rather than traversing children.
 - Question: keep that as an explicit invariant-only simplification, or normalize these switches to traverse children for consistency and future-proofing even when the current planner should never route them there?
+
+### Lookup-join planning vs runtime lookup capability
+
+- Current state: planner lookup-join candidacy no longer checks whether the right-side provider implements `lookupMany`; runtime still guards the optimization before execution.
+- Question: is the current split acceptable as a planner simplification, or should planner candidacy regain lookup-capability awareness to keep explain/physical-plan diagnostics closer to actual execution choices?
+
+### Aggregate-mode navigation window validation
+
+- Current state: grouped aggregate window validation checks `partitionBy`, `orderBy`, and aggregate `column` refs against aggregate output columns, but it does not yet validate navigation-function `value` / `defaultExpr` expression refs in the same way.
+- Question: should aggregate-mode window preparation reject non-aggregate navigation expressions early with a specific lowering error, rather than relying on later execution-time failure?
 
 ### Planner subquery callback Result bridge
 

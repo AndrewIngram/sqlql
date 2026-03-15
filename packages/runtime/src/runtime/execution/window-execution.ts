@@ -159,7 +159,7 @@ function resolveFrameBoundaryIndex(
       case "unbounded_preceding":
         return 0;
       case "preceding":
-        return idx - (bound.offset ?? 0);
+        return position === "end" ? idx - (bound.offset ?? 0) + 1 : idx - (bound.offset ?? 0);
       case "current_row":
         return position === "end" ? idx + 1 : idx;
       case "following":

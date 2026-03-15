@@ -246,6 +246,39 @@ describe("query/window", () => {
     );
   });
 
+  it("includes the end row for PRECEDING frame boundaries", async () => {
+    await withQueryHarness(
+      {
+        schema: commerceSchema,
+        rowsByTable: commerceRows,
+      },
+      async (harness) => {
+        const { actual, expected } = await harness.runAgainstBoth(
+          `
+            SELECT
+              id,
+              SUM(total_cents) OVER (
+                PARTITION BY org_id
+                ORDER BY created_at
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+              ) AS prior_total
+            FROM orders
+            WHERE org_id = 'org_1'
+            ORDER BY id ASC
+          `,
+          EMPTY_CONTEXT,
+        );
+
+        expect(actual).toEqual(expected);
+        expect(actual).toEqual([
+          { id: "ord_1", prior_total: null },
+          { id: "ord_2", prior_total: 1200 },
+          { id: "ord_3", prior_total: 3000 },
+        ]);
+      },
+    );
+  });
+
   it("supports LEAD and LAG window functions", async () => {
     await withQueryHarness(
       {

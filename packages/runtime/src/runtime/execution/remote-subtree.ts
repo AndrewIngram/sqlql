@@ -120,6 +120,7 @@ function findNodeProvider<TContext>(
       );
     case "values":
     case "cte_ref":
+    case "correlate":
     case "repeat_union":
       return undefined;
   }
