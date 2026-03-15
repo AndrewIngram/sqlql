@@ -91,7 +91,9 @@ jobs:
             ${{ runner.os }}-vitest-fast-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Run fast tests
-        run: pnpm test:fast:ci --shard=${{ matrix.shard }}/2 --outputFile.blob=.vitest-reports/test-fast-${{ matrix.shard }}-of-2.json
+        run: |
+          pnpm test:fast:ci --shard=${{ matrix.shard }}/2
+          mv .vitest-reports/test-fast.json .vitest-reports/test-fast-${{ matrix.shard }}-of-2.json
 
       - name: Upload fast Vitest blob report
         uses: actions/upload-artifact@v4
@@ -133,7 +135,9 @@ jobs:
             ${{ runner.os }}-vitest-playground-slow-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Run slow playground tests
-        run: pnpm test:playground:slow:ci --shard=${{ matrix.shard }}/2 --outputFile.blob=.vitest-reports/test-playground-slow-${{ matrix.shard }}-of-2.json
+        run: |
+          pnpm test:playground:slow:ci --shard=${{ matrix.shard }}/2
+          mv .vitest-reports/test-playground-slow.json .vitest-reports/test-playground-slow-${{ matrix.shard }}-of-2.json
 
       - name: Upload slow Vitest blob report
         uses: actions/upload-artifact@v4
