@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 
 import { Result } from "better-result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   stringifyUnknownValue,
   type DataEntityColumnMap,

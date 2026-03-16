@@ -63,7 +63,7 @@ export function createUnusualScanLookupFixtureProvider() {
         limit?: unknown;
         offset?: unknown;
       };
-      const config = entities[scanRequest.table];
+      const config = entities[scanRequest.table as keyof typeof entities];
       if (!config) {
         return AdapterResult.err(new Error(`Unknown fixture entity: ${scanRequest.table}`));
       }
@@ -80,12 +80,14 @@ export function createUnusualScanLookupFixtureProvider() {
       );
     },
     async lookupMany({ request, entities }) {
-      const config = entities[request.table];
+      const config = entities[request.table as keyof typeof entities];
       if (!config) {
         return AdapterResult.err(new Error(`Unknown fixture entity: ${request.table}`));
       }
 
-      const matched = config.rows.filter((row) => request.keys.includes(row[request.key]));
+      const matched = config.rows.filter((row) =>
+        request.keys.includes(row[request.key as keyof typeof row]),
+      );
       return AdapterResult.ok(projectRows(matched, request.select));
     },
   });

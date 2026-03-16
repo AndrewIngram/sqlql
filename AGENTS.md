@@ -13,18 +13,31 @@ Canonical docs:
 
 For any non-trivial code change, always run:
 
-- `pnpm lint`
-- `pnpm typecheck`
-- `pnpm test`
-- `pnpm fmt`
+- `vp lint`
+- `vp run -r typecheck`
+- `vp test`
+- `vp fmt`
 
 Do this before finalizing the work unless the user explicitly asks not to.
 
 Notes:
 
-- `pnpm typecheck` is the canonical workspace typecheck and must cover all packages (`pnpm -r typecheck`).
+- `vp run -r typecheck` is the canonical workspace typecheck and must cover all packages.
 - Use `pnpm typecheck:root` only when you explicitly want the root tsconfig check by itself.
 - Use `pnpm verify:ci` when you need local CI parity.
+
+## Script Conventions
+
+- Workspace-level verification lives at the repo root:
+  - `vp lint`
+  - `vp run -r typecheck`
+  - `vp test`
+  - `vp fmt`
+  - `vp run -r build`
+- Root test execution is `vp test` via [`vite.config.ts`](./vite.config.ts). Do not add a separate test config unless there is a concrete need.
+- Library packages use package-local `vite.config.ts` files for `pack` config and plain `vp pack` build scripts.
+- The playground is the main app-level exception and keeps its own Vite app config in [`examples/playground/vite.config.ts`](./examples/playground/vite.config.ts).
+- Do not expect bare root `vp pack` to work. Packaging is owned by library packages, not the workspace root.
 
 ## Current-State Policy
 

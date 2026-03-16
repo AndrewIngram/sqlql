@@ -14,8 +14,8 @@
     "@tupl/example-shared": "workspace:*",
     "@tupl/provider-objection": "workspace:*",
     "@tupl/schema": "workspace:*",
-    "better-sqlite3": "^12.6.2",
-    "knex": "^3.1.0",
-    "objection": "^3.1.5"
+    "better-sqlite3": "catalog:",
+    "knex": "catalog:",
+    "objection": "catalog:"
   }
 }

@@ -3,8 +3,8 @@ import type React from "react";
 import { Trash2 } from "lucide-react";
 import type { QueryRow, TableColumnDefinition, TableDefinition } from "@tupl/schema";
 
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "./components/ui/button";
+import { ScrollArea } from "./components/ui/scroll-area";
 import {
   Table,
   TableBody,
@@ -12,10 +12,10 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
-import { coerceCellInput, deleteRow, formatCellValue, updateRowCell } from "@/data-editing";
-import { isColumnNullable, readColumnEnumValues, readColumnType } from "@/types";
-import { cn } from "@/lib/utils";
+} from "./components/ui/table";
+import { coerceCellInput, deleteRow, formatCellValue, updateRowCell } from "./data-editing";
+import { isColumnNullable, readColumnEnumValues, readColumnType } from "./types";
+import { cn } from "./lib/utils";
 
 interface DataGridProps {
   table: TableDefinition;

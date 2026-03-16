@@ -1,5 +1,5 @@
 import { Result } from "better-result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { stringifyUnknownValue, type RelNode } from "@tupl/foundation";
 import { type QueryRow, type ScanFilterClause } from "@tupl/provider-kit";

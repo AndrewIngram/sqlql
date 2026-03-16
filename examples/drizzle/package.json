@@ -14,7 +14,7 @@
     "@tupl/example-shared": "workspace:*",
     "@tupl/provider-drizzle": "workspace:*",
     "@tupl/schema": "workspace:*",
-    "better-sqlite3": "^12.6.2",
-    "drizzle-orm": "latest"
+    "better-sqlite3": "catalog:",
+    "drizzle-orm": "catalog:"
   }
 }

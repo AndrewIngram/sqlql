@@ -22,8 +22,8 @@
     "@tupl/provider-kit": "workspace:*",
     "@tupl/runtime": "workspace:*",
     "@tupl/schema-model": "workspace:*",
-    "better-result": "^2.7.0",
-    "better-sqlite3": "^12.6.2",
-    "vitest": "4.1.0"
+    "better-result": "catalog:",
+    "better-sqlite3": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

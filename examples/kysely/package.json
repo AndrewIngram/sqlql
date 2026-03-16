@@ -14,7 +14,7 @@
     "@tupl/example-shared": "workspace:*",
     "@tupl/provider-kysely": "workspace:*",
     "@tupl/schema": "workspace:*",
-    "better-sqlite3": "^12.6.2",
-    "kysely": "^0.28.8"
+    "better-sqlite3": "catalog:",
+    "kysely": "catalog:"
   }
 }

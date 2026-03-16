@@ -18,14 +18,14 @@ import type {
   QueryStepState,
 } from "@tupl/runtime/session";
 
-import { cn } from "@/lib/utils";
+import { cn } from "./lib/utils";
 import {
   buildPlanGraphLayout,
   buildPlanGraphModel,
   type PlanNodeData,
   type PlanScopeNodeData,
-} from "@/plan-graph-model";
-import { presentStep } from "@/plan-step-presentation";
+} from "./plan-graph-model";
+import { presentStep } from "./plan-step-presentation";
 
 interface PlanGraphProps {
   steps: QueryExecutionPlanStep[];

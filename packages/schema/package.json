@@ -16,6 +16,7 @@
   "types": "./dist/index.d.mts",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
@@ -25,11 +26,12 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format esm,cjs --sourcemap --clean --dts --tsconfig tsconfig.build.json",
+    "build": "vp pack",
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@tupl/provider-kit": "workspace:*",
     "@tupl/runtime": "workspace:*",
     "@tupl/schema-model": "workspace:*"
   }

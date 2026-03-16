@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createMethodsProvider, withQueryHarness } from "@tupl/test-support/runtime";
 import { aggregateArrayRows, createArrayTableMethods } from "@tupl/test-support/methods";
 

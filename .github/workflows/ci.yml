@@ -21,20 +21,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 22
-          cache: pnpm
+          cache: true
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Run lint
-        run: pnpm lint
+        run: vp lint
 
   typecheck:
     name: Typecheck
@@ -43,20 +40,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 22
-          cache: pnpm
+          cache: true
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Run workspace typecheck
-        run: pnpm typecheck
+        run: vp run -r typecheck
 
   test-ci:
     name: Test (CI)
@@ -71,17 +65,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 22
-          cache: pnpm
+          cache: true
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Find shared Vitest cache artifact
         id: cache_seed
@@ -134,16 +125,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules/.vite-ci/vitest
-          key: ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-${{ github.ref_name }}-shard-${{ matrix.shard }}
+          key: ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vite.config.ts', 'test/package.json', 'examples/playground/package.json') }}-${{ github.ref_name }}-shard-${{ matrix.shard }}
           restore-keys: |
-            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-${{ github.ref_name }}-shard-${{ matrix.shard }}-
-            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-main-shard-${{ matrix.shard }}-
-            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-${{ github.ref_name }}-
-            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vitest.ci.config.ts', 'vitest.config.ts') }}-main-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vite.config.ts', 'test/package.json', 'examples/playground/package.json') }}-${{ github.ref_name }}-shard-${{ matrix.shard }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vite.config.ts', 'test/package.json', 'examples/playground/package.json') }}-main-shard-${{ matrix.shard }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vite.config.ts', 'test/package.json', 'examples/playground/package.json') }}-${{ github.ref_name }}-
+            ${{ runner.os }}-vitest-ci-${{ hashFiles('pnpm-lock.yaml', 'vite.config.ts', 'test/package.json', 'examples/playground/package.json') }}-main-
 
       - name: Run CI tests
         run: |
-          pnpm test:ci --shard=${{ matrix.shard }}/4
+          vp test run --coverage --reporter=default --reporter=blob --outputFile.blob=.vitest-reports/test-ci.json --shard=${{ matrix.shard }}/4
           mv .vitest-reports/test-ci.json .vitest-reports/test-ci-${{ matrix.shard }}-of-4.json
 
       - name: Upload CI Vitest blob report
@@ -160,6 +151,25 @@ jobs:
           path: node_modules/.vite-ci/vitest
           if-no-files-found: error
 
+  workspace-tests:
+    name: Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: 22
+          cache: true
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Run workspace test package
+        run: vp run @tupl/workspace-tests#test
+
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest
@@ -174,17 +184,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 22
-          cache: pnpm
+          cache: true
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Prepare Vitest reports directory
         run: |
@@ -261,7 +268,7 @@ jobs:
           if-no-files-found: error
 
       - name: Merge reports and generate coverage output
-        run: pnpm exec vitest --merge-reports=.vitest-reports --reporter=default --coverage
+        run: vp test run --merge-reports=.vitest-reports --reporter=default --coverage
 
       - name: Append coverage summary
         run: |

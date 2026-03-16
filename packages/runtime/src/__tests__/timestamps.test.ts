@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { withQueryHarness } from "@tupl/test-support/runtime";
 import { buildEntitySchema } from "@tupl/test-support/schema";

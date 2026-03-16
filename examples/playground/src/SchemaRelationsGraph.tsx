@@ -14,13 +14,13 @@ import {
 } from "@xyflow/react";
 import type { SchemaDefinition } from "@tupl/schema";
 
-import { cn } from "@/lib/utils";
+import { cn } from "./lib/utils";
 import {
   buildSchemaGraphLayout,
   buildSchemaGraphModel,
   schemaHandleId,
   type SchemaRelationNodeData,
-} from "@/schema-graph-model";
+} from "./schema-graph-model";
 
 interface SchemaRelationsGraphProps {
   schema: SchemaDefinition;

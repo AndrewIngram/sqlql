@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { commerceRows, commerceSchema } from "@tupl/test-support/fixtures";
 import { withQueryHarness } from "@tupl/test-support/runtime";
