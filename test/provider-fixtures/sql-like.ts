@@ -5,13 +5,15 @@ import {
   type ScanFilterClause,
   type TableScanRequest,
 } from "@tupl/provider-kit";
+import type { RelNode } from "@tupl/foundation";
+import type { ProviderConformanceOptions } from "@tupl/provider-kit/testing";
 import type {
   SqlRelationalOrderTerm,
   SqlRelationalQueryTranslationBackend,
   SqlRelationalSelection,
 } from "@tupl/provider-kit/relational-sql";
 
-import { applyScanRequest, compareRows, matchesFilters } from "./row-ops";
+import { compareRows, matchesFilters } from "./row-ops";
 
 type FixtureEntityConfig = RelationalProviderEntityConfig & {
   rows: QueryRow[];
@@ -117,60 +119,57 @@ export function createSqlLikeFixtureProvider() {
     resolveRuntime() {
       return {};
     },
-    async executeScan({ request, resolvedEntities }) {
-      const resolved = resolvedEntities[request.table];
-      if (!resolved) {
-        throw new Error(`Unknown fixture entity: ${request.table}`);
-      }
-
-      return applyScanRequest(resolved.config.rows, request);
-    },
   });
 }
 
-export function createSqlLikeConformanceOptions() {
+export function createSqlLikeConformanceOptions(): ProviderConformanceOptions<
+  Record<string, never>,
+  ReturnType<typeof createSqlLikeFixtureProvider>
+> {
+  const node = {
+    id: "limit_orders",
+    kind: "limit_offset",
+    convention: "local",
+    limit: 1,
+    input: {
+      id: "sort_orders",
+      kind: "sort",
+      convention: "local",
+      orderBy: [{ source: { alias: "orders", column: "total_cents" }, direction: "desc" }],
+      input: {
+        id: "project_orders",
+        kind: "project",
+        convention: "local",
+        columns: [
+          { source: { alias: "orders", column: "id" }, output: "id" },
+          { source: { alias: "orders", column: "total_cents" }, output: "total_cents" },
+        ],
+        input: {
+          id: "scan_orders",
+          kind: "scan",
+          convention: "local",
+          table: "orders",
+          alias: "orders",
+          select: ["id", "total_cents", "customer_id"],
+          where: [{ column: "customer_id", op: "eq", value: "c1" }],
+          output: [
+            { name: "orders.id" },
+            { name: "orders.total_cents" },
+            { name: "orders.customer_id" },
+          ],
+        },
+        output: [{ name: "id" }, { name: "total_cents" }],
+      },
+      output: [{ name: "id" }, { name: "total_cents" }],
+    },
+    output: [{ name: "id" }, { name: "total_cents" }],
+  } satisfies RelNode;
+
   return {
     provider: createSqlLikeFixtureProvider(),
     context: {},
     rel: {
-      node: {
-        id: "limit_orders",
-        kind: "limit_offset",
-        convention: "local",
-        limit: 1,
-        input: {
-          id: "sort_orders",
-          kind: "sort",
-          convention: "local",
-          orderBy: [{ source: { alias: "orders", column: "total_cents" }, direction: "desc" }],
-          input: {
-            id: "project_orders",
-            kind: "project",
-            convention: "local",
-            columns: [
-              { source: { alias: "orders", column: "id" }, output: "id" },
-              { source: { alias: "orders", column: "total_cents" }, output: "total_cents" },
-            ],
-            input: {
-              id: "scan_orders",
-              kind: "scan",
-              convention: "local",
-              table: "orders",
-              alias: "orders",
-              select: ["id", "total_cents", "customer_id"],
-              where: [{ column: "customer_id", op: "eq", value: "c1" }],
-              output: [
-                { name: "orders.id" },
-                { name: "orders.total_cents" },
-                { name: "orders.customer_id" },
-              ],
-            },
-            output: [{ name: "id" }, { name: "total_cents" }],
-          },
-          output: [{ name: "id" }, { name: "total_cents" }],
-        },
-        output: [{ name: "id" }, { name: "total_cents" }],
-      },
+      node,
       expectedRows: [{ id: "o2", total_cents: 1800 }],
     },
   };
@@ -201,28 +200,17 @@ function orderTermsToScanOrderBy(
   orderBy: SqlRelationalOrderTerm[],
 ): NonNullable<TableScanRequest["orderBy"]> {
   return orderBy.map((term) => {
-    if ("kind" in term && term.kind === "window") {
-      throw new Error("Fixture SQL-like provider does not model window ordering.");
-    }
-
-    if ("kind" in term && term.kind === "output") {
+    if (term.kind === "output") {
       return {
         column: term.column,
         direction: term.direction,
       };
     }
 
-    if ("kind" in term && term.kind === "qualified") {
+    if (term.kind === "qualified") {
       return {
         column: term.source.column,
         direction: term.direction,
-      };
-    }
-
-    if ("kind" in term && term.kind === "column") {
-      return {
-        column: term.source.column,
-        direction: "asc" as const,
       };
     }
 

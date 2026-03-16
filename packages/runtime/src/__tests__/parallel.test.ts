@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { queryWithMethods } from "@tupl/test-support/runtime";
 import { createArrayTableMethods, scanArrayRows } from "@tupl/test-support/methods";
 

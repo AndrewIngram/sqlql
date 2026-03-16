@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { RelNode } from "@tupl/foundation";
 import { AdapterResult } from "@tupl/provider-kit";

@@ -20,7 +20,7 @@ import {
   type SqlScalarType,
 } from "@tupl/schema";
 
-import { DataGrid } from "@/data-grid";
+import { DataGrid } from "./data-grid";
 import {
   addEmptyRow,
   coerceCellInput,
@@ -28,7 +28,7 @@ import {
   formatCellValue,
   mergeTableRows,
   updateRowCell,
-} from "@/data-editing";
+} from "./data-editing";
 import {
   buildEditableStructureRows,
   buildGeneratedDbModuleCode,
@@ -38,7 +38,7 @@ import {
   tableIssueLines,
   type EditableStructureColumn,
   uniqueNonNullValues,
-} from "@/playground-downstream-structure";
+} from "./playground-downstream-structure";
 import {
   CONTEXT_MODULE_ID,
   buildQueryCatalog,
@@ -55,40 +55,40 @@ import {
   REDIS_PROVIDER_MODULE_ID,
   SCENARIO_PRESETS,
   serializeJson,
-} from "@/examples";
-import { PlanGraph } from "@/PlanGraph";
-import { presentStep } from "@/plan-step-presentation";
-import { buildQueryCompatibilityMap } from "@/query-compatibility";
-import { truncateReason } from "@/query-preview";
-import { findTableLineNumber, inferSqlErrorRange } from "@/playground-sql-diagnostics";
+} from "./examples";
+import { PlanGraph } from "./PlanGraph";
+import { presentStep } from "./plan-step-presentation";
+import { buildQueryCompatibilityMap } from "./query-compatibility";
+import { truncateReason } from "./query-preview";
+import { findTableLineNumber, inferSqlErrorRange } from "./playground-sql-diagnostics";
 import {
   canSelectCatalogQuery,
   CUSTOM_QUERY_ID,
   selectionAfterManualSqlEdit,
   selectionAfterSchemaChange,
-} from "@/query-selection-state";
-import { SchemaRelationsGraph } from "@/SchemaRelationsGraph";
+} from "./query-selection-state";
+import { SchemaRelationsGraph } from "./SchemaRelationsGraph";
 import {
   ExecutedProviderOperationsPanel,
   JsonBlock,
   renderRows,
   StepSection,
   TranslationExplainPanel,
-} from "@/playground-query-views";
-import { compilePlaygroundInput, createSession, runSessionToCompletion } from "@/session-runtime";
-import { SqlPreviewLine } from "@/SqlPreviewLine";
-import { registerSqlCompletionProvider } from "@/sql-completion";
-import { configureSchemaTypescriptProject } from "@/schema-monaco";
+} from "./playground-query-views";
+import { compilePlaygroundInput, createSession, runSessionToCompletion } from "./session-runtime";
+import { SqlPreviewLine } from "./SqlPreviewLine";
+import { registerSqlCompletionProvider } from "./sql-completion";
+import { configureSchemaTypescriptProject } from "./schema-monaco";
 import {
   PLAYGROUND_CONTEXT_FILE_URI,
   PLAYGROUND_DB_PROVIDER_FILE_URI,
   PLAYGROUND_GENERATED_DB_FILE_URI,
   PLAYGROUND_REDIS_PROVIDER_FILE_URI,
   PLAYGROUND_SCHEMA_FILE_URI,
-} from "@/playground-workspace";
-import { REDIS_INPUT_TABLE_DEFINITION, REDIS_INPUT_TABLE_NAME } from "@/redis-provider";
-import { parseDownstreamRowsText, parseFacadeSchemaCode } from "@/validation";
-import { DOWNSTREAM_ROWS_SCHEMA, DOWNSTREAM_TABLE_NAMES } from "@/downstream-model";
+} from "./playground-workspace";
+import { REDIS_INPUT_TABLE_DEFINITION, REDIS_INPUT_TABLE_NAME } from "./redis-provider";
+import { parseDownstreamRowsText, parseFacadeSchemaCode } from "./validation";
+import { DOWNSTREAM_ROWS_SCHEMA, DOWNSTREAM_TABLE_NAMES } from "./downstream-model";
 import {
   type ExecutedProviderOperation,
   isColumnNullable,
@@ -96,12 +96,12 @@ import {
   readColumnType,
   type PlaygroundContext,
   type SchemaParseResult,
-} from "@/types";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ScrollArea } from "@/components/ui/scroll-area";
+} from "./types";
+import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import { ScrollArea } from "./components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -110,7 +110,7 @@ import {
   SelectLabel,
   SelectSeparator,
   SelectTrigger,
-} from "@/components/ui/select";
+} from "./components/ui/select";
 import {
   Table,
   TableBody,
@@ -118,9 +118,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+} from "./components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
+import { cn } from "./lib/utils";
 
 const SCHEMA_MODEL_PATH = PLAYGROUND_SCHEMA_FILE_URI;
 const SCHEMA_CONTEXT_MODEL_PATH = PLAYGROUND_CONTEXT_FILE_URI;

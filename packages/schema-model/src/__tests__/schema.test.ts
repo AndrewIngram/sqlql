@@ -1,5 +1,5 @@
 import { Result } from "better-result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { createDataEntityHandle } from "@tupl/provider-kit";
 import {

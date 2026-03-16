@@ -3,9 +3,9 @@ import type React from "react";
 import Editor from "@monaco-editor/react";
 import type { QueryRow } from "@tupl/schema";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { serializeJson } from "@/examples";
-import { cn } from "@/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
+import { serializeJson } from "./examples";
+import { cn } from "./lib/utils";
 
 const MONACO_INDENT_OPTIONS = {
   detectIndentation: false,

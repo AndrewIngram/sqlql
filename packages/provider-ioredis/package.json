@@ -22,11 +22,12 @@
     }
   },
   "scripts": {
-    "build": "tsdown src/index.ts --tsconfig tsconfig.build.json --format esm,cjs --sourcemap --clean --dts --unbundle",
+    "build": "vp pack",
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@tupl/foundation": "workspace:*",
     "@tupl/provider-kit": "workspace:*",
     "@tupl/schema": "workspace:*",
     "ioredis": "latest"

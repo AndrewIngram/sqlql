@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vite-plus/test";
 
-const REPO_ROOT = process.cwd();
+const REPO_ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../../../");
 
 const REQUIRED_PATHS = [
   "AGENTS.md",

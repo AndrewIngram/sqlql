@@ -1,7 +1,7 @@
 import { Result } from "better-result";
 import type { RelNode } from "@tupl/foundation";
 import { createDataEntityHandle } from "@tupl/provider-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { buildEntitySchema, buildSchema } from "@tupl/test-support/schema";
 

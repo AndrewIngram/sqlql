@@ -3,29 +3,7 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "types": ["vite/client", "node", "react", "react-dom"],
-    "paths": {
-      "@tupl/schema": ["../../packages/schema/src/index.ts"],
-      "@tupl/provider-drizzle": ["../../packages/provider-drizzle/src/index.ts"],
-      "@tupl/provider-ioredis": ["../../packages/provider-ioredis/src/index.ts"],
-      "@tupl/provider-objection": ["../../packages/provider-objection/src/index.ts"],
-      "@tupl/provider-kysely": ["../../packages/provider-kysely/src/index.ts"],
-      "@tupl/foundation": ["../../packages/foundation/src/index.ts"],
-      "@tupl/provider-kit": ["../../packages/provider-kit/src/index.ts"],
-      "@tupl/provider-kit/shapes": ["../../packages/provider-kit/src/provider/shapes/index.ts"],
-      "@tupl/schema-model": ["../../packages/schema-model/src/index.ts"],
-      "@tupl/schema-model/constraints": ["../../packages/schema-model/src/constraints.ts"],
-      "@tupl/schema-model/ddl": ["../../packages/schema-model/src/ddl.ts"],
-      "@tupl/schema-model/definition": ["../../packages/schema-model/src/definition.ts"],
-      "@tupl/schema-model/enums": ["../../packages/schema-model/src/enums.ts"],
-      "@tupl/schema-model/mapping": ["../../packages/schema-model/src/mapping/index.ts"],
-      "@tupl/schema-model/normalization": ["../../packages/schema-model/src/normalization.ts"],
-      "@tupl/planner": ["../../packages/planner/src/index.ts"],
-      "@tupl/runtime": ["../../packages/runtime/src/index.ts"],
-      "@tupl/runtime/executor": ["../../packages/runtime/src/runtime/executor.ts"],
-      "@tupl/example-shared": ["../_shared/src/index.ts"],
-      "@/*": ["./src/*"]
-    }
+    "types": ["vite/client", "node", "react", "react-dom"]
   },
-  "include": ["src", "test", "vite.config.ts"]
+  "include": ["src", "__tests__", "vite.config.ts"]
 }

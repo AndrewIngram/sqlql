@@ -1,4 +1,7 @@
 packages:
   - .
+  - test
   - packages/*
   - examples/*
+
+catalogMode: prefer
