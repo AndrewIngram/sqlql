@@ -11,8 +11,7 @@ export default defineConfig({
       "**/node_modules/**",
       "**/dist/**",
       "**/.{idea,git,cache,output,temp}/**",
-      "test/__tests__/package-boundaries.test.ts",
-      "test/__tests__/public-package-imports.test.ts",
+      "test/**",
       "packages/runtime/src/__tests__/compliance/standards-gaps.todo.test.ts",
     ],
     coverage: {

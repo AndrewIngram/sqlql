@@ -31,6 +31,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@tupl/provider-kit": "workspace:*",
     "@tupl/runtime": "workspace:*",
     "@tupl/schema-model": "workspace:*"
   }

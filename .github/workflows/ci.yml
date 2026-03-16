@@ -151,6 +151,25 @@ jobs:
           path: node_modules/.vite-ci/vitest
           if-no-files-found: error
 
+  workspace-tests:
+    name: Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: 22
+          cache: true
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Run workspace test package
+        run: vp run @tupl/workspace-tests#test
+
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest

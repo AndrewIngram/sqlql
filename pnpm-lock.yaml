@@ -47,9 +47,6 @@ importers:
 
   .:
     devDependencies:
-      '@tupl/schema-model':
-        specifier: workspace:*
-        version: link:packages/schema-model
       '@tupl/test-support':
         specifier: workspace:*
         version: link:packages/test-support
@@ -392,6 +389,9 @@ importers:
 
   packages/schema:
     dependencies:
+      '@tupl/provider-kit':
+        specifier: workspace:*
+        version: link:../provider-kit
       '@tupl/runtime':
         specifier: workspace:*
         version: link:../runtime
